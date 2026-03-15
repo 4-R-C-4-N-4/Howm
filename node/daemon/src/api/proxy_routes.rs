@@ -44,8 +44,8 @@ pub async fn proxy_handler(
                         }
                     }
                 }
-                "public" | _ => {
-                    // Allow all (anyone on the WG network)
+                _ => {
+                    // "public" or unknown — allow all (anyone on the WG network)
                 }
             }
         }

@@ -82,7 +82,7 @@ pub async fn install_capability(
         .config
         .data_dir
         .join("cap-data")
-        .join(req.image.replace('/', "-").replace(':', "-"));
+        .join(req.image.replace(['/', ':'], "-"));
     std::fs::create_dir_all(&data_volume)
         .map_err(|e| AppError::Internal(format!("Failed to create data volume dir: {}", e)))?;
 

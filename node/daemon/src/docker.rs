@@ -103,7 +103,7 @@ pub async fn start_capability(
     };
 
     // Set PORT env var so the capability knows which port to listen on
-    let env_vars = vec![format!("PORT={}", container_port)];
+    let env_vars = [format!("PORT={}", container_port)];
 
     let config = ContainerConfig {
         image: Some(image),

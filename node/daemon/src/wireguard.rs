@@ -181,10 +181,10 @@ async fn start_container(
         host_config.port_bindings = Some(port_bindings);
     }
 
-    let env = vec![
-        format!("PUID=1000"),
-        format!("PGID=1000"),
-        format!("TZ=UTC"),
+    let env = [
+        "PUID=1000".to_string(),
+        "PGID=1000".to_string(),
+        "TZ=UTC".to_string(),
     ];
 
     let create_options = CreateContainerOptions {

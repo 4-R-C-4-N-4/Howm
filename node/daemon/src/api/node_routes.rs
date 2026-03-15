@@ -230,6 +230,7 @@ pub async fn redeem_invite(
 
 /// Called by the redeemer to complete the mutual peer add on our (inviter's) side.
 #[derive(Deserialize)]
+#[allow(dead_code)]
 pub struct CompleteInviteRequest {
     pub psk: String,
     pub my_pubkey: String,

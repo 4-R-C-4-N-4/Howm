@@ -14,6 +14,7 @@ pub enum AppError {
     Internal(String),
     Forbidden(String),
     Gone(String),
+    #[allow(dead_code)]
     Conflict(String),
 }
 

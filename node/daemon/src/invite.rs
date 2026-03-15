@@ -18,6 +18,7 @@ pub struct PendingInvite {
 }
 
 /// Decoded invite fields (from the invite code).
+#[allow(dead_code)]
 pub struct DecodedInvite {
     pub their_pubkey: String,
     pub their_endpoint: String, // WG endpoint (public addr:port)

@@ -15,6 +15,7 @@ mod invite;
 mod peers;
 mod proxy;
 mod state;
+#[allow(clippy::needless_range_loop, clippy::useless_vec)]
 mod wireguard;
 
 use config::Config;

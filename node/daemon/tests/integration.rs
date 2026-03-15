@@ -6,75 +6,7 @@
 //!
 //! No Docker or real WireGuard is required — WG is disabled for tests.
 
-use axum::body::Body;
-use axum::http::{Request, StatusCode};
-use serde_json::{json, Value};
-use std::path::PathBuf;
 use tempfile::TempDir;
-use tower::ServiceExt; // for `oneshot`
-
-// ── Test helpers ────────────────────────────────────────────────────────────
-
-/// Bring daemon internals into scope for integration tests.
-#[path = "../src/api/mod.rs"]
-#[allow(dead_code)]
-mod api_inline {
-    // We can't import this way; instead we'll use the binary as a lib.
-}
-
-// Since the daemon is a binary crate, we build a minimal harness that
-// constructs the AppState and router directly. We duplicate just enough
-// to spin things up.
-
-mod harness {
-    use std::path::Path;
-    use std::sync::Arc;
-    use tokio::sync::RwLock;
-
-    /// Minimal config for tests.
-    #[derive(Clone, Debug)]
-    pub struct TestConfig {
-        pub port: u16,
-        pub data_dir: std::path::PathBuf,
-        pub api_token: String,
-    }
-
-    /// Create a test data directory with a node identity and return config.
-    pub fn setup_node(dir: &Path, name: &str, port: u16) -> TestConfig {
-        std::fs::create_dir_all(dir).unwrap();
-
-        let node_id = uuid::Uuid::new_v4().to_string();
-        let identity = serde_json::json!({
-            "node_id": node_id,
-            "name": name,
-            "created": 1000000,
-            "wg_pubkey": format!("test-pubkey-{}", name),
-            "wg_address": format!("10.47.0.{}", port % 256),
-            "wg_endpoint": format!("127.0.0.1:{}", port + 10000),
-        });
-        std::fs::write(
-            dir.join("node.json"),
-            serde_json::to_string_pretty(&identity).unwrap(),
-        )
-        .unwrap();
-
-        // Create API token
-        let token = format!("test-token-{}", name);
-        std::fs::write(dir.join("api_token"), &token).unwrap();
-
-        // Create WG directories so address allocation works
-        let wg_dir = dir.join("wireguard");
-        std::fs::create_dir_all(&wg_dir).unwrap();
-        // Write our own address so it's tracked
-        std::fs::write(wg_dir.join("address"), format!("10.47.0.{}", port % 256)).unwrap();
-
-        TestConfig {
-            port,
-            data_dir: dir.to_path_buf(),
-            api_token: token,
-        }
-    }
-}
 
 // ── Standalone unit-level tests (no Docker, no server) ──────────────────────
 
@@ -89,7 +21,7 @@ mod unit_tests {
         std::fs::create_dir_all(data_dir).unwrap();
 
         // Set up a minimal identity
-        let identity_json = json!({
+        let identity_json = serde_json::json!({
             "node_id": "test-node-1",
             "name": "alice",
             "created": 1000000,
@@ -215,9 +147,6 @@ mod unit_tests {
         let wg_dir = dir.path().join("wireguard");
         std::fs::create_dir_all(&wg_dir).unwrap();
 
-        // Simulate address allocation
-        let addr_file = wg_dir.join("addresses.json");
-
         let allocate = |dir: &std::path::Path| -> String {
             let addr_file = dir.join("wireguard").join("addresses.json");
             let mut addresses: Vec<String> = if addr_file.exists() {
@@ -308,8 +237,8 @@ mod unit_tests {
             let is_local = source_ip == "127.0.0.1" || source_ip == "::1";
             match vis {
                 "private" => is_local,
-                "friends" => is_local || known_peers.iter().any(|p| *p == source_ip),
-                "public" | _ => true,
+                "friends" => is_local || known_peers.contains(&source_ip),
+                _ => true, // "public" or unknown
             }
         };
 
@@ -352,20 +281,16 @@ mod unit_tests {
 
 #[cfg(test)]
 mod http_tests {
-    use super::harness::*;
-    use super::*;
     use axum::{
         body::Body,
         extract::State,
-        http::{header, Request, StatusCode},
+        http::{Request, StatusCode},
         middleware,
-        routing::{any, delete, get, post},
+        routing::{get, post},
         Router,
     };
     use serde_json::{json, Value};
-    use std::collections::HashMap;
     use std::sync::Arc;
-    use std::time::Instant;
     use tower::ServiceExt;
 
     /// Minimal AppState for HTTP tests (no Docker, no WG container).
@@ -378,7 +303,6 @@ mod http_tests {
         wg_endpoint: String,
         port: u16,
         api_token: String,
-        data_dir: PathBuf,
         peers: Arc<tokio::sync::RwLock<Vec<Value>>>,
     }
 
@@ -470,7 +394,6 @@ mod http_tests {
     }
 
     fn make_test_state(name: &str, port: u16) -> TestAppState {
-        let dir = TempDir::new().unwrap();
         TestAppState {
             node_id: uuid::Uuid::new_v4().to_string(),
             name: name.to_string(),
@@ -479,7 +402,6 @@ mod http_tests {
             wg_endpoint: format!("127.0.0.1:{}", port + 10000),
             port,
             api_token: format!("token-{}", name),
-            data_dir: dir.into_path(),
             peers: Arc::new(tokio::sync::RwLock::new(vec![])),
         }
     }
@@ -487,7 +409,7 @@ mod http_tests {
     #[tokio::test]
     async fn test_get_info() {
         let state = make_test_state("alice", 7000);
-        let app = build_test_router(state.clone());
+        let app = build_test_router(state);
 
         let resp = app
             .oneshot(
@@ -512,7 +434,7 @@ mod http_tests {
     #[tokio::test]
     async fn test_bearer_auth_required_for_mutations() {
         let state = make_test_state("bob", 7001);
-        let app = build_test_router(state.clone());
+        let app = build_test_router(state);
 
         // POST without auth should fail
         let resp = app
@@ -663,7 +585,6 @@ mod http_tests {
         let bob = make_test_state("bob", 7011);
 
         let alice_app = build_test_router(alice.clone());
-        let bob_app = build_test_router(bob.clone());
 
         // 1. Alice generates an invite (requires auth)
         let resp = alice_app
