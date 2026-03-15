@@ -33,7 +33,33 @@ pub async fn install_capability(
     State(state): State<AppState>,
     Json(req): Json<InstallRequest>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
+    // S8: Rate limiting
+    if !state.install_rate_limiter.check("install") {
+        return Err(AppError::BadRequest("rate limit exceeded — try again later".to_string()));
+    }
+
     info!("Installing capability from image: {}", req.image);
+
+    // S9: Image allowlist check
+    let allowed_file = state.config.data_dir.join("allowed_images.json");
+    if allowed_file.exists() {
+        let text = std::fs::read_to_string(&allowed_file)
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+        let allowed: Vec<String> = serde_json::from_str(&text).unwrap_or_default();
+        if !allowed.is_empty() && !allowed.iter().any(|pattern| {
+            if pattern.contains('*') {
+                // Simple glob: "registry/*" matches "registry/anything"
+                let prefix = pattern.trim_end_matches('*');
+                req.image.starts_with(prefix)
+            } else {
+                req.image == *pattern
+            }
+        }) {
+            return Err(AppError::Forbidden(format!(
+                "image '{}' not in allowed list", req.image
+            )));
+        }
+    }
 
     // 1. Pull the image
     docker::pull_image(&req.image)

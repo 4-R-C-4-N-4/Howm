@@ -34,7 +34,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Init WireGuard — manages howm-wg Docker container
     let wg_config = wireguard::WgConfig {
-        enabled: config.wg_enabled,
+        enabled: config.wg_enabled(),
         port: config.wg_port,
         endpoint: config.wg_endpoint.clone(),
         address: config.wg_address.clone(),
@@ -63,7 +63,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Generate or load API bearer token (S2)
     let api_token = api::auth_layer::load_or_create_token(&config.data_dir)?;
-    info!("API token: {}", api_token);
+    info!("API bearer token: {}", api_token);
 
     // Build app state
     let state = state::AppState::new(identity.clone(), peers, capabilities, config.clone(), api_token);
@@ -74,8 +74,13 @@ async fn main() -> anyhow::Result<()> {
         *wg_id = wg_state.container_id.clone();
     }
 
-    // Build Axum routers
-    let local_router = api::build_local_router(state.clone());
+    // Build Axum router
+    // Single listener on 0.0.0.0 with bearer auth on mutations.
+    // complete-invite must be reachable before the WG tunnel exists,
+    // so we can't use a WG-only peer listener for that.
+    // WG tunnel IS the auth for ongoing peer traffic; bearer token
+    // protects the local management mutations from the LAN.
+    let router = api::build_router(state.clone());
 
     // Background: discovery loop
     let discovery_state = state.clone();
@@ -99,39 +104,13 @@ async fn main() -> anyhow::Result<()> {
         std::process::exit(0);
     });
 
-    // Start local management listener (127.0.0.1 only)
-    let local_addr: SocketAddr = format!("127.0.0.1:{}", config.port).parse()?;
-    info!("Starting local management API on {}", local_addr);
-    let local_listener = tokio::net::TcpListener::bind(local_addr).await?;
-
-    // Start peer listener on WG address (if available)
-    if let Some(ref wg_addr) = identity.wg_address {
-        let peer_router = api::build_peer_router(state.clone());
-        let peer_addr: SocketAddr = format!("{}:{}", wg_addr, config.port).parse()?;
-        info!("Starting peer API on {}", peer_addr);
-        tokio::spawn(async move {
-            match tokio::net::TcpListener::bind(peer_addr).await {
-                Ok(listener) => {
-                    if let Err(e) = axum::serve(
-                        listener,
-                        peer_router.into_make_service_with_connect_info::<SocketAddr>(),
-                    ).await {
-                        tracing::error!("Peer listener error: {}", e);
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "Could not bind peer listener on {} — WG interface may not be ready: {}",
-                        peer_addr, e
-                    );
-                }
-            }
-        });
-    }
-
+    // Start HTTP server
+    let addr: SocketAddr = format!("0.0.0.0:{}", config.port).parse()?;
+    info!("Starting Howm daemon on {}", addr);
+    let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(
-        local_listener,
-        local_router.into_make_service_with_connect_info::<SocketAddr>(),
+        listener,
+        router.into_make_service_with_connect_info::<SocketAddr>(),
     ).await?;
 
     Ok(())

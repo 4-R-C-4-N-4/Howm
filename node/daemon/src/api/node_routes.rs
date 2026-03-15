@@ -81,6 +81,7 @@ pub async fn create_invite(
         &state.config.data_dir,
         &state.identity,
         endpoint_override.or(state.identity.wg_endpoint.clone()),
+        state.config.port,
         state.config.invite_ttl_s,
     )
     .map_err(|e| AppError::Internal(e.to_string()))?;
@@ -133,21 +134,27 @@ pub async fn redeem_invite(
         .await
         .map_err(|e| AppError::Internal(format!("failed to add WG peer: {}", e)))?;
 
-    // Call their node to complete the invite (mutual peer add)
+    // Call their daemon to complete the invite (mutual peer add)
+    // The endpoint in the invite is the WG endpoint (UDP), but we need the
+    // daemon HTTP port. Extract the host from the WG endpoint and use their
+    // daemon port from the invite.
+    let their_host = decoded.their_endpoint
+        .rsplit_once(':')
+        .map(|(h, _)| h)
+        .unwrap_or(&decoded.their_endpoint);
+
     let our_pubkey = state.identity.wg_pubkey.as_deref().unwrap_or("");
     let our_endpoint = state.identity.wg_endpoint.as_deref().unwrap_or("");
-    let _our_wg_address = state.identity.wg_address.as_deref().unwrap_or("");
+    let our_wg_address = state.identity.wg_address.as_deref().unwrap_or("");
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_millis(state.config.peer_timeout_ms))
         .build()
         .map_err(|e| AppError::Internal(e.to_string()))?;
 
-    // Complete invite is called on their public endpoint (not WG tunnel, since tunnel isn't up yet)
     let complete_url = format!(
         "http://{}:{}/node/complete-invite",
-        decoded.their_endpoint.split(':').next().unwrap_or(""),
-        state.config.port
+        their_host, decoded.their_daemon_port
     );
 
     let complete_resp = client
@@ -156,7 +163,8 @@ pub async fn redeem_invite(
             "psk": decoded.psk,
             "my_pubkey": our_pubkey,
             "my_endpoint": our_endpoint,
-            "my_wg_address": decoded.my_assigned_ip,
+            "my_wg_address": our_wg_address,
+            "my_daemon_port": state.config.port,
         }))
         .send()
         .await
@@ -169,7 +177,7 @@ pub async fn redeem_invite(
     // Get peer info over the WG tunnel to confirm and get their node_id/name
     let peer_info_url = format!(
         "http://{}:{}/node/info",
-        decoded.their_wg_address, state.config.port
+        decoded.their_wg_address, decoded.their_daemon_port
     );
 
     // Give WG a moment to establish handshake
@@ -179,7 +187,6 @@ pub async fn redeem_invite(
         .get(&peer_info_url)
         .send()
         .await
-        .and_then(|r| Ok(r))
         .ok();
 
     let (peer_node_id, peer_name) = if let Some(resp) = peer_info {
@@ -202,9 +209,8 @@ pub async fn redeem_invite(
         wg_pubkey: decoded.their_pubkey.clone(),
         wg_address: decoded.their_wg_address.clone(),
         wg_endpoint: decoded.their_endpoint.clone(),
-        port: state.config.port,
+        port: decoded.their_daemon_port,
         last_seen: now,
-        address: None,
     };
 
     {
@@ -230,6 +236,7 @@ pub struct CompleteInviteRequest {
     pub my_pubkey: String,
     pub my_endpoint: String,
     pub my_wg_address: String,
+    pub my_daemon_port: Option<u16>,
 }
 
 pub async fn complete_invite(
@@ -277,9 +284,8 @@ pub async fn complete_invite(
         wg_pubkey: req.my_pubkey.clone(),
         wg_address: invite.assigned_ip.clone(),
         wg_endpoint: req.my_endpoint.clone(),
-        port: state.config.port,
+        port: req.my_daemon_port.unwrap_or(state.config.port),
         last_seen: now,
-        address: None,
     };
 
     {

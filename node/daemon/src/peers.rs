@@ -10,10 +10,6 @@ pub struct Peer {
     pub wg_endpoint: String,      // public addr:port
     pub port: u16,                // daemon API port (on their WG address)
     pub last_seen: u64,
-
-    // Legacy field — ignored on load, not serialized
-    #[serde(default, skip_serializing)]
-    pub address: Option<String>,
 }
 
 pub fn load(data_dir: &Path) -> anyhow::Result<Vec<Peer>> {

@@ -14,12 +14,6 @@ pub struct NodeIdentity {
     pub wg_address: Option<String>,   // 10.47.x.y
     #[serde(default)]
     pub wg_endpoint: Option<String>,  // public addr:port for peers to reach us
-
-    // Legacy fields — ignored, kept for migration compatibility
-    #[serde(default, skip_serializing)]
-    pub tailnet_ip: Option<String>,
-    #[serde(default, skip_serializing)]
-    pub tailnet_name: Option<String>,
 }
 
 pub fn load_or_create(data_dir: &Path, name: Option<String>) -> anyhow::Result<NodeIdentity> {
@@ -42,8 +36,6 @@ pub fn load_or_create(data_dir: &Path, name: Option<String>) -> anyhow::Result<N
         wg_pubkey: None,
         wg_address: None,
         wg_endpoint: None,
-        tailnet_ip: None,
-        tailnet_name: None,
     };
     write_identity(data_dir, &identity)?;
     Ok(identity)

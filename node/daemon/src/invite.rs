@@ -13,25 +13,29 @@ pub struct PendingInvite {
     pub our_pubkey: String,        // our WG public key
     pub our_endpoint: String,      // our public endpoint
     pub our_wg_address: String,    // our WG address
+    pub our_daemon_port: u16,      // our daemon API port
     pub expires_at: u64,
 }
 
 /// Decoded invite fields (from the invite code).
 pub struct DecodedInvite {
     pub their_pubkey: String,
-    pub their_endpoint: String,
+    pub their_endpoint: String,     // WG endpoint (public addr:port)
     pub their_wg_address: String,
     pub psk: String,
     pub my_assigned_ip: String,
+    pub their_daemon_port: u16,     // peer's daemon API port
     pub expires_at: u64,
 }
 
 /// Generate a new invite code.
-/// Format: howm://invite/<base64(our_pubkey:our_endpoint:our_wg_addr:psk:assigned_ip:expiry)>
+/// Delimiter is `|` (not `:`) because endpoints contain colons.
+/// Format: howm://invite/<base64(pubkey|endpoint|wg_addr|psk|assigned_ip|daemon_port|expiry)>
 pub fn generate(
     data_dir: &Path,
     identity: &NodeIdentity,
     endpoint_override: Option<String>,
+    daemon_port: u16,
     ttl_s: u64,
 ) -> anyhow::Result<String> {
     let our_pubkey = identity.wg_pubkey.as_deref()
@@ -52,6 +56,7 @@ pub fn generate(
         our_pubkey: our_pubkey.to_string(),
         our_endpoint: our_endpoint.clone(),
         our_wg_address: our_wg_address.to_string(),
+        our_daemon_port: daemon_port,
         expires_at,
     };
 
@@ -60,10 +65,10 @@ pub fn generate(
     invites.push(invite);
     save_pending(data_dir, &invites)?;
 
-    // Encode: our_pubkey:our_endpoint:our_wg_addr:psk:assigned_ip:expiry
+    // Encode with | delimiter (endpoints contain colons)
     let payload = format!(
-        "{}:{}:{}:{}:{}:{}",
-        our_pubkey, our_endpoint, our_wg_address, psk, assigned_ip, expires_at
+        "{}|{}|{}|{}|{}|{}|{}",
+        our_pubkey, our_endpoint, our_wg_address, psk, assigned_ip, daemon_port, expires_at
     );
     let encoded = URL_SAFE_NO_PAD.encode(payload.as_bytes());
     Ok(format!("howm://invite/{}", encoded))
@@ -76,9 +81,9 @@ pub fn decode(invite_code: &str) -> anyhow::Result<DecodedInvite> {
         .ok_or_else(|| anyhow::anyhow!("invalid invite code format"))?;
     let bytes = URL_SAFE_NO_PAD.decode(stripped)?;
     let payload = String::from_utf8(bytes)?;
-    let parts: Vec<&str> = payload.splitn(6, ':').collect();
-    if parts.len() != 6 {
-        return Err(anyhow::anyhow!("invalid invite payload — expected 6 fields, got {}", parts.len()));
+    let parts: Vec<&str> = payload.splitn(7, '|').collect();
+    if parts.len() != 7 {
+        return Err(anyhow::anyhow!("invalid invite payload — expected 7 fields, got {}", parts.len()));
     }
     Ok(DecodedInvite {
         their_pubkey: parts[0].to_string(),
@@ -86,7 +91,8 @@ pub fn decode(invite_code: &str) -> anyhow::Result<DecodedInvite> {
         their_wg_address: parts[2].to_string(),
         psk: parts[3].to_string(),
         my_assigned_ip: parts[4].to_string(),
-        expires_at: parts[5].parse()?,
+        their_daemon_port: parts[5].parse()?,
+        expires_at: parts[6].parse()?,
     })
 }
 

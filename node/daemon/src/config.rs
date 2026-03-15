@@ -20,8 +20,9 @@ pub struct Config {
     pub name: Option<String>,
 
     // WireGuard networking
-    #[arg(long, default_value = "true", env = "HOWM_WG_ENABLED")]
-    pub wg_enabled: bool,
+    /// Disable WireGuard (LAN-only mode)
+    #[arg(long, default_value = "false", env = "HOWM_NO_WG")]
+    pub no_wg: bool,
 
     #[arg(long, default_value = "51820", env = "HOWM_WG_PORT")]
     pub wg_port: u16,
@@ -37,4 +38,11 @@ pub struct Config {
 
     #[arg(long, default_value = "false")]
     pub dev: bool,
+}
+
+impl Config {
+    /// WireGuard is enabled unless --no-wg is passed.
+    pub fn wg_enabled(&self) -> bool {
+        !self.no_wg
+    }
 }
