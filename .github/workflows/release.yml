@@ -121,9 +121,11 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract version from tag
+      - name: Extract version and lowercase owner
         id: version
-        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "VERSION=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+          echo "REPO_LC=${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
 
       - name: Build & push social-feed
         uses: docker/build-push-action@v6
@@ -131,8 +133,8 @@ jobs:
           context: capabilities/social-feed
           push: true
           tags: |
-            ghcr.io/${{ github.repository }}/cap-social-feed:${{ steps.version.outputs.VERSION }}
-            ghcr.io/${{ github.repository }}/cap-social-feed:latest
+            ghcr.io/${{ steps.version.outputs.REPO_LC }}/cap-social-feed:${{ steps.version.outputs.VERSION }}
+            ghcr.io/${{ steps.version.outputs.REPO_LC }}/cap-social-feed:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
