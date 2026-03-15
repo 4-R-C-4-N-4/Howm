@@ -1,0 +1,14 @@
+version: '3.8'
+# Capability containers managed by the Howm daemon
+# The daemon uses bollard to start/stop containers directly.
+# This file is for manual orchestration reference only.
+services:
+  social-feed:
+    image: cap-social-feed:0.1
+    ports:
+      - "7001:7001"
+    volumes:
+      - ./data/social-feed:/data
+    environment:
+      PORT: "7001"
+      DATA_DIR: "/data"

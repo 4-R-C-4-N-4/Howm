@@ -1,0 +1,26 @@
+name: social.feed
+version: 0.1.0
+description: Distributed social feed
+
+api:
+  base_path: /cap/social
+  endpoints:
+    - name: get_feed
+      method: GET
+      path: /feed
+    - name: create_post
+      method: POST
+      path: /post
+    - name: health
+      method: GET
+      path: /health
+
+discovery:
+  advertise: true
+
+permissions:
+  visibility: friends
+
+resources:
+  cpu: low
+  memory: low
