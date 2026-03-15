@@ -151,7 +151,11 @@ async fn start_container(
     let conf_path = wg_dir.join("wg0.conf");
     std::fs::write(&conf_path, &wg_conf)?;
 
-    let wg_dir_str = wg_dir.to_string_lossy().to_string();
+    let wg_dir_str = wg_dir
+        .canonicalize()
+        .unwrap_or_else(|_| wg_dir.clone())
+        .to_string_lossy()
+        .to_string();
 
     let is_linux = cfg!(target_os = "linux");
 

@@ -2,6 +2,7 @@
   "node_id": "a4fe17c5-781f-4c78-8fe7-da2ac690290e",
   "name": "archlinux",
   "created": 1773587959,
-  "tailnet_ip": null,
-  "tailnet_name": null
+  "wg_pubkey": "8rTmKulPn5rRRmsanw0WouwghsNzrbMEk9d8HGNqlkw=",
+  "wg_address": "10.47.0.1",
+  "wg_endpoint": null
 }

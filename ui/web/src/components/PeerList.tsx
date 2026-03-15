@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { getPeers, addPeer, removePeer, generateInvite, redeemInvite } from '../api/nodes';
+import { getPeers, removePeer, generateInvite, redeemInvite } from '../api/nodes';
 import type { Peer } from '../api/nodes';
 
 export function PeerList() {
@@ -11,22 +11,9 @@ export function PeerList() {
     refetchInterval: 30000,
   });
 
-  const [showAddForm, setShowAddForm] = useState(false);
   const [showRedeemForm, setShowRedeemForm] = useState(false);
-  const [address, setAddress] = useState('');
-  const [port, setPort] = useState('7000');
-  const [authKey, setAuthKey] = useState('');
   const [inviteCode, setInviteCode] = useState('');
   const [generatedInvite, setGeneratedInvite] = useState<string | null>(null);
-
-  const addMutation = useMutation({
-    mutationFn: () => addPeer(address, parseInt(port), authKey || undefined),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['peers'] });
-      setShowAddForm(false);
-      setAddress(''); setPort('7000'); setAuthKey('');
-    },
-  });
 
   const removeMutation = useMutation({
     mutationFn: removePeer,
@@ -47,26 +34,38 @@ export function PeerList() {
     },
   });
 
+  const formatLastSeen = (ts: number) => {
+    if (!ts) return 'never';
+    const delta = Math.floor(Date.now() / 1000 - ts);
+    if (delta < 60) return 'just now';
+    if (delta < 3600) return `${Math.floor(delta / 60)}m ago`;
+    if (delta < 86400) return `${Math.floor(delta / 3600)}h ago`;
+    return `${Math.floor(delta / 86400)}d ago`;
+  };
+
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
         <h3 style={{ margin: 0 }}>Peers ({peers.length})</h3>
         <div style={{ display: 'flex', gap: '8px' }}>
           <button onClick={() => inviteMutation.mutate()} style={btnStyle}>
-            Generate Invite
+            {inviteMutation.isPending ? 'Generating...' : 'Generate Invite'}
           </button>
           <button onClick={() => setShowRedeemForm(!showRedeemForm)} style={btnStyle}>
             Redeem Invite
           </button>
-          <button onClick={() => setShowAddForm(!showAddForm)} style={btnStyle}>
-            Add Manually
-          </button>
         </div>
       </div>
 
+      {inviteMutation.isError && (
+        <div style={{ color: '#ef4444', marginBottom: '8px', fontSize: '0.9em' }}>
+          Failed to generate invite. Is the API token set?
+        </div>
+      )}
+
       {generatedInvite && (
         <div style={{ background: '#f0f9ff', border: '1px solid #0ea5e9', borderRadius: '6px', padding: '12px', marginBottom: '12px' }}>
-          <strong>Invite Link:</strong>
+          <strong>Invite Code:</strong>
           <div style={{ wordBreak: 'break-all', marginTop: '4px', fontFamily: 'monospace', fontSize: '0.85em' }}>
             {generatedInvite}
           </div>
@@ -85,47 +84,38 @@ export function PeerList() {
             placeholder="howm://invite/..."
             value={inviteCode}
             onChange={e => setInviteCode(e.target.value)}
-            style={inputStyle}
+            style={{ ...inputStyle, flex: 1 }}
           />
           <button onClick={() => redeemMutation.mutate()} disabled={!inviteCode.trim()} style={btnStyle}>
             {redeemMutation.isPending ? 'Redeeming...' : 'Redeem'}
           </button>
-          {redeemMutation.isError && <span style={{ color: 'red' }}> Failed</span>}
-        </div>
-      )}
-
-      {showAddForm && (
-        <div style={formStyle}>
-          <input placeholder="Address" value={address} onChange={e => setAddress(e.target.value)} style={inputStyle} />
-          <input placeholder="Port" value={port} onChange={e => setPort(e.target.value)} style={{ ...inputStyle, width: '80px' }} />
-          <input placeholder="Auth key (optional)" value={authKey} onChange={e => setAuthKey(e.target.value)} style={inputStyle} />
-          <button onClick={() => addMutation.mutate()} disabled={!address.trim()} style={btnStyle}>
-            {addMutation.isPending ? 'Adding...' : 'Add Peer'}
-          </button>
-          {addMutation.isError && <span style={{ color: 'red' }}> Failed</span>}
+          {redeemMutation.isError && <span style={{ color: 'red', fontSize: '0.9em' }}> Failed — check code and token</span>}
         </div>
       )}
 
       {isLoading ? (
         <p>Loading peers...</p>
       ) : peers.length === 0 ? (
-        <p style={{ color: '#888' }}>No peers yet. Add one above.</p>
+        <p style={{ color: '#888' }}>No peers yet. Generate an invite or redeem one from a friend.</p>
       ) : (
         <ul style={{ listStyle: 'none', padding: 0 }}>
           {peers.map((peer: Peer) => (
             <li key={peer.node_id} style={{
               display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-              padding: '8px 12px', border: '1px solid #eee', borderRadius: '6px', marginBottom: '6px',
+              padding: '10px 12px', border: '1px solid #eee', borderRadius: '6px', marginBottom: '6px',
             }}>
               <div>
                 <strong>{peer.name}</strong>
-                <span style={{ color: '#888', marginLeft: '8px', fontSize: '0.85em' }}>
-                  {peer.address}:{peer.port}
+                <span style={{ color: '#888', marginLeft: '10px', fontSize: '0.85em', fontFamily: 'monospace' }}>
+                  {peer.wg_address}
+                </span>
+                <span style={{ color: '#aaa', marginLeft: '8px', fontSize: '0.8em' }}>
+                  {formatLastSeen(peer.last_seen)}
                 </span>
               </div>
               <button
                 onClick={() => removeMutation.mutate(peer.node_id)}
-                style={{ background: '#fee2e2', border: 'none', borderRadius: '4px', padding: '4px 10px', cursor: 'pointer' }}
+                style={{ background: '#fee2e2', border: 'none', borderRadius: '4px', padding: '4px 10px', cursor: 'pointer', fontSize: '0.85em' }}
               >
                 Remove
               </button>

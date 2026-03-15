@@ -1,43 +1,73 @@
 import { useQuery } from '@tanstack/react-query';
-import { getNodeInfo, getTailnet, getAuthKeys, addAuthKey, removeAuthKey } from '../api/nodes';
+import { getNodeInfo, getWgStatus } from '../api/nodes';
+import { getApiToken, setApiToken, clearApiToken } from '../api/client';
 import { PeerList } from '../components/PeerList';
 import { CapabilityList } from '../components/CapabilityList';
 import { useState } from 'react';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
 
 export function Dashboard() {
   const { data: nodeInfo, isLoading: nodeLoading } = useQuery({
     queryKey: ['node-info'],
     queryFn: getNodeInfo,
   });
-  const { data: tailnet } = useQuery({
-    queryKey: ['tailnet'],
-    queryFn: getTailnet,
-  });
-  const { data: authKeys = [] } = useQuery({
-    queryKey: ['auth-keys'],
-    queryFn: getAuthKeys,
+  const { data: wgStatus } = useQuery({
+    queryKey: ['wg-status'],
+    queryFn: getWgStatus,
+    refetchInterval: 15000,
   });
 
-  const queryClient = useQueryClient();
-  const [newKey, setNewKey] = useState('');
+  const [tokenInput, setTokenInput] = useState('');
+  const hasToken = !!getApiToken();
 
-  const addKeyMutation = useMutation({
-    mutationFn: addAuthKey,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['auth-keys'] });
-      setNewKey('');
-    },
-  });
-
-  const removeKeyMutation = useMutation({
-    mutationFn: removeAuthKey,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['auth-keys'] }),
-  });
+  const handleSetToken = () => {
+    if (tokenInput.trim()) {
+      setApiToken(tokenInput.trim());
+      setTokenInput('');
+      window.location.reload();
+    }
+  };
 
   return (
     <div style={{ maxWidth: '800px', margin: '0 auto', padding: '24px' }}>
       <h1 style={{ marginBottom: '24px' }}>Dashboard</h1>
+
+      {/* API Token */}
+      <div style={cardStyle}>
+        <h2 style={{ marginTop: 0, marginBottom: '12px' }}>API Token</h2>
+        {hasToken ? (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <span style={{ color: '#22c55e', fontWeight: 600 }}>● Connected</span>
+            <span style={{ color: '#888', fontSize: '0.85em' }}>Token is set</span>
+            <button onClick={() => { clearApiToken(); window.location.reload(); }}
+              style={{ marginLeft: 'auto', padding: '4px 12px', background: '#fee2e2', border: 'none', borderRadius: '6px', cursor: 'pointer' }}>
+              Clear Token
+            </button>
+          </div>
+        ) : (
+          <div>
+            <p style={{ color: '#f59e0b', marginTop: 0 }}>
+              ⚠ No API token set — mutations (invites, peer removal, posting) will be rejected.
+            </p>
+            <p style={{ color: '#888', fontSize: '0.85em', margin: '8px 0' }}>
+              Paste the token printed by the daemon on first run.
+            </p>
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <input
+                type="password"
+                placeholder="Paste API token..."
+                value={tokenInput}
+                onChange={e => setTokenInput(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && handleSetToken()}
+                style={{ padding: '6px 10px', border: '1px solid #ddd', borderRadius: '6px', fontSize: '0.9em', flex: 1, fontFamily: 'monospace' }}
+              />
+              <button onClick={handleSetToken} disabled={!tokenInput.trim()}
+                style={{ padding: '6px 14px', background: '#4f46e5', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer' }}>
+                Set Token
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
 
       {/* Node Info Card */}
       <div style={cardStyle}>
@@ -48,63 +78,60 @@ export function Dashboard() {
             <dd style={ddStyle}>{nodeInfo.node_id}</dd>
             <dt style={dtStyle}>Name</dt>
             <dd style={ddStyle}>{nodeInfo.name}</dd>
-            <dt style={dtStyle}>Tailnet IP</dt>
-            <dd style={ddStyle}>{tailnet?.tailnet_ip ?? 'Not connected'}</dd>
-            <dt style={dtStyle}>Tailnet Status</dt>
+          </dl>
+        )}
+      </div>
+
+      {/* WireGuard Status Card */}
+      <div style={cardStyle}>
+        <h2 style={{ marginTop: 0, marginBottom: '16px' }}>WireGuard</h2>
+        {wgStatus ? (
+          <dl style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '6px 16px', margin: 0 }}>
+            <dt style={dtStyle}>Status</dt>
             <dd style={ddStyle}>
-              <span style={{
-                color: tailnet?.status === 'connected' ? '#22c55e' : '#f59e0b',
-              }}>
-                {tailnet?.status ?? 'unknown'}
+              <span style={{ color: wgStatus.status === 'connected' ? '#22c55e' : '#f59e0b' }}>
+                {wgStatus.status}
               </span>
             </dd>
-            {tailnet?.coordination_url && (
+            {wgStatus.public_key && (
               <>
-                <dt style={dtStyle}>Coordination URL</dt>
-                <dd style={ddStyle}>{tailnet.coordination_url}</dd>
+                <dt style={dtStyle}>Public Key</dt>
+                <dd style={{ ...ddStyle, wordBreak: 'break-all' }}>{wgStatus.public_key}</dd>
+              </>
+            )}
+            {wgStatus.address && (
+              <>
+                <dt style={dtStyle}>WG Address</dt>
+                <dd style={ddStyle}>{wgStatus.address}</dd>
+              </>
+            )}
+            {wgStatus.endpoint && (
+              <>
+                <dt style={dtStyle}>Endpoint</dt>
+                <dd style={ddStyle}>{wgStatus.endpoint}</dd>
+              </>
+            )}
+            {wgStatus.listen_port && (
+              <>
+                <dt style={dtStyle}>Listen Port</dt>
+                <dd style={ddStyle}>{wgStatus.listen_port}</dd>
+              </>
+            )}
+            {wgStatus.active_tunnels != null && (
+              <>
+                <dt style={dtStyle}>Active Tunnels</dt>
+                <dd style={ddStyle}>{wgStatus.active_tunnels}</dd>
               </>
             )}
           </dl>
+        ) : (
+          <p style={{ color: '#888' }}>Loading WireGuard status...</p>
         )}
       </div>
 
       {/* Peer List */}
       <div style={cardStyle}>
         <PeerList />
-      </div>
-
-      {/* Auth Keys */}
-      <div style={cardStyle}>
-        <h3 style={{ marginTop: 0 }}>Auth Keys</h3>
-        {authKeys.length === 0 ? (
-          <p style={{ color: '#888' }}>No auth keys configured.</p>
-        ) : (
-          <ul style={{ listStyle: 'none', padding: 0 }}>
-            {authKeys.map(k => (
-              <li key={k.prefix} style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px', padding: '6px 10px', background: '#f9fafb', borderRadius: '4px' }}>
-                <code>{k.prefix}...</code>
-                <button onClick={() => removeKeyMutation.mutate(k.prefix)} style={{ background: '#fee2e2', border: 'none', borderRadius: '4px', padding: '2px 8px', cursor: 'pointer' }}>
-                  Remove
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-        <div style={{ display: 'flex', gap: '8px', marginTop: '12px' }}>
-          <input
-            placeholder="psk-..."
-            value={newKey}
-            onChange={e => setNewKey(e.target.value)}
-            style={{ padding: '6px 10px', border: '1px solid #ddd', borderRadius: '6px', fontSize: '0.9em', flex: 1 }}
-          />
-          <button
-            onClick={() => newKey.trim() && addKeyMutation.mutate(newKey.trim())}
-            disabled={!newKey.trim()}
-            style={{ padding: '6px 14px', background: '#4f46e5', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer' }}
-          >
-            Add Key
-          </button>
-        </div>
       </div>
 
       {/* Capability List */}

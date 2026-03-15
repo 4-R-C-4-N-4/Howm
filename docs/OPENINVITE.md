@@ -117,9 +117,9 @@ For now, `Public` and `Friend` peers have identical access. But the field exists
 | Install capabilities | yes | no | no |
 | Visit howm.world | yes | yes | read-only |
 | gaming.portal | yes | yes | yes |
-| See peer list | yes | limited | no |
+| See peer list | full | friends only | no |
 
-These are suggestions for future work — not enforced by this spec.
+The peer list visibility rule is enforced by this spec (see Decisions §2). The remaining rows are guidelines for future capability implementations.
 
 ---
 
@@ -271,6 +271,7 @@ Error responses:
 |------|-----|---------|-------------|
 | `--open-invite-max-peers` | `HOWM_OPEN_MAX_PEERS` | `256` | Max peers via open invite |
 | `--open-invite-rate-limit` | `HOWM_OPEN_RATE_LIMIT` | `10` | Max joins per hour |
+| `--open-invite-prune-days` | `HOWM_OPEN_PRUNE_DAYS` | `5` | Days offline before auto-pruning Public peers |
 
 ### Generating via CLI
 
@@ -306,9 +307,10 @@ curl -X POST <host-endpoint>/node/open-join \
 ## Implementation Plan
 
 ### Step 1: Trust level on peers
-- Add `TrustLevel` enum to `peers.rs`
+- Add `TrustLevel` enum to `peers.rs`: `Friend`, `Public`, `Restricted`
 - Add `trust` field to `Peer` struct (default `Friend` for existing peers)
 - Serde: deserialize missing field as `Friend` for backwards compat
+- **Filter `GET /node/peers` by caller trust level**: identify caller by their WG source IP, look up their trust level, filter out `Public` peers if caller is `Public`
 
 ### Step 2: Open invite CRUD
 - New file: `open_invite.rs`
@@ -332,20 +334,34 @@ curl -X POST <host-endpoint>/node/open-join \
 - Configure local WG peer with received PSK + host info
 - Verify connectivity
 
-### Step 5: UI integration
+### Step 5: Auto-prune stale public peers
+- New background loop (or extend existing health check loop)
+- Every hour, scan `Public` peers where `last_seen` is older than prune threshold (default 5 days)
+- Remove WG peer, reclaim IP address, delete from peers list
+- Log pruned peers at `info` level
+- Configurable via `--open-invite-prune-days`
+
+### Step 6: Feed filtering
+- Add `?trust=friend` query parameter to `GET /network/feed`
+- When set, only aggregate feed from `Friend`-level peers
+- Default (no param) returns feed from all peers
+- UI: toggle between "All" and "Friends Only" feed views
+
+### Step 7: UI integration
 - Open invite toggle in web UI settings
 - Display invite link + QR code
-- Show open-invite peer count
+- Show open-invite peer count vs max
 - Allow promoting `Public` → `Friend` or demoting to `Restricted`
+- Feed filter toggle (All / Friends Only)
 
 ---
 
-## Open Questions
+## Decisions
 
-1. **One open invite or many?** This spec allows only one active open invite at a time. Could there be value in multiple open invites with different labels/limits (e.g. one for your blog, one for a conference)? Probably not for MVP.
+1. **One open invite at a time.** Multiple invites with different labels/limits (e.g. one for your blog, one for a conference) is a good future feature but not for MVP.
 
-2. **Peer discovery via open invite peers.** If Alice connects to Bob via open invite, and Carol also connects to Bob, should Alice and Carol discover each other? Currently the discovery loop would expose them to each other through Bob's peer list. This might be undesirable — open-invite peers might not want to be visible to each other. The trust level system could gate this: `Public` peers only see `Friend` peers in the peer list.
+2. **Public peers cannot see other public peers.** This is the first concrete use case for the trust system. When `GET /node/peers` is called, the response is filtered by the caller's trust level: `Public` peers only see `Friend` peers in the list. `Friend` peers see everyone. This prevents strangers who independently joined via open invite from discovering each other through your node.
 
-3. **Auto-cleanup of stale open-invite peers.** If someone joins via open invite and then goes offline permanently, they consume a WG IP. Should there be an auto-prune for `Public` peers not seen in X days? Probably yes, with a configurable threshold.
+3. **Auto-prune stale public peers.** `Public` peers not seen in **5 days** are automatically removed (WG peer removed, IP reclaimed). Configurable via `--open-invite-prune-days` / `HOWM_OPEN_PRUNE_DAYS`. `Friend` peers are never auto-pruned.
 
-4. **Mutual peering.** In the current flow, both sides become peers of each other. With open invite, should it be asymmetric? The joiner peers with the host, but does the host automatically become a peer of the joiner? For social feed aggregation to work both ways, yes. But the joiner might not want to run a publicly reachable node. Worth considering a "follow" vs "peer" distinction in the future.
+4. **Peering is symmetric, feeds are filtered.** WireGuard connections are inherently symmetric — both sides become peers of each other. This is a feature, not a problem. To prevent feed clutter, the social feed (and future capabilities) should support filtering: **All** (every peer's posts) or **Friends Only** (just `Friend`-level peers). The network feed endpoint gains an optional `?trust=friend` query parameter.
