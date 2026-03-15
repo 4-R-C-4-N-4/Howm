@@ -8,21 +8,18 @@ pub mod node_routes;
 pub mod capability_routes;
 pub mod network_routes;
 pub mod proxy_routes;
+pub mod auth_layer;
 
-pub fn build_router(state: AppState) -> Router {
+/// Local management API (127.0.0.1, bearer token required for mutations)
+pub fn build_local_router(state: AppState) -> Router {
     Router::new()
         // Node routes
         .route("/node/info", get(node_routes::get_info))
         .route("/node/peers", get(node_routes::get_peers))
-        .route("/node/peers", post(node_routes::add_peer))
         .route("/node/peers/:node_id", delete(node_routes::remove_peer))
         .route("/node/invite", post(node_routes::create_invite))
         .route("/node/redeem-invite", post(node_routes::redeem_invite))
-        .route("/node/consume-invite", post(node_routes::consume_invite))
-        .route("/node/auth-keys", get(node_routes::list_auth_keys))
-        .route("/node/auth-keys", post(node_routes::add_auth_key))
-        .route("/node/auth-keys/:prefix", delete(node_routes::remove_auth_key))
-        .route("/node/tailnet", get(node_routes::get_tailnet))
+        .route("/node/wireguard", get(node_routes::get_wg_status))
         // Capability routes
         .route("/capabilities", get(capability_routes::list_capabilities))
         .route("/capabilities/install", post(capability_routes::install_capability))
@@ -34,6 +31,16 @@ pub fn build_router(state: AppState) -> Router {
         .route("/network/capability/:name", get(network_routes::find_capability_providers))
         .route("/network/feed", get(network_routes::network_feed))
         // Proxy
+        .route("/cap/:name/*rest", any(proxy_routes::proxy_handler))
+        .with_state(state)
+}
+
+/// Peer API (WG address only, no extra auth — WG tunnel IS the auth)
+pub fn build_peer_router(state: AppState) -> Router {
+    Router::new()
+        .route("/node/info", get(node_routes::get_info))
+        .route("/node/complete-invite", post(node_routes::complete_invite))
+        .route("/capabilities", get(capability_routes::list_capabilities))
         .route("/cap/:name/*rest", any(proxy_routes::proxy_handler))
         .with_state(state)
 }

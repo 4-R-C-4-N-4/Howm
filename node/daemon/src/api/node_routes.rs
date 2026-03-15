@@ -1,6 +1,5 @@
 use axum::{
     extract::{Path, State},
-    http::StatusCode,
     Json,
 };
 use serde::Deserialize;
@@ -9,11 +8,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::info;
 
 use crate::{
-    auth,
     error::AppError,
     invite,
     peers::{self, Peer},
     state::AppState,
+    wireguard,
 };
 
 pub async fn get_info(State(state): State<AppState>) -> Json<Value> {
@@ -21,8 +20,9 @@ pub async fn get_info(State(state): State<AppState>) -> Json<Value> {
         "node_id": state.identity.node_id,
         "name": state.identity.name,
         "created": state.identity.created,
-        "tailnet_ip": state.identity.tailnet_ip,
-        "tailnet_name": state.identity.tailnet_name,
+        "wg_pubkey": state.identity.wg_pubkey,
+        "wg_address": state.identity.wg_address,
+        "wg_endpoint": state.identity.wg_endpoint,
     }))
 }
 
@@ -31,109 +31,56 @@ pub async fn get_peers(State(state): State<AppState>) -> Json<Value> {
     Json(json!({ "peers": *peers }))
 }
 
-#[derive(Deserialize)]
-pub struct AddPeerRequest {
-    pub address: String,
-    pub port: u16,
-    pub auth_key: Option<String>,
-}
-
-pub async fn add_peer(
-    State(state): State<AppState>,
-    Json(req): Json<AddPeerRequest>,
-) -> Result<Json<Value>, AppError> {
-    // Check duplicate
-    {
-        let peers = state.peers.read().await;
-        if peers.iter().any(|p| p.address == req.address && p.port == req.port) {
-            return Err(AppError::Conflict("peer already exists".to_string()));
-        }
-    }
-
-    // Fetch peer info with optional auth key
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_millis(state.config.peer_timeout_ms))
-        .build()
-        .map_err(|e| AppError::Internal(e.to_string()))?;
-
-    let url = format!("http://{}:{}/node/info", req.address, req.port);
-    let mut request = client.get(&url);
-    if let Some(ref key) = req.auth_key {
-        request = request.header("X-Howm-Auth-Key", key);
-    }
-
-    let response = request.send().await.map_err(|e| {
-        AppError::PeerUnreachable(format!("cannot reach peer: {}", e))
-    })?;
-
-    if response.status() == StatusCode::FORBIDDEN {
-        return Err(AppError::Forbidden("auth key rejected by peer".to_string()));
-    }
-
-    let peer_info: Value = response
-        .json()
-        .await
-        .map_err(|e| AppError::PeerUnreachable(format!("bad response: {}", e)))?;
-
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-
-    let peer = Peer {
-        node_id: peer_info["node_id"]
-            .as_str()
-            .unwrap_or("unknown")
-            .to_string(),
-        address: req.address,
-        name: peer_info["name"].as_str().unwrap_or("unknown").to_string(),
-        port: req.port,
-        last_seen: now,
-    };
-
-    {
-        let mut peers = state.peers.write().await;
-        peers.push(peer.clone());
-        peers::save(&state.config.data_dir, &peers)
-            .map_err(|e| AppError::Internal(e.to_string()))?;
-    }
-
-    info!("Added peer: {} at {}:{}", peer.name, peer.address, peer.port);
-    Ok(Json(json!({ "peer": peer })))
-}
-
 pub async fn remove_peer(
     State(state): State<AppState>,
     Path(node_id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
-    let mut peers = state.peers.write().await;
-    let len_before = peers.len();
-    peers.retain(|p| p.node_id != node_id);
-    if peers.len() == len_before {
-        return Err(AppError::NotFound(format!("peer {} not found", node_id)));
+    let peer_pubkey: Option<String>;
+    {
+        let mut peers = state.peers.write().await;
+        let peer = peers.iter().find(|p| p.node_id == node_id).cloned();
+        peer_pubkey = peer.as_ref().map(|p| p.wg_pubkey.clone());
+
+        let len_before = peers.len();
+        peers.retain(|p| p.node_id != node_id);
+        if peers.len() == len_before {
+            return Err(AppError::NotFound(format!("peer {} not found", node_id)));
+        }
+        peers::save(&state.config.data_dir, &peers)
+            .map_err(|e| AppError::Internal(e.to_string()))?;
     }
-    peers::save(&state.config.data_dir, &peers)
-        .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    // Remove WG peer
+    if let Some(pubkey) = peer_pubkey {
+        let wg_id = state.wg_container_id.read().await;
+        if let Some(ref container_id) = *wg_id {
+            let _ = wireguard::remove_peer(
+                container_id,
+                &state.config.data_dir,
+                &pubkey,
+                &node_id,
+            ).await;
+        }
+    }
+
     Ok(Json(json!({ "status": "removed" })))
 }
 
 #[derive(Deserialize)]
 pub struct CreateInviteRequest {
-    pub address: Option<String>,
+    pub endpoint: Option<String>,
 }
 
 pub async fn create_invite(
     State(state): State<AppState>,
     body: Option<Json<CreateInviteRequest>>,
 ) -> Result<Json<Value>, AppError> {
-    let address = body
-        .and_then(|b| b.0.address)
-        .unwrap_or_else(|| "127.0.0.1".to_string());
+    let endpoint_override = body.and_then(|b| b.0.endpoint);
 
     let invite_code = invite::generate(
         &state.config.data_dir,
-        &address,
-        state.config.port,
+        &state.identity,
+        endpoint_override.or(state.identity.wg_endpoint.clone()),
         state.config.invite_ttl_s,
     )
     .map_err(|e| AppError::Internal(e.to_string()))?;
@@ -150,63 +97,119 @@ pub async fn redeem_invite(
     State(state): State<AppState>,
     Json(req): Json<RedeemInviteRequest>,
 ) -> Result<Json<Value>, AppError> {
-    let (address, port, token, _expires_at) = invite::decode(&req.invite_code)
+    // S8: Rate limiting
+    if !state.invite_rate_limiter.check("redeem") {
+        return Err(AppError::BadRequest("rate limit exceeded — try again later".to_string()));
+    }
+
+    let decoded = invite::decode(&req.invite_code)
         .map_err(|e| AppError::BadRequest(format!("invalid invite: {}", e)))?;
 
-    // Connect to the inviting node and validate the token
+    // Check expiry
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    if decoded.expires_at < now {
+        return Err(AppError::Gone("invite expired".to_string()));
+    }
+
+    // Add their WG peer on our side
+    let wg_id = state.wg_container_id.read().await;
+    let container_id = wg_id.as_deref().ok_or_else(|| {
+        AppError::Internal("WireGuard not initialized".to_string())
+    })?;
+
+    let wg_peer = wireguard::WgPeerConfig {
+        pubkey: decoded.their_pubkey.clone(),
+        endpoint: decoded.their_endpoint.clone(),
+        psk: Some(decoded.psk.clone()),
+        allowed_ip: decoded.their_wg_address.clone(),
+        name: "pending".to_string(),
+        node_id: "pending".to_string(),
+    };
+
+    wireguard::add_peer(container_id, &state.config.data_dir, &wg_peer)
+        .await
+        .map_err(|e| AppError::Internal(format!("failed to add WG peer: {}", e)))?;
+
+    // Call their node to complete the invite (mutual peer add)
+    let our_pubkey = state.identity.wg_pubkey.as_deref().unwrap_or("");
+    let our_endpoint = state.identity.wg_endpoint.as_deref().unwrap_or("");
+    let _our_wg_address = state.identity.wg_address.as_deref().unwrap_or("");
+
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_millis(state.config.peer_timeout_ms))
         .build()
         .map_err(|e| AppError::Internal(e.to_string()))?;
 
-    // Fetch their info
-    let url = format!("http://{}:{}/node/info", address, port);
-    let response = client
-        .get(&url)
+    // Complete invite is called on their public endpoint (not WG tunnel, since tunnel isn't up yet)
+    let complete_url = format!(
+        "http://{}:{}/node/complete-invite",
+        decoded.their_endpoint.split(':').next().unwrap_or(""),
+        state.config.port
+    );
+
+    let complete_resp = client
+        .post(&complete_url)
+        .json(&json!({
+            "psk": decoded.psk,
+            "my_pubkey": our_pubkey,
+            "my_endpoint": our_endpoint,
+            "my_wg_address": decoded.my_assigned_ip,
+        }))
         .send()
         .await
-        .map_err(|e| AppError::PeerUnreachable(format!("cannot reach inviting node: {}", e)))?;
+        .map_err(|e| AppError::PeerUnreachable(format!("cannot complete invite: {}", e)))?;
 
-    let peer_info: serde_json::Value = response
-        .json()
-        .await
-        .map_err(|e| AppError::Internal(format!("bad response: {}", e)))?;
+    if !complete_resp.status().is_success() {
+        return Err(AppError::Gone("invite completion failed on remote side".to_string()));
+    }
 
-    // Validate and consume the invite on the remote side
-    let consume_url = format!("http://{}:{}/node/consume-invite", address, port);
-    let consume_resp = client
-        .post(&consume_url)
-        .json(&json!({ "token": token }))
+    // Get peer info over the WG tunnel to confirm and get their node_id/name
+    let peer_info_url = format!(
+        "http://{}:{}/node/info",
+        decoded.their_wg_address, state.config.port
+    );
+
+    // Give WG a moment to establish handshake
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+    let peer_info = client
+        .get(&peer_info_url)
         .send()
         .await
-        .map_err(|e| AppError::PeerUnreachable(format!("cannot consume invite: {}", e)))?;
+        .and_then(|r| Ok(r))
+        .ok();
 
-    if consume_resp.status() == StatusCode::GONE {
-        return Err(AppError::Gone("invite expired or already used".to_string()));
-    }
-    if !consume_resp.status().is_success() {
-        return Err(AppError::Gone("invite invalid".to_string()));
-    }
+    let (peer_node_id, peer_name) = if let Some(resp) = peer_info {
+        if let Ok(info) = resp.json::<Value>().await {
+            (
+                info["node_id"].as_str().unwrap_or("unknown").to_string(),
+                info["name"].as_str().unwrap_or("unknown").to_string(),
+            )
+        } else {
+            ("unknown".to_string(), "unknown".to_string())
+        }
+    } else {
+        ("unknown".to_string(), "unknown".to_string())
+    };
 
-    let now = SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-
+    // Add to peers list
     let peer = Peer {
-        node_id: peer_info["node_id"]
-            .as_str()
-            .unwrap_or("unknown")
-            .to_string(),
-        address: address.clone(),
-        name: peer_info["name"].as_str().unwrap_or("unknown").to_string(),
-        port,
+        node_id: peer_node_id.clone(),
+        name: peer_name.clone(),
+        wg_pubkey: decoded.their_pubkey.clone(),
+        wg_address: decoded.their_wg_address.clone(),
+        wg_endpoint: decoded.their_endpoint.clone(),
+        port: state.config.port,
         last_seen: now,
+        address: None,
     };
 
     {
         let mut peers = state.peers.write().await;
-        if !peers.iter().any(|p| p.node_id == peer.node_id) {
+        if !peers.iter().any(|p| p.wg_pubkey == peer.wg_pubkey) {
             peers.push(peer.clone());
             peers::save(&state.config.data_dir, &peers)
                 .map_err(|e| AppError::Internal(e.to_string()))?;
@@ -214,76 +217,112 @@ pub async fn redeem_invite(
     }
 
     info!(
-        "Redeemed invite from peer: {} at {}:{}",
-        peer.name, address, port
+        "Redeemed invite — peered with {} ({})",
+        peer_name, decoded.their_wg_address
     );
     Ok(Json(json!({ "peer": peer })))
 }
 
+/// Called by the redeemer to complete the mutual peer add on our (inviter's) side.
 #[derive(Deserialize)]
-pub struct ConsumeInviteRequest {
-    pub token: String,
+pub struct CompleteInviteRequest {
+    pub psk: String,
+    pub my_pubkey: String,
+    pub my_endpoint: String,
+    pub my_wg_address: String,
 }
 
-pub async fn consume_invite(
+pub async fn complete_invite(
     State(state): State<AppState>,
-    Json(req): Json<ConsumeInviteRequest>,
+    Json(req): Json<CompleteInviteRequest>,
 ) -> Result<Json<Value>, AppError> {
-    match invite::consume(&state.config.data_dir, &req.token)
+    // S8: Rate limiting
+    if !state.invite_rate_limiter.check("complete") {
+        return Err(AppError::BadRequest("rate limit exceeded — try again later".to_string()));
+    }
+
+    // Validate PSK against our pending invites
+    let invite = invite::consume_by_psk(&state.config.data_dir, &req.psk)
         .map_err(|e| AppError::Internal(e.to_string()))?
+        .ok_or_else(|| AppError::Gone("invite not found or expired".to_string()))?;
+
+    // Add the redeemer as a WG peer
+    let wg_id = state.wg_container_id.read().await;
+    let container_id = wg_id.as_deref().ok_or_else(|| {
+        AppError::Internal("WireGuard not initialized".to_string())
+    })?;
+
+    let wg_peer = wireguard::WgPeerConfig {
+        pubkey: req.my_pubkey.clone(),
+        endpoint: req.my_endpoint.clone(),
+        psk: Some(req.psk.clone()),
+        allowed_ip: invite.assigned_ip.clone(),
+        name: "pending".to_string(),
+        node_id: "pending".to_string(),
+    };
+
+    wireguard::add_peer(container_id, &state.config.data_dir, &wg_peer)
+        .await
+        .map_err(|e| AppError::Internal(format!("failed to add WG peer: {}", e)))?;
+
+    // Add to peers list (name/node_id will be updated on next discovery)
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    let peer = Peer {
+        node_id: "pending".to_string(),
+        name: "pending".to_string(),
+        wg_pubkey: req.my_pubkey.clone(),
+        wg_address: invite.assigned_ip.clone(),
+        wg_endpoint: req.my_endpoint.clone(),
+        port: state.config.port,
+        last_seen: now,
+        address: None,
+    };
+
     {
-        None => Err(AppError::Gone("invite expired or not found".to_string())),
-        Some(_) => Ok(Json(json!({ "status": "consumed" }))),
+        let mut peers = state.peers.write().await;
+        if !peers.iter().any(|p| p.wg_pubkey == peer.wg_pubkey) {
+            peers.push(peer);
+            peers::save(&state.config.data_dir, &peers)
+                .map_err(|e| AppError::Internal(e.to_string()))?;
+        }
     }
+
+    info!(
+        "Completed invite — added peer {} at {}",
+        &req.my_pubkey[..8.min(req.my_pubkey.len())],
+        invite.assigned_ip
+    );
+
+    Ok(Json(json!({ "status": "completed" })))
 }
 
-pub async fn list_auth_keys(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
-    let keys = auth::load_keys(&state.config.data_dir)
-        .map_err(|e| AppError::Internal(e.to_string()))?;
-    let redacted: Vec<_> = keys
-        .iter()
-        .map(|k| json!({ "prefix": k.prefix }))
-        .collect();
-    Ok(Json(json!({ "keys": redacted })))
-}
+pub async fn get_wg_status(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
+    let wg_id = state.wg_container_id.read().await;
 
-#[derive(Deserialize)]
-pub struct AddAuthKeyRequest {
-    pub key: String,
-}
+    if let Some(ref container_id) = *wg_id {
+        let peers = wireguard::get_status(container_id)
+            .await
+            .map_err(|e| AppError::Internal(e.to_string()))?;
 
-pub async fn add_auth_key(
-    State(state): State<AppState>,
-    Json(req): Json<AddAuthKeyRequest>,
-) -> Result<Json<Value>, AppError> {
-    let key = auth::add_key(&state.config.data_dir, &req.key)
-        .map_err(|e| AppError::Internal(e.to_string()))?;
-    Ok(Json(json!({ "prefix": key.prefix })))
-}
-
-pub async fn remove_auth_key(
-    State(state): State<AppState>,
-    Path(prefix): Path<String>,
-) -> Result<Json<Value>, AppError> {
-    let removed = auth::remove_key(&state.config.data_dir, &prefix)
-        .map_err(|e| AppError::Internal(e.to_string()))?;
-    if !removed {
-        return Err(AppError::NotFound(format!(
-            "auth key with prefix {} not found",
-            prefix
-        )));
+        Ok(Json(json!({
+            "status": "connected",
+            "public_key": state.identity.wg_pubkey,
+            "address": state.identity.wg_address,
+            "endpoint": state.identity.wg_endpoint,
+            "listen_port": state.config.wg_port,
+            "active_tunnels": peers.len(),
+            "peers": peers,
+        })))
+    } else {
+        Ok(Json(json!({
+            "status": "disabled",
+            "public_key": null,
+            "address": null,
+            "endpoint": null,
+        })))
     }
-    Ok(Json(json!({ "status": "removed" })))
-}
-
-pub async fn get_tailnet(State(state): State<AppState>) -> Json<Value> {
-    Json(json!({
-        "tailnet_ip": state.identity.tailnet_ip,
-        "tailnet_name": state.identity.tailnet_name,
-        "coordination_url": state.config.coordination_url,
-        "status": if state.identity.tailnet_ip.is_some() { "connected" } else { "disconnected" },
-        "headscale_enabled": state.config.headscale,
-        "headscale_port": state.config.headscale_port,
-        "mode": if cfg!(target_os = "linux") { "kernel" } else { "userspace" },
-    }))
 }

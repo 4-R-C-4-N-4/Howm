@@ -15,7 +15,7 @@ pub struct NetworkIndex {
 pub struct CapabilityProvider {
     pub node_id: String,
     pub node_name: String,
-    pub address: String,
+    pub wg_address: String,
     pub port: u16,
     pub capability_endpoint: String,
 }
@@ -35,7 +35,8 @@ async fn run_discovery(state: &AppState) {
     let mut new_capabilities: HashMap<String, Vec<CapabilityProvider>> = HashMap::new();
 
     for peer in &peers {
-        let url = format!("http://{}:{}/capabilities", peer.address, peer.port);
+        // All inter-node traffic goes through WireGuard tunnels
+        let url = format!("http://{}:{}/capabilities", peer.wg_address, peer.port);
         let timeout = std::time::Duration::from_millis(state.config.peer_timeout_ms);
 
         let client = match reqwest::Client::builder().timeout(timeout).build() {
@@ -48,12 +49,31 @@ async fn run_discovery(state: &AppState) {
 
         match client.get(&url).send().await {
             Ok(resp) => {
-                // Update peer's last_seen
+                // Update peer's last_seen and node_id/name if pending
                 let now = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .map(|d| d.as_secs())
                     .unwrap_or(0);
-                {
+
+                // Also try to get peer info to resolve pending node_ids
+                if peer.node_id == "pending" {
+                    let info_url = format!("http://{}:{}/node/info", peer.wg_address, peer.port);
+                    if let Ok(info_resp) = client.get(&info_url).send().await {
+                        if let Ok(info) = info_resp.json::<serde_json::Value>().await {
+                            let mut peers_locked = state.peers.write().await;
+                            if let Some(p) = peers_locked.iter_mut().find(|p| p.wg_pubkey == peer.wg_pubkey) {
+                                if let Some(id) = info["node_id"].as_str() {
+                                    p.node_id = id.to_string();
+                                }
+                                if let Some(name) = info["name"].as_str() {
+                                    p.name = name.to_string();
+                                }
+                                p.last_seen = now;
+                            }
+                            let _ = crate::peers::save(&state.config.data_dir, &peers_locked);
+                        }
+                    }
+                } else {
                     let mut peers_locked = state.peers.write().await;
                     if let Some(p) = peers_locked.iter_mut().find(|p| p.node_id == peer.node_id) {
                         p.last_seen = now;
@@ -69,7 +89,7 @@ async fn run_discovery(state: &AppState) {
                                 providers.push(CapabilityProvider {
                                     node_id: peer.node_id.clone(),
                                     node_name: peer.name.clone(),
-                                    address: peer.address.clone(),
+                                    wg_address: peer.wg_address.clone(),
                                     port: peer.port,
                                     capability_endpoint: format!(
                                         "/cap/{}",
@@ -98,7 +118,7 @@ async fn run_discovery(state: &AppState) {
         index.last_updated = now;
     }
 
-    // Save network index to disk (read lock after write lock is released)
+    // Save network index to disk
     let index = state.network_index.read().await.clone();
     let path = state.config.data_dir.join("network_index.json");
     let tmp = state.config.data_dir.join("network_index.json.tmp");
@@ -112,5 +132,3 @@ async fn run_discovery(state: &AppState) {
         index.capabilities.len()
     );
 }
-
-

@@ -52,10 +52,10 @@ pub async fn network_feed(State(state): State<AppState>) -> Json<Value> {
         }
     }
 
-    // 2. Collect posts from peers
+    // 2. Collect posts from peers (via WG tunnel)
     let peers = state.peers.read().await.clone();
     for peer in &peers {
-        let url = format!("http://{}:{}/cap/social/feed", peer.address, peer.port);
+        let url = format!("http://{}:{}/cap/social/feed", peer.wg_address, peer.port);
         let client = reqwest::Client::builder().timeout(timeout).build();
         if let Ok(client) = client {
             match client.get(&url).send().await {

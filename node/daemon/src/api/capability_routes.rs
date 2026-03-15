@@ -55,8 +55,10 @@ pub async fn install_capability(
     std::fs::create_dir_all(&data_volume)
         .map_err(|e| AppError::Internal(format!("Failed to create data volume dir: {}", e)))?;
 
-    // 4. Start the container
-    let container_id = docker::start_capability(&req.image, host_port, data_volume)
+    // 4. Start a temporary container to read the manifest first
+    let temp_container_id = docker::start_capability(
+        &req.image, host_port, data_volume.clone(), 7001, None,
+    )
         .await
         .map_err(|e| AppError::DockerError(format!("Failed to start container: {}", e)))?;
 
@@ -64,20 +66,42 @@ pub async fn install_capability(
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     // 6. Read capability.yaml from inside the container
-    let manifest = match docker::read_manifest(&container_id).await {
+    let manifest = match docker::read_manifest(&temp_container_id).await {
         Ok(m) => m,
         Err(e) => {
             warn!(
                 "Failed to read manifest from container {}: {}. Rolling back.",
-                container_id, e
+                temp_container_id, e
             );
-            let _ = docker::stop_capability(&container_id).await;
-            let _ = docker::remove_container(&container_id).await;
+            let _ = docker::stop_capability(&temp_container_id).await;
+            let _ = docker::remove_container(&temp_container_id).await;
             return Err(AppError::DockerError(format!(
                 "Failed to read capability manifest: {}",
                 e
             )));
         }
+    };
+
+    // S12: Read port from manifest (default 7001)
+    let container_port = manifest.port.unwrap_or(7001);
+
+    // If manifest specifies a different port or resources, restart with proper config
+    let container_id = if container_port != 7001 || manifest.resources.is_some() {
+        // Stop temp container and restart with correct settings
+        let _ = docker::stop_capability(&temp_container_id).await;
+        let _ = docker::remove_container(&temp_container_id).await;
+
+        docker::start_capability(
+            &req.image,
+            host_port,
+            data_volume,
+            container_port,
+            manifest.resources.as_ref(),
+        )
+        .await
+        .map_err(|e| AppError::DockerError(format!("Failed to restart container: {}", e)))?
+    } else {
+        temp_container_id
     };
 
     let visibility = manifest

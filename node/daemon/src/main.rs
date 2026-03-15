@@ -4,21 +4,20 @@ use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 mod api;
-mod auth;
 mod capabilities;
 mod config;
 mod discovery;
 mod docker;
 mod error;
+mod health;
 mod identity;
 mod invite;
 mod peers;
 mod proxy;
 mod state;
-mod tailnet;
+mod wireguard;
 
 use config::Config;
-use tailnet::TailnetConfig;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -33,23 +32,24 @@ async fn main() -> anyhow::Result<()> {
     let mut identity = identity::load_or_create(&config.data_dir, config.name.clone())?;
     info!("Node identity: {} ({})", identity.name, identity.node_id);
 
-    // Init tailnet — manages howm-headscale + howm-tailscale Docker containers
-    let tailnet_cfg = TailnetConfig {
-        enabled: config.tailnet_enabled,
-        coordination_url: config.coordination_url.clone(),
-        authkey: config.tailscale_authkey.clone(),
+    // Init WireGuard — manages howm-wg Docker container
+    let wg_config = wireguard::WgConfig {
+        enabled: config.wg_enabled,
+        port: config.wg_port,
+        endpoint: config.wg_endpoint.clone(),
+        address: config.wg_address.clone(),
         data_dir: config.data_dir.clone(),
-        headscale_enabled: config.headscale,
-        headscale_port: config.headscale_port,
+        node_id: identity.node_id.clone(),
     };
 
-    let tailnet_state = tailnet::init(tailnet_cfg).await?;
+    let wg_state = wireguard::init(&wg_config).await?;
 
-    if let Some(ref ip) = tailnet_state.ip {
-        identity.tailnet_ip = Some(ip.clone());
-        identity.tailnet_name = tailnet_state.name.clone();
+    if let Some(ref pubkey) = wg_state.public_key {
+        identity.wg_pubkey = Some(pubkey.clone());
+        identity.wg_address = wg_state.address.clone();
+        identity.wg_endpoint = wg_state.endpoint.clone();
         identity::write_identity(&config.data_dir, &identity)?;
-        info!("Tailnet IP: {}", ip);
+        info!("WG address: {}", wg_state.address.as_deref().unwrap_or("none"));
     }
 
     // Load persisted state
@@ -61,20 +61,21 @@ async fn main() -> anyhow::Result<()> {
         capabilities.len()
     );
 
-    // Build app state
-    let state = state::AppState::new(identity, peers, capabilities, config.clone());
+    // Generate or load API bearer token (S2)
+    let api_token = api::auth_layer::load_or_create_token(&config.data_dir)?;
+    info!("API token: {}", api_token);
 
-    // Store tailnet container IDs for graceful shutdown cleanup
+    // Build app state
+    let state = state::AppState::new(identity.clone(), peers, capabilities, config.clone(), api_token);
+
+    // Store WG container ID for graceful shutdown cleanup
     {
-        let mut tc = state.tailnet_containers.write().await;
-        *tc = (
-            tailnet_state.headscale_container_id.clone(),
-            tailnet_state.tailscale_container_id.clone(),
-        );
+        let mut wg_id = state.wg_container_id.write().await;
+        *wg_id = wg_state.container_id.clone();
     }
 
-    // Build Axum router
-    let router = api::build_router(state.clone());
+    // Build Axum routers
+    let local_router = api::build_local_router(state.clone());
 
     // Background: discovery loop
     let discovery_state = state.clone();
@@ -82,27 +83,56 @@ async fn main() -> anyhow::Result<()> {
         discovery::start_loop(discovery_state).await;
     });
 
+    // Background: capability health check loop (S10)
+    let health_state = state.clone();
+    tokio::spawn(async move {
+        health::start_loop(health_state).await;
+    });
+
     // Background: graceful shutdown handler (SIGTERM / SIGINT / Ctrl-C)
-    let shutdown_ts = tailnet::TailnetState {
-        ip: tailnet_state.ip.clone(),
-        name: tailnet_state.name.clone(),
-        status: tailnet_state.status.clone(),
-        headscale_container_id: tailnet_state.headscale_container_id.clone(),
-        tailscale_container_id: tailnet_state.tailscale_container_id.clone(),
-    };
+    let shutdown_wg_id = wg_state.container_id.clone();
     let shutdown_app_state = state.clone();
     tokio::spawn(async move {
         wait_for_shutdown_signal().await;
         info!("Shutdown signal received — cleaning up...");
-        do_shutdown(&shutdown_app_state, &shutdown_ts).await;
+        do_shutdown(&shutdown_app_state, shutdown_wg_id.as_deref()).await;
         std::process::exit(0);
     });
 
-    // Start HTTP server
-    let addr: SocketAddr = format!("0.0.0.0:{}", config.port).parse()?;
-    info!("Starting Howm daemon on {}", addr);
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, router).await?;
+    // Start local management listener (127.0.0.1 only)
+    let local_addr: SocketAddr = format!("127.0.0.1:{}", config.port).parse()?;
+    info!("Starting local management API on {}", local_addr);
+    let local_listener = tokio::net::TcpListener::bind(local_addr).await?;
+
+    // Start peer listener on WG address (if available)
+    if let Some(ref wg_addr) = identity.wg_address {
+        let peer_router = api::build_peer_router(state.clone());
+        let peer_addr: SocketAddr = format!("{}:{}", wg_addr, config.port).parse()?;
+        info!("Starting peer API on {}", peer_addr);
+        tokio::spawn(async move {
+            match tokio::net::TcpListener::bind(peer_addr).await {
+                Ok(listener) => {
+                    if let Err(e) = axum::serve(
+                        listener,
+                        peer_router.into_make_service_with_connect_info::<SocketAddr>(),
+                    ).await {
+                        tracing::error!("Peer listener error: {}", e);
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Could not bind peer listener on {} — WG interface may not be ready: {}",
+                        peer_addr, e
+                    );
+                }
+            }
+        });
+    }
+
+    axum::serve(
+        local_listener,
+        local_router.into_make_service_with_connect_info::<SocketAddr>(),
+    ).await?;
 
     Ok(())
 }
@@ -126,7 +156,7 @@ async fn wait_for_shutdown_signal() {
     }
 }
 
-async fn do_shutdown(state: &state::AppState, tailnet: &tailnet::TailnetState) {
+async fn do_shutdown(state: &state::AppState, wg_container_id: Option<&str>) {
     // Stop all running capability containers
     let caps = state.capabilities.read().await.clone();
     for cap in &caps {
@@ -134,8 +164,10 @@ async fn do_shutdown(state: &state::AppState, tailnet: &tailnet::TailnetState) {
         let _ = docker::stop_capability(&cap.container_id).await;
     }
 
-    // Stop tailnet containers (howm-tailscale, howm-headscale)
-    if let Err(e) = tailnet::shutdown(tailnet).await {
-        tracing::warn!("Tailnet shutdown error: {}", e);
+    // Stop WG container
+    if let Some(id) = wg_container_id {
+        if let Err(e) = wireguard::shutdown(id).await {
+            tracing::warn!("WG shutdown error: {}", e);
+        }
     }
 }

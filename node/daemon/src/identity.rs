@@ -8,7 +8,17 @@ pub struct NodeIdentity {
     pub node_id: String,
     pub name: String,
     pub created: u64,
+    #[serde(default)]
+    pub wg_pubkey: Option<String>,
+    #[serde(default)]
+    pub wg_address: Option<String>,   // 10.47.x.y
+    #[serde(default)]
+    pub wg_endpoint: Option<String>,  // public addr:port for peers to reach us
+
+    // Legacy fields — ignored, kept for migration compatibility
+    #[serde(default, skip_serializing)]
     pub tailnet_ip: Option<String>,
+    #[serde(default, skip_serializing)]
     pub tailnet_name: Option<String>,
 }
 
@@ -29,6 +39,9 @@ pub fn load_or_create(data_dir: &Path, name: Option<String>) -> anyhow::Result<N
         node_id: Uuid::new_v4().to_string(),
         name: hostname,
         created: SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs(),
+        wg_pubkey: None,
+        wg_address: None,
+        wg_endpoint: None,
         tailnet_ip: None,
         tailnet_name: None,
     };
