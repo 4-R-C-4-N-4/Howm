@@ -115,16 +115,23 @@ cargo build --release 2>&1 | tail -3
 DAEMON_BIN="$ROOT_DIR/node/target/release/daemon"
 success "Daemon built: $DAEMON_BIN"
 
-# ── Build web UI ─────────────────────────────────────────────────────────────
-UI_PID=""
+# ── Build web UI ─────────────────────────────────────────────────────────
+UI_DIR=""
 if [[ $NO_UI -eq 0 ]]; then
     info "Installing UI dependencies..."
     cd "$ROOT_DIR/ui/web"
     npm install --silent
-    info "Starting web UI dev server..."
-    npm run dev &
-    UI_PID=$!
-    success "Web UI starting on http://localhost:5173 (PID $UI_PID)"
+    if [[ -n "$DEV_FLAG" ]]; then
+        info "Starting web UI dev server..."
+        npm run dev &
+        UI_PID=$!
+        success "Web UI starting on http://localhost:5173 (PID $UI_PID)"
+    else
+        info "Building web UI (production)..."
+        npx vite build --outDir dist 2>&1 | tail -3
+        UI_DIR="$ROOT_DIR/ui/web/dist"
+        success "Web UI built: $UI_DIR"
+    fi
 fi
 
 # ── Build social-feed image ─────────────────────────────────────────────────
@@ -147,6 +154,7 @@ mkdir -p "$DATA_DIR"
 DAEMON_ARGS=(--port "$PORT" --data-dir "$DATA_DIR")
 [[ -n "$NODE_NAME" ]]     && DAEMON_ARGS+=(--name "$NODE_NAME")
 [[ -n "$DEV_FLAG" ]]      && DAEMON_ARGS+=("$DEV_FLAG")
+[[ -n "$UI_DIR" ]]        && DAEMON_ARGS+=(--ui-dir "$UI_DIR")
 
 # WireGuard flags
 if [[ $NO_WG -eq 1 ]]; then
@@ -207,7 +215,9 @@ printf "${GREEN}│${NC}  Daemon API:  http://localhost:%-17s${GREEN}│${NC}\n"
 if [[ -n "$API_TOKEN" ]]; then
 printf "${GREEN}│${NC}  API Token:   %-33s${GREEN}│${NC}\n" "$API_TOKEN"
 fi
-if [[ $NO_UI -eq 0 ]]; then
+if [[ -n "$UI_DIR" ]]; then
+printf "${GREEN}│${NC}  Web UI:      http://localhost:%-17s${GREEN}│${NC}\n" "$PORT"
+elif [[ $NO_UI -eq 0 ]]; then
 echo -e "${GREEN}│${NC}  Web UI:      http://localhost:5173              ${GREEN}│${NC}"
 fi
 if [[ $SOCIAL_FEED_BUILT -eq 1 ]]; then
@@ -230,7 +240,7 @@ cleanup() {
     echo ""
     info "Shutting down..."
     kill "$DAEMON_PID" 2>/dev/null || true
-    [[ -n "$UI_PID" ]] && kill "$UI_PID" 2>/dev/null || true
+    [[ -n "${UI_PID:-}" ]] && kill "$UI_PID" 2>/dev/null || true
     # Stop capability containers (daemon shutdown handler does this too)
     docker ps --filter "name=howm-cap-" --format "{{.ID}}" 2>/dev/null \
         | xargs -r docker stop &>/dev/null || true

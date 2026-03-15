@@ -90,7 +90,7 @@ async fn main() -> anyhow::Result<()> {
     // so we can't use a WG-only peer listener for that.
     // WG tunnel IS the auth for ongoing peer traffic; bearer token
     // protects the local management mutations from the LAN.
-    let router = api::build_router(state.clone());
+    let router = api::build_router(state.clone(), config.ui_dir.clone());
 
     // Background: discovery loop
     let discovery_state = state.clone();

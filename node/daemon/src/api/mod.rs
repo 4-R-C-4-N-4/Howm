@@ -7,6 +7,8 @@ use axum::{
     routing::{any, delete, get, post},
     Router,
 };
+use std::path::PathBuf;
+use tower_http::services::{ServeDir, ServeFile};
 
 pub mod auth_layer;
 pub mod capability_routes;
@@ -19,7 +21,7 @@ pub mod proxy_routes;
 /// Bearer token is required on all POST/PUT/DELETE routes EXCEPT:
 ///   - /node/complete-invite (uses PSK-based auth, called by remote peers)
 ///   - /node/info and other GET routes (read-only)
-pub fn build_router(state: AppState) -> Router {
+pub fn build_router(state: AppState, ui_dir: Option<PathBuf>) -> Router {
     // Routes that require bearer token for mutations
     let authenticated = Router::new()
         .route("/node/peers/:node_id", delete(node_routes::remove_peer))
@@ -68,10 +70,24 @@ pub fn build_router(state: AppState) -> Router {
         // Proxy
         .route("/cap/:name/*rest", any(proxy_routes::proxy_handler));
 
-    Router::new()
+    let mut router = Router::new()
         .merge(authenticated)
         .merge(open)
-        .with_state(state)
+        .with_state(state);
+
+    // Serve static UI files if --ui-dir is provided.
+    // Fallback to index.html for SPA client-side routing.
+    if let Some(dir) = ui_dir {
+        if dir.exists() {
+            let index = dir.join("index.html");
+            router = router.fallback_service(ServeDir::new(&dir).fallback(ServeFile::new(index)));
+            tracing::info!("Serving UI from {}", dir.display());
+        } else {
+            tracing::warn!("UI directory {} does not exist, skipping", dir.display());
+        }
+    }
+
+    router
 }
 
 /// Bearer token auth middleware (S2).

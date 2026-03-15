@@ -1,15 +1,28 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { getPeers, removePeer, generateInvite, redeemInvite } from '../api/nodes';
 import type { Peer } from '../api/nodes';
 
+function formatLastSeen(ts: number, now: number) {
+  if (!ts) return 'never';
+  const delta = Math.floor(now / 1000 - ts);
+  if (delta < 60) return 'just now';
+  if (delta < 3600) return `${Math.floor(delta / 60)}m ago`;
+  if (delta < 86400) return `${Math.floor(delta / 3600)}h ago`;
+  return `${Math.floor(delta / 86400)}d ago`;
+}
+
 export function PeerList() {
   const queryClient = useQueryClient();
-  const { data: peers = [], isLoading } = useQuery({
+  const { data: peers = [], isLoading, dataUpdatedAt } = useQuery({
     queryKey: ['peers'],
     queryFn: getPeers,
     refetchInterval: 30000,
   });
+
+  // Derive "now" from the query's dataUpdatedAt so it's stable between re-renders
+  // and only changes when peers are refetched.
+  const now = useMemo(() => dataUpdatedAt || Date.now(), [dataUpdatedAt]);
 
   const [showRedeemForm, setShowRedeemForm] = useState(false);
   const [inviteCode, setInviteCode] = useState('');
@@ -33,15 +46,6 @@ export function PeerList() {
       setInviteCode('');
     },
   });
-
-  const formatLastSeen = (ts: number) => {
-    if (!ts) return 'never';
-    const delta = Math.floor(Date.now() / 1000 - ts);
-    if (delta < 60) return 'just now';
-    if (delta < 3600) return `${Math.floor(delta / 60)}m ago`;
-    if (delta < 86400) return `${Math.floor(delta / 3600)}h ago`;
-    return `${Math.floor(delta / 86400)}d ago`;
-  };
 
   return (
     <div>
@@ -110,7 +114,7 @@ export function PeerList() {
                   {peer.wg_address}
                 </span>
                 <span style={{ color: '#aaa', marginLeft: '8px', fontSize: '0.8em' }}>
-                  {formatLastSeen(peer.last_seen)}
+                  {formatLastSeen(peer.last_seen, now)}
                 </span>
               </div>
               <button
