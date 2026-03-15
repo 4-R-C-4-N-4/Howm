@@ -97,7 +97,8 @@ jobs:
         with:
           name: ${{ matrix.archive }}
           path: ${{ matrix.archive }}
-          retention-days: 1
+          retention-days: 5
+          if-no-files-found: error
 
   # ─────────────────────────────────────────────
   # Build & push Docker images
@@ -154,17 +155,14 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts
-          merge-multiple: false
+          pattern: howm-*
+          merge-multiple: true
 
       - name: Generate checksums
         run: |
           cd artifacts
-          find . -name "howm-*" -type f | while read f; do
-            sha256sum "$f" >> ../SHA256SUMS.txt
-          done
-          # Clean up paths in checksum file
+          sha256sum howm-* > ../SHA256SUMS.txt
           cd ..
-          sed -i 's|  \./[^/]*/||' SHA256SUMS.txt
           cat SHA256SUMS.txt
 
       - name: Generate changelog
@@ -192,7 +190,7 @@ jobs:
       - name: Collect release assets
         run: |
           mkdir -p release-assets
-          find artifacts -name "howm-*" -type f -exec cp {} release-assets/ \;
+          cp artifacts/howm-* release-assets/
           cp SHA256SUMS.txt release-assets/
 
       - name: Create GitHub Release
