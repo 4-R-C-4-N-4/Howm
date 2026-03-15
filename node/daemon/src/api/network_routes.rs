@@ -1,10 +1,10 @@
+use crate::{error::AppError, state::AppState};
 use axum::{
     extract::{Path, State},
     Json,
 };
 use serde_json::{json, Value};
 use tracing::warn;
-use crate::{error::AppError, state::AppState};
 
 pub async fn network_capabilities(State(state): State<AppState>) -> Json<Value> {
     let index = state.network_index.read().await;

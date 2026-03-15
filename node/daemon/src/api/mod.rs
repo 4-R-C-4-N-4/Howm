@@ -1,18 +1,18 @@
+use crate::state::AppState;
 use axum::{
-    Router,
     extract::State,
     http::{Request, StatusCode},
     middleware::{self, Next},
     response::Response,
-    routing::{get, post, delete, any},
+    routing::{any, delete, get, post},
+    Router,
 };
-use crate::state::AppState;
 
-pub mod node_routes;
+pub mod auth_layer;
 pub mod capability_routes;
 pub mod network_routes;
+pub mod node_routes;
 pub mod proxy_routes;
-pub mod auth_layer;
 
 /// Single router for the daemon.
 ///
@@ -25,11 +25,26 @@ pub fn build_router(state: AppState) -> Router {
         .route("/node/peers/:node_id", delete(node_routes::remove_peer))
         .route("/node/invite", post(node_routes::create_invite))
         .route("/node/redeem-invite", post(node_routes::redeem_invite))
-        .route("/capabilities/install", post(capability_routes::install_capability))
-        .route("/capabilities/:name/stop", post(capability_routes::stop_capability))
-        .route("/capabilities/:name/start", post(capability_routes::start_capability))
-        .route("/capabilities/:name", delete(capability_routes::uninstall_capability))
-        .layer(middleware::from_fn_with_state(state.clone(), bearer_auth_middleware));
+        .route(
+            "/capabilities/install",
+            post(capability_routes::install_capability),
+        )
+        .route(
+            "/capabilities/:name/stop",
+            post(capability_routes::stop_capability),
+        )
+        .route(
+            "/capabilities/:name/start",
+            post(capability_routes::start_capability),
+        )
+        .route(
+            "/capabilities/:name",
+            delete(capability_routes::uninstall_capability),
+        )
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            bearer_auth_middleware,
+        ));
 
     // Routes that don't need bearer token
     let open = Router::new()
@@ -41,8 +56,14 @@ pub fn build_router(state: AppState) -> Router {
         .route("/node/complete-invite", post(node_routes::complete_invite))
         // Read-only capability/network info
         .route("/capabilities", get(capability_routes::list_capabilities))
-        .route("/network/capabilities", get(network_routes::network_capabilities))
-        .route("/network/capability/:name", get(network_routes::find_capability_providers))
+        .route(
+            "/network/capabilities",
+            get(network_routes::network_capabilities),
+        )
+        .route(
+            "/network/capability/:name",
+            get(network_routes::find_capability_providers),
+        )
         .route("/network/feed", get(network_routes::network_feed))
         // Proxy
         .route("/cap/:name/*rest", any(proxy_routes::proxy_handler));

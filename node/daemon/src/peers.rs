@@ -5,10 +5,10 @@ use std::path::Path;
 pub struct Peer {
     pub node_id: String,
     pub name: String,
-    pub wg_pubkey: String,        // WG public key (identity)
-    pub wg_address: String,       // 10.47.x.y (how to reach them on wg0)
-    pub wg_endpoint: String,      // public addr:port
-    pub port: u16,                // daemon API port (on their WG address)
+    pub wg_pubkey: String,   // WG public key (identity)
+    pub wg_address: String,  // 10.47.x.y (how to reach them on wg0)
+    pub wg_endpoint: String, // public addr:port
+    pub port: u16,           // daemon API port (on their WG address)
     pub last_seen: u64,
 }
 

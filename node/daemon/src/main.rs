@@ -49,7 +49,10 @@ async fn main() -> anyhow::Result<()> {
         identity.wg_address = wg_state.address.clone();
         identity.wg_endpoint = wg_state.endpoint.clone();
         identity::write_identity(&config.data_dir, &identity)?;
-        info!("WG address: {}", wg_state.address.as_deref().unwrap_or("none"));
+        info!(
+            "WG address: {}",
+            wg_state.address.as_deref().unwrap_or("none")
+        );
     }
 
     // Load persisted state
@@ -66,7 +69,13 @@ async fn main() -> anyhow::Result<()> {
     info!("API bearer token: {}", api_token);
 
     // Build app state
-    let state = state::AppState::new(identity.clone(), peers, capabilities, config.clone(), api_token);
+    let state = state::AppState::new(
+        identity.clone(),
+        peers,
+        capabilities,
+        config.clone(),
+        api_token,
+    );
 
     // Store WG container ID for graceful shutdown cleanup
     {
@@ -111,7 +120,8 @@ async fn main() -> anyhow::Result<()> {
     axum::serve(
         listener,
         router.into_make_service_with_connect_info::<SocketAddr>(),
-    ).await?;
+    )
+    .await?;
 
     Ok(())
 }

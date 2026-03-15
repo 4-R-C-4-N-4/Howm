@@ -28,10 +28,10 @@ pub struct Config {
     pub wg_port: u16,
 
     #[arg(long, env = "HOWM_WG_ENDPOINT")]
-    pub wg_endpoint: Option<String>,  // e.g. "1.2.3.4:51820" or "myhost.ddns.net:51820"
+    pub wg_endpoint: Option<String>, // e.g. "1.2.3.4:51820" or "myhost.ddns.net:51820"
 
     #[arg(long, env = "HOWM_WG_ADDRESS")]
-    pub wg_address: Option<String>,   // override auto-assigned WG address
+    pub wg_address: Option<String>, // override auto-assigned WG address
 
     #[arg(long, default_value = "900", env = "HOWM_INVITE_TTL_S")]
     pub invite_ttl_s: u64,

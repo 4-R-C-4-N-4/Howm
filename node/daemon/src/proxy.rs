@@ -25,9 +25,8 @@ pub async fn proxy_request(
             .cloned()
     };
 
-    let cap = cap.ok_or_else(|| {
-        AppError::NotFound(format!("capability not found: {}", cap_name))
-    })?;
+    let cap =
+        cap.ok_or_else(|| AppError::NotFound(format!("capability not found: {}", cap_name)))?;
 
     let port = cap.port;
     let target_url = format!(

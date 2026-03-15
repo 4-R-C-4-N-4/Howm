@@ -1,6 +1,6 @@
 use bollard::container::{
-    Config as ContainerConfig, CreateContainerOptions, RemoveContainerOptions,
-    StartContainerOptions, StopContainerOptions, LogOutput,
+    Config as ContainerConfig, CreateContainerOptions, LogOutput, RemoveContainerOptions,
+    StartContainerOptions, StopContainerOptions,
 };
 use bollard::exec::{CreateExecOptions, StartExecResults};
 use bollard::image::CreateImageOptions;
@@ -73,7 +73,7 @@ pub async fn start_capability(
     port_bindings.insert(
         format!("{}/tcp", container_port),
         Some(vec![PortBinding {
-            host_ip: Some("127.0.0.1".to_string()),  // S1: only bind locally
+            host_ip: Some("127.0.0.1".to_string()), // S1: only bind locally
             host_port: Some(host_port.to_string()),
         }]),
     );
@@ -213,10 +213,7 @@ pub async fn read_manifest(container_id: &str) -> anyhow::Result<CapabilityManif
 pub async fn check_health(container_id: &str) -> anyhow::Result<bool> {
     let docker = connect()?;
     let info = docker.inspect_container(container_id, None).await?;
-    let running = info
-        .state
-        .and_then(|s| s.running)
-        .unwrap_or(false);
+    let running = info.state.and_then(|s| s.running).unwrap_or(false);
     Ok(running)
 }
 
@@ -269,7 +266,9 @@ pub struct ResourcesManifest {
 fn parse_memory_limit(s: Option<&str>) -> Option<i64> {
     let s = s?;
     let s = s.trim();
-    if s.is_empty() { return None; }
+    if s.is_empty() {
+        return None;
+    }
 
     let (num_str, multiplier) = if s.ends_with("Gi") || s.ends_with("G") {
         let n = s.trim_end_matches("Gi").trim_end_matches("G");
@@ -291,7 +290,9 @@ fn parse_memory_limit(s: Option<&str>) -> Option<i64> {
 fn parse_cpu_limit(s: Option<&str>) -> Option<i64> {
     let s = s?;
     let s = s.trim();
-    if s.is_empty() { return None; }
+    if s.is_empty() {
+        return None;
+    }
 
     if s.ends_with("m") {
         // millicores → nanocores

@@ -18,8 +18,8 @@ use crate::docker;
 pub struct WgConfig {
     pub enabled: bool,
     pub port: u16,
-    pub endpoint: Option<String>,  // public addr:port for peers to reach us
-    pub address: Option<String>,   // override WG address (10.47.x.y)
+    pub endpoint: Option<String>, // public addr:port for peers to reach us
+    pub address: Option<String>,  // override WG address (10.47.x.y)
     pub data_dir: PathBuf,
     pub node_id: String,
 }
@@ -27,8 +27,8 @@ pub struct WgConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WgState {
     pub public_key: Option<String>,
-    pub address: Option<String>,     // 10.47.x.y
-    pub endpoint: Option<String>,    // public addr:port
+    pub address: Option<String>,  // 10.47.x.y
+    pub endpoint: Option<String>, // public addr:port
     pub container_id: Option<String>,
 }
 
@@ -53,7 +53,7 @@ pub struct WgPeerStatus {
 }
 
 const WG_IMAGE: &str = "linuxserver/wireguard:latest";
-const WG_SUBNET: &str = "10.47";  // 10.47.0.0/16
+const WG_SUBNET: &str = "10.47"; // 10.47.0.0/16
 
 // ── Initialization ──────────────────────────────────────────────────────────
 
@@ -157,9 +157,7 @@ async fn start_container(
 
     let mut host_config = HostConfig {
         cap_add: Some(vec!["NET_ADMIN".to_string()]),
-        binds: Some(vec![
-            format!("{}:/config/wg_confs", wg_dir_str),
-        ]),
+        binds: Some(vec![format!("{}:/config/wg_confs", wg_dir_str)]),
         ..Default::default()
     };
 
@@ -217,7 +215,10 @@ async fn start_container(
 /// Stop and remove the WG container.
 pub async fn shutdown(container_id: &str) -> anyhow::Result<()> {
     let docker = docker::connect()?;
-    info!("Stopping WG container: {}", &container_id[..12.min(container_id.len())]);
+    info!(
+        "Stopping WG container: {}",
+        &container_id[..12.min(container_id.len())]
+    );
     let _ = docker
         .stop_container(container_id, Some(StopContainerOptions { t: 5 }))
         .await;
@@ -273,14 +274,16 @@ fn generate_private_key() -> String {
     key_bytes[0] &= 248;
     key_bytes[31] &= 127;
     key_bytes[31] |= 64;
-    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
     STANDARD.encode(key_bytes)
 }
 
 /// Derive a WireGuard public key from a private key.
 fn derive_public_key(private_key_b64: &str) -> String {
-    use base64::{Engine as _, engine::general_purpose::STANDARD};
-    let private_bytes = STANDARD.decode(private_key_b64).expect("valid base64 private key");
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    let private_bytes = STANDARD
+        .decode(private_key_b64)
+        .expect("valid base64 private key");
     let mut key = [0u8; 32];
     key.copy_from_slice(&private_bytes[..32]);
 
@@ -294,7 +297,7 @@ pub fn generate_psk() -> String {
     use rand::RngCore;
     let mut key_bytes = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut key_bytes);
-    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
     STANDARD.encode(key_bytes)
 }
 
@@ -362,8 +365,12 @@ fn x25519_mult(k: &[u8; 32], u: &[u8; 32]) -> [u8; 32] {
 
 type Fe = [u64; 5];
 
-fn fe_zero() -> Fe { [0; 5] }
-fn fe_one() -> Fe { [1, 0, 0, 0, 0] }
+fn fe_zero() -> Fe {
+    [0; 5]
+}
+fn fe_one() -> Fe {
+    [1, 0, 0, 0, 0]
+}
 
 fn fe_from_bytes(s: &[u8; 32]) -> Fe {
     let mut h = [0u128; 5];
@@ -379,7 +386,13 @@ fn fe_from_bytes(s: &[u8; 32]) -> Fe {
     h[2] = (load8(&s[12..]) >> 6) & 0x7ffffffffffff;
     h[3] = (load8(&s[19..]) >> 1) & 0x7ffffffffffff;
     h[4] = (load8(&s[24..]) >> 12) & 0x7ffffffffffff;
-    [h[0] as u64, h[1] as u64, h[2] as u64, h[3] as u64, h[4] as u64]
+    [
+        h[0] as u64,
+        h[1] as u64,
+        h[2] as u64,
+        h[3] as u64,
+        h[4] as u64,
+    ]
 }
 
 fn fe_to_bytes(h: &Fe) -> [u8; 32] {
@@ -391,42 +404,66 @@ fn fe_to_bytes(h: &Fe) -> [u8; 32] {
     }
     q = (t[4] + q) >> 51;
     t[0] += 19 * q;
-    let carry = t[0] >> 51; t[0] &= 0x7ffffffffffff; t[1] += carry;
-    let carry = t[1] >> 51; t[1] &= 0x7ffffffffffff; t[2] += carry;
-    let carry = t[2] >> 51; t[2] &= 0x7ffffffffffff; t[3] += carry;
-    let carry = t[3] >> 51; t[3] &= 0x7ffffffffffff; t[4] += carry;
+    let carry = t[0] >> 51;
+    t[0] &= 0x7ffffffffffff;
+    t[1] += carry;
+    let carry = t[1] >> 51;
+    t[1] &= 0x7ffffffffffff;
+    t[2] += carry;
+    let carry = t[2] >> 51;
+    t[2] &= 0x7ffffffffffff;
+    t[3] += carry;
+    let carry = t[3] >> 51;
+    t[3] &= 0x7ffffffffffff;
+    t[4] += carry;
     t[4] &= 0x7ffffffffffff;
 
     // Final reduction
     let mut m = t[0].wrapping_sub(0x7ffffffffffed);
-    for i in 1..4 { m &= t[i].wrapping_sub(0x7ffffffffffff); }
+    for i in 1..4 {
+        m &= t[i].wrapping_sub(0x7ffffffffffff);
+    }
     m &= t[4].wrapping_sub(0x7ffffffffffff);
     let mask = (m >> 63).wrapping_sub(1);
     t[0] -= 0x7ffffffffffed & mask;
-    for i in 1..5 { t[i] -= 0x7ffffffffffff & mask; }
+    for i in 1..5 {
+        t[i] -= 0x7ffffffffffff & mask;
+    }
 
     // Serialize using u128 to handle wide shifts
     let mut s = [0u8; 32];
     let combined: u128 = (t[0] as u128) | ((t[1] as u128) << 51) | ((t[2] as u128) << 102);
-    for i in 0..16 { s[i] = (combined >> (8 * i)) as u8; }
+    for i in 0..16 {
+        s[i] = (combined >> (8 * i)) as u8;
+    }
     let combined2: u128 = ((t[2] as u128) >> 26) | ((t[3] as u128) << 25) | ((t[4] as u128) << 76);
-    for i in 0..16 { s[i + 16] = (combined2 >> (8 * i)) as u8; }
+    for i in 0..16 {
+        s[i + 16] = (combined2 >> (8 * i)) as u8;
+    }
     s
 }
 
 fn fe_add(a: &Fe, b: &Fe) -> Fe {
     let mut r = [0u64; 5];
-    for i in 0..5 { r[i] = a[i] + b[i]; }
+    for i in 0..5 {
+        r[i] = a[i] + b[i];
+    }
     r
 }
 
 fn fe_sub(a: &Fe, b: &Fe) -> Fe {
     // Add 2p to avoid underflow
     let two_p: Fe = [
-        0xfffffffffffda, 0xffffffffffffe, 0xffffffffffffe, 0xffffffffffffe, 0xffffffffffffe,
+        0xfffffffffffda,
+        0xffffffffffffe,
+        0xffffffffffffe,
+        0xffffffffffffe,
+        0xffffffffffffe,
     ];
     let mut r = [0u64; 5];
-    for i in 0..5 { r[i] = a[i] + two_p[i] - b[i]; }
+    for i in 0..5 {
+        r[i] = a[i] + two_p[i] - b[i];
+    }
     r
 }
 
@@ -482,39 +519,53 @@ fn fe_mul_121666(a: &Fe) -> Fe {
 
 fn fe_inv(a: &Fe) -> Fe {
     // Fermat's little theorem: a^(p-2) mod p, p = 2^255 - 19
-    let mut t0 = fe_sq(a);           // a^2
-    let mut t1 = fe_sq(&t0);        // a^4
-    t1 = fe_sq(&t1);                 // a^8
-    t1 = fe_mul(&t1, a);            // a^9
-    t0 = fe_mul(&t0, &t1);          // a^11
-    let mut t2 = fe_sq(&t0);        // a^22
-    t1 = fe_mul(&t1, &t2);          // a^(2^5-1) = a^31
+    let mut t0 = fe_sq(a); // a^2
+    let mut t1 = fe_sq(&t0); // a^4
+    t1 = fe_sq(&t1); // a^8
+    t1 = fe_mul(&t1, a); // a^9
+    t0 = fe_mul(&t0, &t1); // a^11
+    let mut t2 = fe_sq(&t0); // a^22
+    t1 = fe_mul(&t1, &t2); // a^(2^5-1) = a^31
     t2 = fe_sq(&t1);
-    for _ in 1..5 { t2 = fe_sq(&t2); }
-    t1 = fe_mul(&t2, &t1);          // a^(2^10-1)
+    for _ in 1..5 {
+        t2 = fe_sq(&t2);
+    }
+    t1 = fe_mul(&t2, &t1); // a^(2^10-1)
     t2 = fe_sq(&t1);
-    for _ in 1..10 { t2 = fe_sq(&t2); }
-    t2 = fe_mul(&t2, &t1);          // a^(2^20-1)
+    for _ in 1..10 {
+        t2 = fe_sq(&t2);
+    }
+    t2 = fe_mul(&t2, &t1); // a^(2^20-1)
     let mut t3 = fe_sq(&t2);
-    for _ in 1..20 { t3 = fe_sq(&t3); }
-    t2 = fe_mul(&t3, &t2);          // a^(2^40-1)
+    for _ in 1..20 {
+        t3 = fe_sq(&t3);
+    }
+    t2 = fe_mul(&t3, &t2); // a^(2^40-1)
     t2 = fe_sq(&t2);
-    for _ in 1..10 { t2 = fe_sq(&t2); }
-    t1 = fe_mul(&t2, &t1);          // a^(2^50-1)
+    for _ in 1..10 {
+        t2 = fe_sq(&t2);
+    }
+    t1 = fe_mul(&t2, &t1); // a^(2^50-1)
     t2 = fe_sq(&t1);
-    for _ in 1..50 { t2 = fe_sq(&t2); }
-    t2 = fe_mul(&t2, &t1);          // a^(2^100-1)
+    for _ in 1..50 {
+        t2 = fe_sq(&t2);
+    }
+    t2 = fe_mul(&t2, &t1); // a^(2^100-1)
     t3 = fe_sq(&t2);
-    for _ in 1..100 { t3 = fe_sq(&t3); }
-    t2 = fe_mul(&t3, &t2);          // a^(2^200-1)
+    for _ in 1..100 {
+        t3 = fe_sq(&t3);
+    }
+    t2 = fe_mul(&t3, &t2); // a^(2^200-1)
     t2 = fe_sq(&t2);
-    for _ in 1..50 { t2 = fe_sq(&t2); }
-    t1 = fe_mul(&t2, &t1);          // a^(2^250-1)
+    for _ in 1..50 {
+        t2 = fe_sq(&t2);
+    }
+    t1 = fe_mul(&t2, &t1); // a^(2^250-1)
     t1 = fe_sq(&t1);
-    t1 = fe_sq(&t1);                 // a^(2^252)
-    t0 = fe_mul(&t1, &t0);          // a^(2^252 - 3) — but we need 2^255-21
-    // Actually: p-2 = 2^255 - 21; above is the standard chain
-    // Correct chain for a^(p-2):
+    t1 = fe_sq(&t1); // a^(2^252)
+    t0 = fe_mul(&t1, &t0); // a^(2^252 - 3) — but we need 2^255-21
+                           // Actually: p-2 = 2^255 - 21; above is the standard chain
+                           // Correct chain for a^(p-2):
     t1 = fe_sq(&t0);
     t1 = fe_sq(&t1);
     t1 = fe_sq(&t1);
@@ -548,7 +599,11 @@ pub async fn add_peer(
     std::fs::write(&tmp, serde_json::to_string_pretty(peer)?)?;
     std::fs::rename(&tmp, &peer_file)?;
 
-    info!("Added WG peer: {} ({})", peer.name, peer.pubkey[..8].to_string());
+    info!(
+        "Added WG peer: {} ({})",
+        peer.name,
+        peer.pubkey[..8].to_string()
+    );
     Ok(())
 }
 
@@ -631,10 +686,17 @@ pub async fn remove_peer(
     let _ = docker.start_exec(&exec_id, None).await;
 
     // Remove persisted config
-    let peer_file = data_dir.join("wireguard").join("peers").join(format!("{}.json", node_id));
+    let peer_file = data_dir
+        .join("wireguard")
+        .join("peers")
+        .join(format!("{}.json", node_id));
     let _ = std::fs::remove_file(&peer_file);
 
-    info!("Removed WG peer: {} ({})", node_id, &pubkey[..8.min(pubkey.len())]);
+    info!(
+        "Removed WG peer: {} ({})",
+        node_id,
+        &pubkey[..8.min(pubkey.len())]
+    );
     Ok(())
 }
 
@@ -657,7 +719,9 @@ pub async fn get_status(container_id: &str) -> anyhow::Result<Vec<WgPeerStatus>>
 
     let mut output = String::new();
     match docker.start_exec(&exec_id, None).await? {
-        StartExecResults::Attached { output: mut stream, .. } => {
+        StartExecResults::Attached {
+            output: mut stream, ..
+        } => {
             while let Some(chunk) = stream.next().await {
                 if let Ok(bollard::container::LogOutput::StdOut { message }) = chunk {
                     output.push_str(&String::from_utf8_lossy(&message));

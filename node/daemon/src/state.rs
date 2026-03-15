@@ -1,13 +1,9 @@
+use crate::{
+    api::auth_layer::RateLimiter, capabilities::CapabilityEntry, config::Config,
+    discovery::NetworkIndex, identity::NodeIdentity, peers::Peer,
+};
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use crate::{
-    api::auth_layer::RateLimiter,
-    identity::NodeIdentity,
-    peers::Peer,
-    capabilities::CapabilityEntry,
-    discovery::NetworkIndex,
-    config::Config,
-};
 
 #[derive(Clone)]
 pub struct AppState {

@@ -53,8 +53,14 @@ async fn check_all(state: &AppState) {
         if let Err(e) = capabilities::save(&state.config.data_dir, &caps) {
             warn!("Failed to save capabilities after health check: {}", e);
         }
-        let running = caps.iter().filter(|c| matches!(c.status, CapStatus::Running)).count();
-        let errored = caps.iter().filter(|c| matches!(c.status, CapStatus::Error(_))).count();
+        let running = caps
+            .iter()
+            .filter(|c| matches!(c.status, CapStatus::Running))
+            .count();
+        let errored = caps
+            .iter()
+            .filter(|c| matches!(c.status, CapStatus::Error(_)))
+            .count();
         info!("Health check: {} running, {} errored", running, errored);
     }
 }

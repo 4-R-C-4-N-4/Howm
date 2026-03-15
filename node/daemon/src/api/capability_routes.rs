@@ -9,7 +9,7 @@ use std::time::Duration;
 use tracing::{info, warn};
 
 use crate::{
-    capabilities::{self, CapabilityEntry, CapStatus},
+    capabilities::{self, CapStatus, CapabilityEntry},
     docker,
     error::AppError,
     state::AppState,
@@ -35,7 +35,9 @@ pub async fn install_capability(
 ) -> Result<(StatusCode, Json<Value>), AppError> {
     // S8: Rate limiting
     if !state.install_rate_limiter.check("install") {
-        return Err(AppError::BadRequest("rate limit exceeded — try again later".to_string()));
+        return Err(AppError::BadRequest(
+            "rate limit exceeded — try again later".to_string(),
+        ));
     }
 
     info!("Installing capability from image: {}", req.image);
@@ -46,17 +48,20 @@ pub async fn install_capability(
         let text = std::fs::read_to_string(&allowed_file)
             .map_err(|e| AppError::Internal(e.to_string()))?;
         let allowed: Vec<String> = serde_json::from_str(&text).unwrap_or_default();
-        if !allowed.is_empty() && !allowed.iter().any(|pattern| {
-            if pattern.contains('*') {
-                // Simple glob: "registry/*" matches "registry/anything"
-                let prefix = pattern.trim_end_matches('*');
-                req.image.starts_with(prefix)
-            } else {
-                req.image == *pattern
-            }
-        }) {
+        if !allowed.is_empty()
+            && !allowed.iter().any(|pattern| {
+                if pattern.contains('*') {
+                    // Simple glob: "registry/*" matches "registry/anything"
+                    let prefix = pattern.trim_end_matches('*');
+                    req.image.starts_with(prefix)
+                } else {
+                    req.image == *pattern
+                }
+            })
+        {
             return Err(AppError::Forbidden(format!(
-                "image '{}' not in allowed list", req.image
+                "image '{}' not in allowed list",
+                req.image
             )));
         }
     }
@@ -82,11 +87,10 @@ pub async fn install_capability(
         .map_err(|e| AppError::Internal(format!("Failed to create data volume dir: {}", e)))?;
 
     // 4. Start a temporary container to read the manifest first
-    let temp_container_id = docker::start_capability(
-        &req.image, host_port, data_volume.clone(), 7001, None,
-    )
-        .await
-        .map_err(|e| AppError::DockerError(format!("Failed to start container: {}", e)))?;
+    let temp_container_id =
+        docker::start_capability(&req.image, host_port, data_volume.clone(), 7001, None)
+            .await
+            .map_err(|e| AppError::DockerError(format!("Failed to start container: {}", e)))?;
 
     // 5. Give the process a moment to initialise before reading the manifest
     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -154,7 +158,10 @@ pub async fn install_capability(
             .map_err(|e| AppError::Internal(e.to_string()))?;
     }
 
-    info!("Installed capability '{}' on port {}", manifest.name, host_port);
+    info!(
+        "Installed capability '{}' on port {}",
+        manifest.name, host_port
+    );
     Ok((StatusCode::OK, Json(json!({ "capability": entry }))))
 }
 
@@ -203,8 +210,7 @@ pub async fn start_capability(
             .ok_or_else(|| AppError::NotFound(format!("capability '{}' not found", name)))?
     };
 
-    let docker =
-        docker::connect().map_err(|e| AppError::DockerError(e.to_string()))?;
+    let docker = docker::connect().map_err(|e| AppError::DockerError(e.to_string()))?;
     docker
         .start_container(
             &container_id,

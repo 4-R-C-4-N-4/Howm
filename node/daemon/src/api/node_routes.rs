@@ -54,12 +54,8 @@ pub async fn remove_peer(
     if let Some(pubkey) = peer_pubkey {
         let wg_id = state.wg_container_id.read().await;
         if let Some(ref container_id) = *wg_id {
-            let _ = wireguard::remove_peer(
-                container_id,
-                &state.config.data_dir,
-                &pubkey,
-                &node_id,
-            ).await;
+            let _ = wireguard::remove_peer(container_id, &state.config.data_dir, &pubkey, &node_id)
+                .await;
         }
     }
 
@@ -100,7 +96,9 @@ pub async fn redeem_invite(
 ) -> Result<Json<Value>, AppError> {
     // S8: Rate limiting
     if !state.invite_rate_limiter.check("redeem") {
-        return Err(AppError::BadRequest("rate limit exceeded — try again later".to_string()));
+        return Err(AppError::BadRequest(
+            "rate limit exceeded — try again later".to_string(),
+        ));
     }
 
     let decoded = invite::decode(&req.invite_code)
@@ -117,9 +115,9 @@ pub async fn redeem_invite(
 
     // Add their WG peer on our side
     let wg_id = state.wg_container_id.read().await;
-    let container_id = wg_id.as_deref().ok_or_else(|| {
-        AppError::Internal("WireGuard not initialized".to_string())
-    })?;
+    let container_id = wg_id
+        .as_deref()
+        .ok_or_else(|| AppError::Internal("WireGuard not initialized".to_string()))?;
 
     let wg_peer = wireguard::WgPeerConfig {
         pubkey: decoded.their_pubkey.clone(),
@@ -138,7 +136,8 @@ pub async fn redeem_invite(
     // The endpoint in the invite is the WG endpoint (UDP), but we need the
     // daemon HTTP port. Extract the host from the WG endpoint and use their
     // daemon port from the invite.
-    let their_host = decoded.their_endpoint
+    let their_host = decoded
+        .their_endpoint
         .rsplit_once(':')
         .map(|(h, _)| h)
         .unwrap_or(&decoded.their_endpoint);
@@ -148,7 +147,9 @@ pub async fn redeem_invite(
     let our_wg_address = state.identity.wg_address.as_deref().unwrap_or("");
 
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_millis(state.config.peer_timeout_ms))
+        .timeout(std::time::Duration::from_millis(
+            state.config.peer_timeout_ms,
+        ))
         .build()
         .map_err(|e| AppError::Internal(e.to_string()))?;
 
@@ -171,7 +172,9 @@ pub async fn redeem_invite(
         .map_err(|e| AppError::PeerUnreachable(format!("cannot complete invite: {}", e)))?;
 
     if !complete_resp.status().is_success() {
-        return Err(AppError::Gone("invite completion failed on remote side".to_string()));
+        return Err(AppError::Gone(
+            "invite completion failed on remote side".to_string(),
+        ));
     }
 
     // Get peer info over the WG tunnel to confirm and get their node_id/name
@@ -183,11 +186,7 @@ pub async fn redeem_invite(
     // Give WG a moment to establish handshake
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
-    let peer_info = client
-        .get(&peer_info_url)
-        .send()
-        .await
-        .ok();
+    let peer_info = client.get(&peer_info_url).send().await.ok();
 
     let (peer_node_id, peer_name) = if let Some(resp) = peer_info {
         if let Ok(info) = resp.json::<Value>().await {
@@ -245,7 +244,9 @@ pub async fn complete_invite(
 ) -> Result<Json<Value>, AppError> {
     // S8: Rate limiting
     if !state.invite_rate_limiter.check("complete") {
-        return Err(AppError::BadRequest("rate limit exceeded — try again later".to_string()));
+        return Err(AppError::BadRequest(
+            "rate limit exceeded — try again later".to_string(),
+        ));
     }
 
     // Validate PSK against our pending invites
@@ -255,9 +256,9 @@ pub async fn complete_invite(
 
     // Add the redeemer as a WG peer
     let wg_id = state.wg_container_id.read().await;
-    let container_id = wg_id.as_deref().ok_or_else(|| {
-        AppError::Internal("WireGuard not initialized".to_string())
-    })?;
+    let container_id = wg_id
+        .as_deref()
+        .ok_or_else(|| AppError::Internal("WireGuard not initialized".to_string()))?;
 
     let wg_peer = wireguard::WgPeerConfig {
         pubkey: req.my_pubkey.clone(),

@@ -1,30 +1,30 @@
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 
 use crate::identity::NodeIdentity;
 use crate::wireguard;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct PendingInvite {
-    pub psk: String,               // WireGuard pre-shared key
-    pub assigned_ip: String,       // IP we assigned for the peer on our wg0
-    pub our_pubkey: String,        // our WG public key
-    pub our_endpoint: String,      // our public endpoint
-    pub our_wg_address: String,    // our WG address
-    pub our_daemon_port: u16,      // our daemon API port
+    pub psk: String,            // WireGuard pre-shared key
+    pub assigned_ip: String,    // IP we assigned for the peer on our wg0
+    pub our_pubkey: String,     // our WG public key
+    pub our_endpoint: String,   // our public endpoint
+    pub our_wg_address: String, // our WG address
+    pub our_daemon_port: u16,   // our daemon API port
     pub expires_at: u64,
 }
 
 /// Decoded invite fields (from the invite code).
 pub struct DecodedInvite {
     pub their_pubkey: String,
-    pub their_endpoint: String,     // WG endpoint (public addr:port)
+    pub their_endpoint: String, // WG endpoint (public addr:port)
     pub their_wg_address: String,
     pub psk: String,
     pub my_assigned_ip: String,
-    pub their_daemon_port: u16,     // peer's daemon API port
+    pub their_daemon_port: u16, // peer's daemon API port
     pub expires_at: u64,
 }
 
@@ -38,9 +38,13 @@ pub fn generate(
     daemon_port: u16,
     ttl_s: u64,
 ) -> anyhow::Result<String> {
-    let our_pubkey = identity.wg_pubkey.as_deref()
+    let our_pubkey = identity
+        .wg_pubkey
+        .as_deref()
         .ok_or_else(|| anyhow::anyhow!("WG not initialized — no public key"))?;
-    let our_wg_address = identity.wg_address.as_deref()
+    let our_wg_address = identity
+        .wg_address
+        .as_deref()
         .ok_or_else(|| anyhow::anyhow!("WG not initialized — no address"))?;
     let our_endpoint = endpoint_override
         .or(identity.wg_endpoint.clone())
@@ -83,7 +87,10 @@ pub fn decode(invite_code: &str) -> anyhow::Result<DecodedInvite> {
     let payload = String::from_utf8(bytes)?;
     let parts: Vec<&str> = payload.splitn(7, '|').collect();
     if parts.len() != 7 {
-        return Err(anyhow::anyhow!("invalid invite payload — expected 7 fields, got {}", parts.len()));
+        return Err(anyhow::anyhow!(
+            "invalid invite payload — expected 7 fields, got {}",
+            parts.len()
+        ));
     }
     Ok(DecodedInvite {
         their_pubkey: parts[0].to_string(),

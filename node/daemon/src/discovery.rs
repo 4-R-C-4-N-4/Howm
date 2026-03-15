@@ -1,9 +1,9 @@
+use crate::state::AppState;
 use reqwest;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{info, warn};
-use crate::state::AppState;
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct NetworkIndex {
@@ -61,7 +61,10 @@ async fn run_discovery(state: &AppState) {
                     if let Ok(info_resp) = client.get(&info_url).send().await {
                         if let Ok(info) = info_resp.json::<serde_json::Value>().await {
                             let mut peers_locked = state.peers.write().await;
-                            if let Some(p) = peers_locked.iter_mut().find(|p| p.wg_pubkey == peer.wg_pubkey) {
+                            if let Some(p) = peers_locked
+                                .iter_mut()
+                                .find(|p| p.wg_pubkey == peer.wg_pubkey)
+                            {
                                 if let Some(id) = info["node_id"].as_str() {
                                     p.node_id = id.to_string();
                                 }

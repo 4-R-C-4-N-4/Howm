@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-use uuid::Uuid;
 use std::time::{SystemTime, UNIX_EPOCH};
+use uuid::Uuid;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct NodeIdentity {
@@ -11,9 +11,9 @@ pub struct NodeIdentity {
     #[serde(default)]
     pub wg_pubkey: Option<String>,
     #[serde(default)]
-    pub wg_address: Option<String>,   // 10.47.x.y
+    pub wg_address: Option<String>, // 10.47.x.y
     #[serde(default)]
-    pub wg_endpoint: Option<String>,  // public addr:port for peers to reach us
+    pub wg_endpoint: Option<String>, // public addr:port for peers to reach us
 }
 
 pub fn load_or_create(data_dir: &Path, name: Option<String>) -> anyhow::Result<NodeIdentity> {

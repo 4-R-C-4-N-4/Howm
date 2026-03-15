@@ -55,7 +55,8 @@ mod harness {
         std::fs::write(
             dir.join("node.json"),
             serde_json::to_string_pretty(&identity).unwrap(),
-        ).unwrap();
+        )
+        .unwrap();
 
         // Create API token
         let token = format!("test-token-{}", name);
@@ -99,7 +100,8 @@ mod unit_tests {
         std::fs::write(
             data_dir.join("node.json"),
             serde_json::to_string_pretty(&identity_json).unwrap(),
-        ).unwrap();
+        )
+        .unwrap();
 
         // WG directory for address allocation
         let wg_dir = data_dir.join("wireguard");
@@ -107,27 +109,33 @@ mod unit_tests {
         std::fs::write(wg_dir.join("address"), "10.47.0.1").unwrap();
 
         // Manually create an invite code to test decode
-        use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
         let payload = "dGVzdC1wdWJrZXktYWxpY2U=|1.2.3.4:51820|10.47.0.1|dGVzdC1wc2s=|10.47.0.2|7000|9999999999";
         let encoded = URL_SAFE_NO_PAD.encode(payload.as_bytes());
         let invite_code = format!("howm://invite/{}", encoded);
 
         // Test that the decode function accepts | delimiter correctly
         let decoded_result = decode_invite(&invite_code);
-        assert!(decoded_result.is_ok(), "decode failed: {:?}", decoded_result.err());
+        assert!(
+            decoded_result.is_ok(),
+            "decode failed: {:?}",
+            decoded_result.err()
+        );
         let decoded = decoded_result.unwrap();
         assert_eq!(decoded.0, "dGVzdC1wdWJrZXktYWxpY2U="); // pubkey
-        assert_eq!(decoded.1, "1.2.3.4:51820");             // endpoint (with colon!)
-        assert_eq!(decoded.2, "10.47.0.1");                  // wg_address
-        assert_eq!(decoded.3, "dGVzdC1wc2s=");              // psk
-        assert_eq!(decoded.4, "10.47.0.2");                  // assigned_ip
-        assert_eq!(decoded.5, 7000u16);                      // daemon_port
-        assert_eq!(decoded.6, 9999999999u64);                // expires_at
+        assert_eq!(decoded.1, "1.2.3.4:51820"); // endpoint (with colon!)
+        assert_eq!(decoded.2, "10.47.0.1"); // wg_address
+        assert_eq!(decoded.3, "dGVzdC1wc2s="); // psk
+        assert_eq!(decoded.4, "10.47.0.2"); // assigned_ip
+        assert_eq!(decoded.5, 7000u16); // daemon_port
+        assert_eq!(decoded.6, 9999999999u64); // expires_at
     }
 
     /// Decode helper that mirrors invite::decode without importing the daemon crate.
-    fn decode_invite(code: &str) -> anyhow::Result<(String, String, String, String, String, u16, u64)> {
-        use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+    fn decode_invite(
+        code: &str,
+    ) -> anyhow::Result<(String, String, String, String, String, u16, u64)> {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
         let stripped = code.strip_prefix("howm://invite/").unwrap();
         let bytes = URL_SAFE_NO_PAD.decode(stripped)?;
         let payload = String::from_utf8(bytes)?;
@@ -146,7 +154,7 @@ mod unit_tests {
 
     #[test]
     fn test_invite_delimiter_with_ipv6() {
-        use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
         // Endpoint with IPv6-like address — colons everywhere
         let payload = "pubkey123|[::1]:51820|10.47.0.1|psk456|10.47.0.2|8080|9999999999";
         let encoded = URL_SAFE_NO_PAD.encode(payload.as_bytes());
@@ -170,7 +178,11 @@ mod unit_tests {
 
         impl RateLimiter {
             fn new(limit: u32, window_secs: u64) -> Self {
-                Self { limit, window_secs, buckets: Mutex::new(HashMap::new()) }
+                Self {
+                    limit,
+                    window_secs,
+                    buckets: Mutex::new(HashMap::new()),
+                }
             }
             fn check(&self, key: &str) -> bool {
                 let now = Instant::now();
@@ -225,7 +237,9 @@ mod unit_tests {
                     return candidate;
                 }
                 octet4 = octet4.wrapping_add(1);
-                if octet4 == 0 { octet3 += 1; }
+                if octet4 == 0 {
+                    octet3 += 1;
+                }
             }
         };
 
@@ -242,14 +256,24 @@ mod unit_tests {
         // Test memory parsing
         let parse_mem = |s: &str| -> Option<i64> {
             let s = s.trim();
-            if s.is_empty() { return None; }
+            if s.is_empty() {
+                return None;
+            }
             let (num_str, mul) = if s.ends_with("Gi") || s.ends_with("G") {
-                (s.trim_end_matches("Gi").trim_end_matches("G"), 1024 * 1024 * 1024i64)
+                (
+                    s.trim_end_matches("Gi").trim_end_matches("G"),
+                    1024 * 1024 * 1024i64,
+                )
             } else if s.ends_with("Mi") || s.ends_with("M") {
-                (s.trim_end_matches("Mi").trim_end_matches("M"), 1024 * 1024i64)
+                (
+                    s.trim_end_matches("Mi").trim_end_matches("M"),
+                    1024 * 1024i64,
+                )
             } else if s.ends_with("Ki") || s.ends_with("K") {
                 (s.trim_end_matches("Ki").trim_end_matches("K"), 1024i64)
-            } else { (s, 1i64) };
+            } else {
+                (s, 1i64)
+            };
             num_str.trim().parse::<i64>().ok().map(|n| n * mul)
         };
 
@@ -262,7 +286,10 @@ mod unit_tests {
         let parse_cpu = |s: &str| -> Option<i64> {
             let s = s.trim();
             if s.ends_with("m") {
-                s.trim_end_matches("m").parse::<i64>().ok().map(|v| v * 1_000_000)
+                s.trim_end_matches("m")
+                    .parse::<i64>()
+                    .ok()
+                    .map(|v| v * 1_000_000)
             } else {
                 s.parse::<f64>().ok().map(|v| (v * 1_000_000_000.0) as i64)
             }
@@ -311,7 +338,10 @@ mod unit_tests {
             }
         };
 
-        assert!(check_auth(Some("Bearer my-secret-token"), "my-secret-token"));
+        assert!(check_auth(
+            Some("Bearer my-secret-token"),
+            "my-secret-token"
+        ));
         assert!(!check_auth(Some("Bearer wrong-token"), "my-secret-token"));
         assert!(!check_auth(Some("Basic abc123"), "my-secret-token"));
         assert!(!check_auth(None, "my-secret-token"));
@@ -322,19 +352,19 @@ mod unit_tests {
 
 #[cfg(test)]
 mod http_tests {
-    use super::*;
     use super::harness::*;
+    use super::*;
     use axum::{
-        Router,
         body::Body,
         extract::State,
-        http::{Request, StatusCode, header},
+        http::{header, Request, StatusCode},
         middleware,
-        routing::{get, post, delete, any},
+        routing::{any, delete, get, post},
+        Router,
     };
     use serde_json::{json, Value};
-    use std::sync::Arc;
     use std::collections::HashMap;
+    use std::sync::Arc;
     use std::time::Instant;
     use tower::ServiceExt;
 
@@ -407,7 +437,9 @@ mod http_tests {
             req: Request<Body>,
             next: middleware::Next,
         ) -> Result<axum::response::Response, StatusCode> {
-            let auth = req.headers().get("authorization")
+            let auth = req
+                .headers()
+                .get("authorization")
                 .and_then(|v| v.to_str().ok());
             match auth {
                 Some(h) if h.starts_with("Bearer ") => {
@@ -422,9 +454,10 @@ mod http_tests {
         }
 
         let protected = Router::new()
-            .route("/node/invite", post(|| async {
-                axum::Json(json!({ "invite_code": "howm://invite/test" }))
-            }))
+            .route(
+                "/node/invite",
+                post(|| async { axum::Json(json!({ "invite_code": "howm://invite/test" })) }),
+            )
             .layer(middleware::from_fn_with_state(state.clone(), bearer_auth));
 
         let open = Router::new()
@@ -433,10 +466,7 @@ mod http_tests {
             .route("/node/wireguard", get(get_wg_status))
             .route("/node/complete-invite", post(complete_invite));
 
-        Router::new()
-            .merge(protected)
-            .merge(open)
-            .with_state(state)
+        Router::new().merge(protected).merge(open).with_state(state)
     }
 
     fn make_test_state(name: &str, port: u16) -> TestAppState {
@@ -470,7 +500,9 @@ mod http_tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let info: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(info["name"], "alice");
         assert!(info["wg_pubkey"].as_str().unwrap().starts_with("pubkey-"));
@@ -483,7 +515,8 @@ mod http_tests {
         let app = build_test_router(state.clone());
 
         // POST without auth should fail
-        let resp = app.clone()
+        let resp = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -497,7 +530,8 @@ mod http_tests {
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 
         // POST with wrong token should fail
-        let resp = app.clone()
+        let resp = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -533,7 +567,8 @@ mod http_tests {
         let app = build_test_router(state);
 
         // GET /node/info without any auth should work
-        let resp = app.clone()
+        let resp = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .uri("/node/info")
@@ -555,7 +590,9 @@ mod http_tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let wg: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(wg["status"], "connected");
     }
@@ -572,13 +609,16 @@ mod http_tests {
                     .method("POST")
                     .uri("/node/complete-invite")
                     .header("content-type", "application/json")
-                    .body(Body::from(serde_json::to_string(&json!({
-                        "psk": "some-psk",
-                        "my_pubkey": "pubkey-redeemer",
-                        "my_endpoint": "5.6.7.8:51820",
-                        "my_wg_address": "10.47.0.99",
-                        "my_daemon_port": 7004,
-                    })).unwrap()))
+                    .body(Body::from(
+                        serde_json::to_string(&json!({
+                            "psk": "some-psk",
+                            "my_pubkey": "pubkey-redeemer",
+                            "my_endpoint": "5.6.7.8:51820",
+                            "my_wg_address": "10.47.0.99",
+                            "my_daemon_port": 7004,
+                        }))
+                        .unwrap(),
+                    ))
                     .unwrap(),
             )
             .await
@@ -608,7 +648,9 @@ mod http_tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let data: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(data["peers"].as_array().unwrap().len(), 0);
     }
@@ -645,13 +687,16 @@ mod http_tests {
                     .method("POST")
                     .uri("/node/complete-invite")
                     .header("content-type", "application/json")
-                    .body(Body::from(serde_json::to_string(&json!({
-                        "psk": "test-psk-123",
-                        "my_pubkey": bob.wg_pubkey,
-                        "my_endpoint": bob.wg_endpoint,
-                        "my_wg_address": bob.wg_address,
-                        "my_daemon_port": bob.port,
-                    })).unwrap()))
+                    .body(Body::from(
+                        serde_json::to_string(&json!({
+                            "psk": "test-psk-123",
+                            "my_pubkey": bob.wg_pubkey,
+                            "my_endpoint": bob.wg_endpoint,
+                            "my_wg_address": bob.wg_address,
+                            "my_daemon_port": bob.port,
+                        }))
+                        .unwrap(),
+                    ))
                     .unwrap(),
             )
             .await
