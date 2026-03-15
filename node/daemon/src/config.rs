@@ -38,6 +38,10 @@ pub struct Config {
 
     #[arg(long, default_value = "false")]
     pub dev: bool,
+
+    /// Path to UI dist directory to serve as static files
+    #[arg(long, env = "HOWM_UI_DIR")]
+    pub ui_dir: Option<PathBuf>,
 }
 
 impl Config {
