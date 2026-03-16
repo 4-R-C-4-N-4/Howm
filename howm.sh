@@ -14,6 +14,7 @@
 #   --no-ui                 Skip the web UI
 #   --no-social-feed        Skip building/installing the social-feed capability
 #   --dev                   Pass --dev flag to daemon (enables CORS for Vite proxy)
+#   --logs                  Show daemon logs in the foreground
 #   --help                  Show this help
 #
 # Examples:
@@ -37,6 +38,7 @@ NO_WG=0
 NO_UI=0
 NO_SOCIAL_FEED=0
 DEV_FLAG=""
+SHOW_LOGS=0
 
 # ── Parse args ──────────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -50,6 +52,7 @@ while [[ $# -gt 0 ]]; do
         --no-ui)             NO_UI=1;             shift   ;;
         --no-social-feed)    NO_SOCIAL_FEED=1;    shift   ;;
         --dev)               DEV_FLAG="--dev";    shift   ;;
+        --logs)              SHOW_LOGS=1;         shift   ;;
         --help|-h)
             grep '^#' "$0" | sed 's/^# \{0,2\}//'
             exit 0
@@ -111,9 +114,19 @@ fi
 # ── Build daemon ─────────────────────────────────────────────────────────────
 info "Building daemon (release)..."
 cd "$ROOT_DIR/node"
-cargo build --release 2>&1 | tail -3
+BUILD_OUT=$(cargo build --release 2>&1)
+BUILD_EXIT=$?
+if [[ $BUILD_EXIT -ne 0 ]]; then
+    error "Daemon build failed:"
+    echo "$BUILD_OUT"
+    exit 1
+fi
+if echo "$BUILD_OUT" | grep -q "Compiling daemon"; then
+    success "Daemon rebuilt (source changes detected)"
+else
+    success "Daemon up to date (no changes)"
+fi
 DAEMON_BIN="$ROOT_DIR/node/target/release/daemon"
-success "Daemon built: $DAEMON_BIN"
 
 # ── Build web UI ─────────────────────────────────────────────────────────
 UI_DIR=""
@@ -166,7 +179,12 @@ fi
 
 info "Starting daemon on port $PORT (data: $DATA_DIR)..."
 cd "$ROOT_DIR"
-"$DAEMON_BIN" "${DAEMON_ARGS[@]}" &
+if [[ $SHOW_LOGS -eq 1 ]]; then
+    export RUST_LOG=info
+    "$DAEMON_BIN" "${DAEMON_ARGS[@]}" &
+else
+    "$DAEMON_BIN" "${DAEMON_ARGS[@]}" &>/dev/null &
+fi
 DAEMON_PID=$!
 success "Daemon started (PID $DAEMON_PID)"
 

@@ -23,6 +23,13 @@ pub fn connect() -> anyhow::Result<Docker> {
 
 pub async fn pull_image(image: &str) -> anyhow::Result<()> {
     let docker = connect()?;
+
+    // Check if the image already exists locally (e.g. built with `docker build`)
+    if docker.inspect_image(image).await.is_ok() {
+        info!("Image {} found locally, skipping pull", image);
+        return Ok(());
+    }
+
     info!("Pulling image: {}", image);
 
     let options = CreateImageOptions {

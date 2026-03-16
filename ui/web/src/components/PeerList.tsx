@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { getPeers, removePeer, generateInvite, redeemInvite } from '../api/nodes';
 import type { Peer } from '../api/nodes';
@@ -20,9 +20,9 @@ export function PeerList() {
     refetchInterval: 30000,
   });
 
-  // Derive "now" from the query's dataUpdatedAt so it's stable between re-renders
-  // and only changes when peers are refetched.
-  const now = useMemo(() => dataUpdatedAt || Date.now(), [dataUpdatedAt]);
+  // dataUpdatedAt is the epoch-ms timestamp of the last successful fetch.
+  // Using it as "now" avoids calling Date.now() during render (impure).
+  const now = dataUpdatedAt;
 
   const [showRedeemForm, setShowRedeemForm] = useState(false);
   const [inviteCode, setInviteCode] = useState('');

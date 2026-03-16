@@ -58,7 +58,44 @@ async fn main() -> anyhow::Result<()> {
 
     // Load persisted state
     let peers = peers::load(&config.data_dir)?;
-    let capabilities = capabilities::load(&config.data_dir)?;
+    let mut capabilities = capabilities::load(&config.data_dir)?;
+
+    // Restart capability containers that were running before daemon shutdown
+    for cap in capabilities.iter_mut() {
+        if matches!(cap.status, capabilities::CapStatus::Stopped) {
+            continue;
+        }
+        // Check if the container is still alive
+        let alive = docker::check_health(&cap.container_id)
+            .await
+            .unwrap_or(false);
+        if alive {
+            info!("Capability '{}' container still running", cap.name);
+            continue;
+        }
+        // Container is dead — restart from the image
+        info!(
+            "Restarting capability '{}' from image {}",
+            cap.name, cap.image
+        );
+        let data_volume = config
+            .data_dir
+            .join("cap-data")
+            .join(cap.image.replace(['/', ':'], "-"));
+        std::fs::create_dir_all(&data_volume)?;
+        match docker::start_capability(&cap.image, cap.port, data_volume, 7001, None).await {
+            Ok(new_id) => {
+                info!("Capability '{}' restarted on port {}", cap.name, cap.port);
+                cap.container_id = new_id;
+            }
+            Err(e) => {
+                tracing::warn!("Failed to restart capability '{}': {}", cap.name, e);
+                cap.status = capabilities::CapStatus::Error(format!("restart failed: {}", e));
+            }
+        }
+    }
+    capabilities::save(&config.data_dir, &capabilities)?;
+
     info!(
         "Loaded {} peers, {} capabilities",
         peers.len(),
