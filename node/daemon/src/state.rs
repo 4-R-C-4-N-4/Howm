@@ -20,6 +20,8 @@ pub struct AppState {
     pub invite_rate_limiter: Arc<RateLimiter>,
     /// Rate limiter for capability install (S8)
     pub install_rate_limiter: Arc<RateLimiter>,
+    /// Rate limiter for open invite join requests
+    pub open_join_rate_limiter: Arc<RateLimiter>,
 }
 
 impl AppState {
@@ -30,6 +32,10 @@ impl AppState {
         config: Config,
         api_token: String,
     ) -> Self {
+        let open_join_rate_limiter = Arc::new(RateLimiter::new(
+            config.open_invite_rate_limit,
+            3600,
+        ));
         Self {
             identity,
             peers: Arc::new(RwLock::new(peers)),
@@ -40,6 +46,7 @@ impl AppState {
             api_token,
             invite_rate_limiter: Arc::new(RateLimiter::new(5, 60)),
             install_rate_limiter: Arc::new(RateLimiter::new(2, 60)),
+            open_join_rate_limiter,
         }
     }
 }

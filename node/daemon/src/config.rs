@@ -36,6 +36,15 @@ pub struct Config {
     #[arg(long, default_value = "900", env = "HOWM_INVITE_TTL_S")]
     pub invite_ttl_s: u64,
 
+    #[arg(long, default_value = "256", env = "HOWM_OPEN_MAX_PEERS")]
+    pub open_invite_max_peers: u32,
+
+    #[arg(long, default_value = "10", env = "HOWM_OPEN_RATE_LIMIT")]
+    pub open_invite_rate_limit: u32,
+
+    #[arg(long, default_value = "5", env = "HOWM_OPEN_PRUNE_DAYS")]
+    pub open_invite_prune_days: u64,
+
     #[arg(long, default_value = "false")]
     pub dev: bool,
 

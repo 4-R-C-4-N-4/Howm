@@ -12,7 +12,9 @@ mod error;
 mod health;
 mod identity;
 mod invite;
+mod open_invite;
 mod peers;
+mod prune;
 mod proxy;
 mod state;
 #[allow(clippy::needless_range_loop, clippy::useless_vec)]
@@ -139,6 +141,12 @@ async fn main() -> anyhow::Result<()> {
     let health_state = state.clone();
     tokio::spawn(async move {
         health::start_loop(health_state).await;
+    });
+
+    // Background: prune stale public peers
+    let prune_state = state.clone();
+    tokio::spawn(async move {
+        prune::start_loop(prune_state).await;
     });
 
     // Background: graceful shutdown handler (SIGTERM / SIGINT / Ctrl-C)

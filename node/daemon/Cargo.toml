@@ -25,6 +25,8 @@ base64 = "0.22"
 hex = "0.4"
 chrono = { version = "0.4", features = ["serde"] }
 anyhow = "1"
+hmac = "0.12"
+sha2 = "0.10"
 futures-util = "0.3"
 hostname = "0.3"
 

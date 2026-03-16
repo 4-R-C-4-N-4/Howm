@@ -14,8 +14,9 @@ pub enum AppError {
     Internal(String),
     Forbidden(String),
     Gone(String),
-    #[allow(dead_code)]
     Conflict(String),
+    TooManyRequests(String),
+    InsufficientStorage(String),
 }
 
 impl IntoResponse for AppError {
@@ -29,6 +30,8 @@ impl IntoResponse for AppError {
             AppError::Forbidden(m) => (StatusCode::FORBIDDEN, m),
             AppError::Gone(m) => (StatusCode::GONE, m),
             AppError::Conflict(m) => (StatusCode::CONFLICT, m),
+            AppError::TooManyRequests(m) => (StatusCode::TOO_MANY_REQUESTS, m),
+            AppError::InsufficientStorage(m) => (StatusCode::INSUFFICIENT_STORAGE, m),
         };
         (status, Json(json!({ "error": msg }))).into_response()
     }

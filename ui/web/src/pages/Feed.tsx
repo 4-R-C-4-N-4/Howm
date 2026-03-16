@@ -1,18 +1,43 @@
+import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { getNetworkFeed } from '../api/feed';
 import { PostCard } from '../components/PostCard';
 import { PostComposer } from '../components/PostComposer';
 
 export function Feed() {
+  const [trustFilter, setTrustFilter] = useState<string | undefined>(undefined);
+
   const { data, isLoading, isError, refetch } = useQuery({
-    queryKey: ['network-feed'],
-    queryFn: getNetworkFeed,
+    queryKey: ['network-feed', trustFilter],
+    queryFn: () => getNetworkFeed(trustFilter),
     refetchInterval: 30000,
   });
 
   return (
     <div style={{ maxWidth: '600px', margin: '0 auto', padding: '24px' }}>
-      <h1 style={{ marginBottom: '24px' }}>Network Feed</h1>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
+        <h1 style={{ margin: 0 }}>Network Feed</h1>
+        <div style={{ display: 'flex', gap: '4px', background: '#f3f4f6', borderRadius: '6px', padding: '2px' }}>
+          <button
+            onClick={() => setTrustFilter(undefined)}
+            style={{
+              ...toggleBtnStyle,
+              ...(trustFilter === undefined ? activeToggleStyle : {}),
+            }}
+          >
+            All
+          </button>
+          <button
+            onClick={() => setTrustFilter('friend')}
+            style={{
+              ...toggleBtnStyle,
+              ...(trustFilter === 'friend' ? activeToggleStyle : {}),
+            }}
+          >
+            Friends Only
+          </button>
+        </div>
+      </div>
 
       <PostComposer />
 
@@ -48,3 +73,11 @@ export function Feed() {
     </div>
   );
 }
+
+const toggleBtnStyle: React.CSSProperties = {
+  padding: '4px 12px', border: 'none', borderRadius: '4px',
+  cursor: 'pointer', fontSize: '0.85em', background: 'transparent', color: '#6b7280',
+};
+const activeToggleStyle: React.CSSProperties = {
+  background: '#fff', color: '#111827', boxShadow: '0 1px 2px rgba(0,0,0,0.1)',
+};

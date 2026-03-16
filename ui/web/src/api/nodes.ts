@@ -9,6 +9,8 @@ export interface NodeInfo {
   wg_endpoint: string | null;
 }
 
+export type TrustLevel = 'friend' | 'public' | 'restricted';
+
 export interface Peer {
   node_id: string;
   name: string;
@@ -17,6 +19,17 @@ export interface Peer {
   wg_endpoint: string;
   port: number;
   last_seen: number;
+  trust: TrustLevel;
+}
+
+export interface OpenInviteStatus {
+  enabled: boolean;
+  link?: string;
+  label?: string;
+  max_peers?: number;
+  current_peer_count?: number;
+  created_at?: number;
+  expires_at?: number | null;
 }
 
 export interface WgStatus {
@@ -47,3 +60,14 @@ export const generateInvite = (endpoint?: string) =>
   api.post<{ invite_code: string }>('/node/invite', endpoint ? { endpoint } : {}).then(r => r.data);
 export const redeemInvite = (invite_code: string) =>
   api.post('/node/redeem-invite', { invite_code }).then(r => r.data);
+
+export const getOpenInvite = () =>
+  api.get<OpenInviteStatus>('/node/open-invite').then(r => r.data);
+export const createOpenInvite = (label?: string, max_peers?: number) =>
+  api.post<OpenInviteStatus>('/node/open-invite', { label, max_peers }).then(r => r.data);
+export const revokeOpenInvite = () =>
+  api.delete('/node/open-invite').then(r => r.data);
+export const redeemOpenInvite = (invite_link: string) =>
+  api.post('/node/redeem-open-invite', { invite_link }).then(r => r.data);
+export const updatePeerTrust = (node_id: string, trust: TrustLevel) =>
+  api.patch(`/node/peers/${node_id}/trust`, { trust }).then(r => r.data);

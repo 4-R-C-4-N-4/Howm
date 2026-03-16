@@ -1,6 +1,20 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum TrustLevel {
+    Friend,
+    Public,
+    Restricted,
+}
+
+impl Default for TrustLevel {
+    fn default() -> Self {
+        TrustLevel::Friend
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Peer {
     pub node_id: String,
@@ -10,6 +24,8 @@ pub struct Peer {
     pub wg_endpoint: String, // public addr:port
     pub port: u16,           // daemon API port (on their WG address)
     pub last_seen: u64,
+    #[serde(default)]
+    pub trust: TrustLevel,
 }
 
 pub fn load(data_dir: &Path) -> anyhow::Result<Vec<Peer>> {

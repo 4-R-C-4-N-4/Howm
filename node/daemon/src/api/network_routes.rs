@@ -1,10 +1,16 @@
-use crate::{error::AppError, state::AppState};
+use crate::{error::AppError, peers::TrustLevel, state::AppState};
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     Json,
 };
+use serde::Deserialize;
 use serde_json::{json, Value};
 use tracing::warn;
+
+#[derive(Deserialize, Default)]
+pub struct FeedQuery {
+    pub trust: Option<String>,
+}
 
 pub async fn network_capabilities(State(state): State<AppState>) -> Json<Value> {
     let index = state.network_index.read().await;
@@ -23,7 +29,12 @@ pub async fn find_capability_providers(
     Ok(Json(json!({ "providers": providers })))
 }
 
-pub async fn network_feed(State(state): State<AppState>) -> Json<Value> {
+pub async fn network_feed(
+    Query(query): Query<FeedQuery>,
+    State(state): State<AppState>,
+) -> Json<Value> {
+    let friends_only = query.trust.as_deref() == Some("friend");
+
     let mut all_posts: Vec<serde_json::Value> = Vec::new();
     let mut errors: Vec<String> = Vec::new();
     let timeout = std::time::Duration::from_millis(state.config.peer_timeout_ms);
@@ -52,9 +63,14 @@ pub async fn network_feed(State(state): State<AppState>) -> Json<Value> {
         }
     }
 
-    // 2. Collect posts from peers (via WG tunnel)
+    // 2. Collect posts from peers (via WG tunnel), optionally filtered by trust
     let peers = state.peers.read().await.clone();
-    for peer in &peers {
+    let filtered_peers: Vec<_> = if friends_only {
+        peers.iter().filter(|p| p.trust == TrustLevel::Friend).collect()
+    } else {
+        peers.iter().collect()
+    };
+    for peer in &filtered_peers {
         let url = format!("http://{}:{}/cap/social/feed", peer.wg_address, peer.port);
         let client = reqwest::Client::builder().timeout(timeout).build();
         if let Ok(client) = client {

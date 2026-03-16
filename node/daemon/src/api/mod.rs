@@ -25,8 +25,22 @@ pub fn build_router(state: AppState, ui_dir: Option<PathBuf>) -> Router {
     // Routes that require bearer token for mutations
     let authenticated = Router::new()
         .route("/node/peers/:node_id", delete(node_routes::remove_peer))
+        .route(
+            "/node/peers/:node_id/trust",
+            axum::routing::patch(node_routes::update_peer_trust),
+        )
         .route("/node/invite", post(node_routes::create_invite))
         .route("/node/redeem-invite", post(node_routes::redeem_invite))
+        .route(
+            "/node/open-invite",
+            get(node_routes::get_open_invite)
+                .post(node_routes::create_open_invite)
+                .delete(node_routes::revoke_open_invite),
+        )
+        .route(
+            "/node/redeem-open-invite",
+            post(node_routes::redeem_open_invite),
+        )
         .route(
             "/capabilities/install",
             post(capability_routes::install_capability),
@@ -56,6 +70,8 @@ pub fn build_router(state: AppState, ui_dir: Option<PathBuf>) -> Router {
         .route("/node/wireguard", get(node_routes::get_wg_status))
         // complete-invite: called by remote peer using PSK auth, no bearer needed
         .route("/node/complete-invite", post(node_routes::complete_invite))
+        // open-join: called by remote peer to join via open invite, no bearer needed
+        .route("/node/open-join", post(node_routes::open_join))
         // Read-only capability/network info
         .route("/capabilities", get(capability_routes::list_capabilities))
         .route(

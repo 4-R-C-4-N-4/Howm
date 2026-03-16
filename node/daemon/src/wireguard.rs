@@ -793,6 +793,21 @@ pub fn assign_next_address(data_dir: &Path) -> anyhow::Result<String> {
     }
 }
 
+/// Reclaim a previously assigned IP address, making it available for reuse.
+pub fn reclaim_address(data_dir: &Path, address: &str) -> anyhow::Result<()> {
+    let addr_file = data_dir.join("wireguard").join("addresses.json");
+    if !addr_file.exists() {
+        return Ok(());
+    }
+    let text = std::fs::read_to_string(&addr_file)?;
+    let mut addresses: Vec<String> = serde_json::from_str(&text).unwrap_or_default();
+    addresses.retain(|a| a != address);
+    let tmp = data_dir.join("wireguard").join("addresses.json.tmp");
+    std::fs::write(&tmp, serde_json::to_string_pretty(&addresses)?)?;
+    std::fs::rename(&tmp, &addr_file)?;
+    Ok(())
+}
+
 // ── Peer persistence ────────────────────────────────────────────────────────
 
 fn load_peers(wg_dir: &Path) -> anyhow::Result<Vec<WgPeerConfig>> {

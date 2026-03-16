@@ -13,10 +13,41 @@ env:
 
 jobs:
   # ─────────────────────────────────────────────
+  # Build the web UI (shared across all platforms)
+  # ─────────────────────────────────────────────
+  build-ui:
+    name: Build UI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: ui/web/package-lock.json
+
+      - name: Install & build
+        working-directory: ui/web
+        run: |
+          npm ci
+          npm run build
+
+      - name: Upload UI dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-dist
+          path: ui/web/dist
+          retention-days: 5
+          if-no-files-found: error
+
+  # ─────────────────────────────────────────────
   # Build release binaries for all platforms
   # ─────────────────────────────────────────────
   build-binaries:
     name: Build (${{ matrix.target }})
+    needs: [build-ui]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -74,12 +105,19 @@ jobs:
         working-directory: node
         run: cargo build --release --target ${{ matrix.target }}
 
+      - name: Download UI dist
+        uses: actions/download-artifact@v4
+        with:
+          name: ui-dist
+          path: ui-dist
+
       - name: Package (Unix)
         if: runner.os != 'Windows'
         run: |
-          mkdir -p staging
+          mkdir -p staging/ui
           cp node/target/${{ matrix.target }}/release/${{ matrix.artifact }} staging/
           cp README.md LICENSE staging/
+          cp -r ui-dist/* staging/ui/
           cd staging
           tar czf ../${{ matrix.archive }} .
 
@@ -87,9 +125,10 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path staging
+          New-Item -ItemType Directory -Force -Path staging/ui
           Copy-Item "node/target/${{ matrix.target }}/release/${{ matrix.artifact }}" staging/
           Copy-Item README.md, LICENSE staging/
+          Copy-Item -Recurse ui-dist/* staging/ui/
           Compress-Archive -Path staging/* -DestinationPath ${{ matrix.archive }}
 
       - name: Upload archive

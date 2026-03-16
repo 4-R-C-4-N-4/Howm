@@ -3,6 +3,7 @@ import { getNodeInfo, getWgStatus } from '../api/nodes';
 import { getApiToken, setApiToken, clearApiToken } from '../api/client';
 import { PeerList } from '../components/PeerList';
 import { CapabilityList } from '../components/CapabilityList';
+import { OpenInviteSection } from '../components/OpenInviteSection';
 import { useState } from 'react';
 
 export function Dashboard() {
@@ -127,6 +128,11 @@ export function Dashboard() {
         ) : (
           <p style={{ color: '#888' }}>Loading WireGuard status...</p>
         )}
+      </div>
+
+      {/* Open Invite */}
+      <div style={cardStyle}>
+        <OpenInviteSection />
       </div>
 
       {/* Peer List */}
