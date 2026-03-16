@@ -7,8 +7,8 @@ mod api;
 mod capabilities;
 mod config;
 mod discovery;
-mod docker;
 mod error;
+mod executor;
 mod health;
 mod identity;
 mod invite;
@@ -35,7 +35,7 @@ async fn main() -> anyhow::Result<()> {
     let mut identity = identity::load_or_create(&config.data_dir, config.name.clone())?;
     info!("Node identity: {} ({})", identity.name, identity.node_id);
 
-    // Init WireGuard — manages howm-wg Docker container
+    // Init WireGuard
     let wg_config = wireguard::WgConfig {
         enabled: config.wg_enabled(),
         port: config.wg_port,
@@ -62,37 +62,48 @@ async fn main() -> anyhow::Result<()> {
     let peers = peers::load(&config.data_dir)?;
     let mut capabilities = capabilities::load(&config.data_dir)?;
 
-    // Restart capability containers that were running before daemon shutdown
+    // Restart capability processes that were running before daemon shutdown
     for cap in capabilities.iter_mut() {
         if matches!(cap.status, capabilities::CapStatus::Stopped) {
             continue;
         }
-        // Check if the container is still alive
-        let alive = docker::check_health(&cap.container_id)
-            .await
+        // Check if the process is still alive
+        let alive = cap
+            .pid
+            .map(|pid| executor::check_health(pid))
             .unwrap_or(false);
         if alive {
-            info!("Capability '{}' container still running", cap.name);
+            info!("Capability '{}' process still running (pid={:?})", cap.name, cap.pid);
             continue;
         }
-        // Container is dead — restart from the image
+        // Process is dead — restart from the binary
         info!(
-            "Restarting capability '{}' from image {}",
-            cap.name, cap.image
+            "Restarting capability '{}' from {}",
+            cap.name, cap.binary_path
         );
-        let data_volume = config
-            .data_dir
-            .join("cap-data")
-            .join(cap.image.replace(['/', ':'], "-"));
-        std::fs::create_dir_all(&data_volume)?;
-        match docker::start_capability(&cap.image, cap.port, data_volume, 7001, None).await {
-            Ok(new_id) => {
-                info!("Capability '{}' restarted on port {}", cap.name, cap.port);
-                cap.container_id = new_id;
+        let data_dir = &cap.data_dir;
+        std::fs::create_dir_all(data_dir)?;
+        match executor::start_capability(
+            &cap.binary_path,
+            &cap.name,
+            cap.port,
+            data_dir,
+            std::collections::HashMap::new(),
+        )
+        .await
+        {
+            Ok(new_pid) => {
+                info!(
+                    "Capability '{}' restarted on port {} (pid={})",
+                    cap.name, cap.port, new_pid
+                );
+                cap.pid = Some(new_pid);
+                cap.status = capabilities::CapStatus::Running;
             }
             Err(e) => {
                 tracing::warn!("Failed to restart capability '{}': {}", cap.name, e);
                 cap.status = capabilities::CapStatus::Error(format!("restart failed: {}", e));
+                cap.pid = None;
             }
         }
     }
@@ -105,7 +116,7 @@ async fn main() -> anyhow::Result<()> {
     );
 
     // Generate or load API bearer token (S2)
-    let api_token = api::auth_layer::load_or_create_token(&config.data_dir)?;
+    let api_token=api::auth_layer::load_or_create_token(&config.data_dir)?;
     info!("API bearer token: {}", api_token);
 
     // Build app state
@@ -124,11 +135,6 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Build Axum router
-    // Single listener on 0.0.0.0 with bearer auth on mutations.
-    // complete-invite must be reachable before the WG tunnel exists,
-    // so we can't use a WG-only peer listener for that.
-    // WG tunnel IS the auth for ongoing peer traffic; bearer token
-    // protects the local management mutations from the LAN.
     let router = api::build_router(state.clone(), config.ui_dir.clone());
 
     // Background: discovery loop
@@ -150,12 +156,11 @@ async fn main() -> anyhow::Result<()> {
     });
 
     // Background: graceful shutdown handler (SIGTERM / SIGINT / Ctrl-C)
-    let shutdown_wg_id = wg_state.container_id.clone();
     let shutdown_app_state = state.clone();
     tokio::spawn(async move {
         wait_for_shutdown_signal().await;
         info!("Shutdown signal received — cleaning up...");
-        do_shutdown(&shutdown_app_state, shutdown_wg_id.as_deref()).await;
+        do_shutdown(&shutdown_app_state).await;
         std::process::exit(0);
     });
 
@@ -191,18 +196,14 @@ async fn wait_for_shutdown_signal() {
     }
 }
 
-async fn do_shutdown(state: &state::AppState, wg_container_id: Option<&str>) {
-    // Stop all running capability containers
+async fn do_shutdown(state: &state::AppState) {
+    // Stop all running capability processes
     let caps = state.capabilities.read().await.clone();
     for cap in &caps {
-        info!("Stopping capability container: {}", cap.name);
-        let _ = docker::stop_capability(&cap.container_id).await;
-    }
-
-    // Stop WG container
-    if let Some(id) = wg_container_id {
-        if let Err(e) = wireguard::shutdown(id).await {
-            tracing::warn!("WG shutdown error: {}", e);
+        if let Some(pid) = cap.pid {
+            info!("Stopping capability process: {} (pid={})", cap.name, pid);
+            let _ = executor::stop_capability(pid).await;
         }
     }
+    // Note: WG container shutdown removed — will be handled separately
 }
