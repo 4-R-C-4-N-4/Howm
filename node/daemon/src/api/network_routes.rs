@@ -66,7 +66,10 @@ pub async fn network_feed(
     // 2. Collect posts from peers (via WG tunnel), optionally filtered by trust
     let peers = state.peers.read().await.clone();
     let filtered_peers: Vec<_> = if friends_only {
-        peers.iter().filter(|p| p.trust == TrustLevel::Friend).collect()
+        peers
+            .iter()
+            .filter(|p| p.trust == TrustLevel::Friend)
+            .collect()
     } else {
         peers.iter().collect()
     };

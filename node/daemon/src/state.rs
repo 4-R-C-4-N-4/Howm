@@ -32,10 +32,8 @@ impl AppState {
         config: Config,
         api_token: String,
     ) -> Self {
-        let open_join_rate_limiter = Arc::new(RateLimiter::new(
-            config.open_invite_rate_limit,
-            3600,
-        ));
+        let open_join_rate_limiter =
+            Arc::new(RateLimiter::new(config.open_invite_rate_limit, 3600));
         Self {
             identity,
             peers: Arc::new(RwLock::new(peers)),

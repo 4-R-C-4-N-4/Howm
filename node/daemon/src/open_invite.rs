@@ -56,7 +56,10 @@ pub fn create(
 
     // Token: base64url(node_id|wg_pubkey|endpoint|daemon_port|sig)
     let token_payload = format!("{}|{}", payload, sig_b64);
-    let token = format!("howm://open/{}", URL_SAFE_NO_PAD.encode(token_payload.as_bytes()));
+    let token = format!(
+        "howm://open/{}",
+        URL_SAFE_NO_PAD.encode(token_payload.as_bytes())
+    );
 
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
 

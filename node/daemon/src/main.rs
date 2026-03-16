@@ -14,8 +14,8 @@ mod identity;
 mod invite;
 mod open_invite;
 mod peers;
-mod prune;
 mod proxy;
+mod prune;
 mod state;
 #[allow(clippy::needless_range_loop, clippy::useless_vec)]
 mod wireguard;
