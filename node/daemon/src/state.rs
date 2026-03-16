@@ -12,8 +12,8 @@ pub struct AppState {
     pub capabilities: Arc<RwLock<Vec<CapabilityEntry>>>,
     pub network_index: Arc<RwLock<NetworkIndex>>,
     pub config: Config,
-    /// WG container ID — for graceful shutdown cleanup
-    pub wg_container_id: Arc<RwLock<Option<String>>>,
+    /// Whether the WG tunnel is active (interface created successfully)
+    pub wg_active: Arc<RwLock<bool>>,
     /// Bearer token for local management API auth (S2)
     pub api_token: String,
     /// Rate limiter for invite endpoints (S8)
@@ -40,7 +40,7 @@ impl AppState {
             capabilities: Arc::new(RwLock::new(capabilities)),
             network_index: Arc::new(RwLock::new(NetworkIndex::default())),
             config,
-            wg_container_id: Arc::new(RwLock::new(None)),
+            wg_active: Arc::new(RwLock::new(false)),
             api_token,
             invite_rate_limiter: Arc::new(RateLimiter::new(5, 60)),
             install_rate_limiter: Arc::new(RateLimiter::new(2, 60)),

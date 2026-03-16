@@ -1,7 +1,7 @@
 use clap::Parser;
 use std::net::SocketAddr;
 use tracing::info;
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::{fmt, EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
 mod api;
 mod capabilities;
@@ -17,19 +17,39 @@ mod peers;
 mod proxy;
 mod prune;
 mod state;
-#[allow(clippy::needless_range_loop, clippy::useless_vec)]
 mod wireguard;
 
 use config::Config;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env().add_directive("info".parse()?))
-        .init();
-
     let config = Config::parse();
     std::fs::create_dir_all(&config.data_dir)?;
+
+    // Set up logging: file-based with optional stdout in debug mode
+    let log_dir = config.data_dir.join("logs");
+    std::fs::create_dir_all(&log_dir)?;
+    let file_appender = tracing_appender::rolling::daily(&log_dir, "howm.log");
+    let env_filter = EnvFilter::from_default_env().add_directive("info".parse()?);
+
+    if config.debug {
+        let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(fmt::layer().with_writer(std::io::stdout))
+            .with(fmt::layer().with_writer(non_blocking).with_ansi(false))
+            .init();
+        // Leak guard so it lives for the program duration
+        std::mem::forget(_guard);
+    } else {
+        let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(fmt::layer().with_writer(non_blocking).with_ansi(false))
+            .init();
+        std::mem::forget(_guard);
+    }
+
 
     // Load or create identity
     let mut identity = identity::load_or_create(&config.data_dir, config.name.clone())?;
@@ -128,10 +148,10 @@ async fn main() -> anyhow::Result<()> {
         api_token,
     );
 
-    // Store WG container ID for graceful shutdown cleanup
+    // Store WG active state
     {
-        let mut wg_id = state.wg_container_id.write().await;
-        *wg_id = wg_state.container_id.clone();
+        let mut wg_active = state.wg_active.write().await;
+        *wg_active = wg_state.tunnel_handle.is_some();
     }
 
     // Build Axum router
@@ -205,5 +225,11 @@ async fn do_shutdown(state: &state::AppState) {
             let _ = executor::stop_capability(pid).await;
         }
     }
-    // Note: WG container shutdown removed — will be handled separately
+    // Shutdown WireGuard interface
+    let wg_active = *state.wg_active.read().await;
+    if wg_active {
+        if let Err(e) = wireguard::shutdown().await {
+            tracing::warn!("WG shutdown error: {}", e);
+        }
+    }
 }

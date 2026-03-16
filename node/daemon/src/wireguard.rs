@@ -1,5 +1,5 @@
-// TODO: WireGuard module - Docker-based container management removed.
-// Docker-dependent functions are stubbed out until native WG support is added.
+// WireGuard module — native implementation using system `wg` and `ip` CLI tools.
+// Works on Linux with wireguard-tools installed.
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -12,7 +12,7 @@ pub struct WgConfig {
     pub enabled: bool,
     pub port: u16,
     pub endpoint: Option<String>, // public addr:port for peers to reach us
-    pub address: Option<String>,  // override WG address (10.47.x.y)
+    pub address: Option<String>,  // override WG address (100.222.x.y)
     pub data_dir: PathBuf,
     pub node_id: String,
 }
@@ -20,9 +20,9 @@ pub struct WgConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WgState {
     pub public_key: Option<String>,
-    pub address: Option<String>,  // 10.47.x.y
+    pub address: Option<String>,  // 100.222.x.y
     pub endpoint: Option<String>, // public addr:port
-    pub container_id: Option<String>,
+    pub tunnel_handle: Option<()>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -45,12 +45,14 @@ pub struct WgPeerStatus {
     pub transfer_tx: u64,
 }
 
-const WG_SUBNET: &str = "10.47"; // 10.47.0.0/16
+const WG_SUBNET: &str = "100.222"; // 100.222.0.0/16
+const WG_IFACE: &str = "howm0";
 
 // ── Initialization ──────────────────────────────────────────────────────────
 
-/// Initialize WireGuard: generate keypair, but skip Docker container start.
-/// Returns WgState with our public key, address (no container_id).
+/// Initialize WireGuard: generate keypair, create kernel WG interface.
+/// Returns WgState with our public key, address.
+/// Falls back to WG-disabled mode if interface creation fails.
 pub async fn init(config: &WgConfig) -> anyhow::Result<WgState> {
     if !config.enabled {
         info!("WireGuard disabled");
@@ -58,7 +60,7 @@ pub async fn init(config: &WgConfig) -> anyhow::Result<WgState> {
             public_key: None,
             address: None,
             endpoint: None,
-            container_id: None,
+            tunnel_handle: None,
         });
     }
 
@@ -66,7 +68,7 @@ pub async fn init(config: &WgConfig) -> anyhow::Result<WgState> {
     std::fs::create_dir_all(&wg_dir)?;
 
     // Generate keypair if needed
-    let (_private_key, public_key) = ensure_keypair(&wg_dir)?;
+    let (private_key, public_key) = ensure_keypair(&wg_dir)?;
     info!("WG public key: {}", public_key);
 
     // Determine our WG address
@@ -77,7 +79,7 @@ pub async fn init(config: &WgConfig) -> anyhow::Result<WgState> {
             if addr_file.exists() {
                 std::fs::read_to_string(&addr_file)?.trim().to_string()
             } else {
-                // First node gets 10.47.0.1
+                // First node gets 100.222.0.1
                 let addr = format!("{}.0.1", WG_SUBNET);
                 std::fs::write(&addr_file, &addr)?;
                 addr
@@ -88,29 +90,139 @@ pub async fn init(config: &WgConfig) -> anyhow::Result<WgState> {
 
     let endpoint = config.endpoint.clone();
 
-    // TODO: Docker container start removed. Native WG support to be added.
-    warn!("WireGuard Docker container disabled — tunnel not active. Native WG support pending.");
+    // Try to create the WireGuard interface
+    match setup_wg_interface(&private_key, &address, config.port, &wg_dir).await {
+        Ok(()) => {
+            info!("WireGuard interface {} configured on port {}", WG_IFACE, config.port);
 
-    Ok(WgState {
-        public_key: Some(public_key),
-        address: Some(address),
-        endpoint,
-        container_id: None, // No Docker container
-    })
+            // Load and configure saved peers
+            let peers = load_peers(&wg_dir).unwrap_or_default();
+            for peer in &peers {
+                if let Err(e) = configure_wg_peer(&wg_dir, peer).await {
+                    warn!("Failed to restore WG peer {}: {}", peer.name, e);
+                }
+            }
+            if !peers.is_empty() {
+                info!("Restored {} WG peers", peers.len());
+            }
+
+            Ok(WgState {
+                public_key: Some(public_key),
+                address: Some(address),
+                endpoint,
+                tunnel_handle: Some(()),
+            })
+        }
+        Err(e) => {
+            warn!("Failed to create WireGuard interface: {}. Falling back to WG-disabled mode.", e);
+            warn!("Ensure wireguard-tools is installed and you have root/CAP_NET_ADMIN privileges.");
+            Ok(WgState {
+                public_key: Some(public_key),
+                address: Some(address),
+                endpoint,
+                tunnel_handle: None,
+            })
+        }
+    }
 }
 
-// ── Container management (STUBBED) ──────────────────────────────────────────
+/// Set up the kernel WireGuard interface using `ip` and `wg` CLI tools.
+async fn setup_wg_interface(
+    _private_key: &str,
+    address: &str,
+    port: u16,
+    wg_dir: &Path,
+) -> anyhow::Result<()> {
+    // Remove existing interface if present (ignore errors)
+    let _ = tokio::process::Command::new("ip")
+        .args(["link", "delete", WG_IFACE])
+        .output()
+        .await;
 
-/// Stop and remove the WG container. (Stubbed — no-op without Docker)
-pub async fn shutdown(_container_id: &str) -> anyhow::Result<()> {
-    // TODO: Implement native WG shutdown
-    warn!("WG shutdown called but Docker is disabled — no-op");
+    // Create WireGuard interface
+    let output = tokio::process::Command::new("ip")
+        .args(["link", "add", WG_IFACE, "type", "wireguard"])
+        .output()
+        .await?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(anyhow::anyhow!("ip link add failed: {}", stderr.trim()));
+    }
+
+    // Write private key to a temp file for wg setconf
+    let privkey_file = wg_dir.join("private_key");
+
+    // Configure WireGuard with private key and listen port
+    let output = tokio::process::Command::new("wg")
+        .args([
+            "set",
+            WG_IFACE,
+            "private-key",
+            privkey_file.to_str().unwrap(),
+            "listen-port",
+            &port.to_string(),
+        ])
+        .output()
+        .await?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        // Clean up interface on failure
+        let _ = tokio::process::Command::new("ip")
+            .args(["link", "delete", WG_IFACE])
+            .output()
+            .await;
+        return Err(anyhow::anyhow!("wg set failed: {}", stderr.trim()));
+    }
+
+    // Assign IP address
+    let output = tokio::process::Command::new("ip")
+        .args([
+            "addr", "add",
+            &format!("{}/16", address),
+            "dev", WG_IFACE,
+        ])
+        .output()
+        .await?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        // Not fatal if address already exists
+        if !stderr.contains("RTNETLINK answers: File exists") {
+            warn!("ip addr add warning: {}", stderr.trim());
+        }
+    }
+
+    // Bring interface up
+    let output = tokio::process::Command::new("ip")
+        .args(["link", "set", WG_IFACE, "up"])
+        .output()
+        .await?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(anyhow::anyhow!("ip link set up failed: {}", stderr.trim()));
+    }
+
+    Ok(())
+}
+
+// ── Shutdown ────────────────────────────────────────────────────────────────
+
+/// Stop WireGuard — remove the interface.
+pub async fn shutdown() -> anyhow::Result<()> {
+    info!("Shutting down WireGuard interface {}", WG_IFACE);
+    let output = tokio::process::Command::new("ip")
+        .args(["link", "delete", WG_IFACE])
+        .output()
+        .await?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        warn!("Failed to remove WG interface: {}", stderr.trim());
+    }
     Ok(())
 }
 
 // ── Key management ──────────────────────────────────────────────────────────
 
-/// Ensure a WG keypair exists on disk. Returns (private_key, public_key).
+/// Ensure a WG keypair exists on disk. Returns (private_key, public_key) as base64.
 fn ensure_keypair(wg_dir: &Path) -> anyhow::Result<(String, String)> {
     let priv_path = wg_dir.join("private_key");
     let pub_path = wg_dir.join("public_key");
@@ -121,7 +233,7 @@ fn ensure_keypair(wg_dir: &Path) -> anyhow::Result<(String, String)> {
         return Ok((private_key, public_key));
     }
 
-    // Generate new keypair using x25519
+    // Generate new keypair using x25519-dalek
     info!("Generating new WireGuard keypair");
     let private_key = generate_private_key();
     let public_key = derive_public_key(&private_key);
@@ -141,29 +253,26 @@ fn ensure_keypair(wg_dir: &Path) -> anyhow::Result<(String, String)> {
 
 /// Generate a WireGuard private key (base64-encoded x25519 secret).
 fn generate_private_key() -> String {
-    use rand::RngCore;
-    let mut key_bytes = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut key_bytes);
-    // Clamp for x25519
-    key_bytes[0] &= 248;
-    key_bytes[31] &= 127;
-    key_bytes[31] |= 64;
     use base64::{engine::general_purpose::STANDARD, Engine as _};
-    STANDARD.encode(key_bytes)
+    use x25519_dalek::StaticSecret;
+    let secret = StaticSecret::random_from_rng(rand::thread_rng());
+    STANDARD.encode(secret.to_bytes())
 }
 
-/// Derive a WireGuard public key from a private key.
+/// Derive a WireGuard public key from a base64-encoded private key.
 fn derive_public_key(private_key_b64: &str) -> String {
     use base64::{engine::general_purpose::STANDARD, Engine as _};
+    use x25519_dalek::{PublicKey, StaticSecret};
+
     let private_bytes = STANDARD
         .decode(private_key_b64)
         .expect("valid base64 private key");
     let mut key = [0u8; 32];
     key.copy_from_slice(&private_bytes[..32]);
 
-    // x25519 base point multiplication
-    let public_bytes = x25519_scalar_mult(&key);
-    STANDARD.encode(public_bytes)
+    let secret = StaticSecret::from(key);
+    let public = PublicKey::from(&secret);
+    STANDARD.encode(public.as_bytes())
 }
 
 /// Generate a WireGuard pre-shared key (random 32 bytes, base64-encoded).
@@ -175,283 +284,17 @@ pub fn generate_psk() -> String {
     STANDARD.encode(key_bytes)
 }
 
-/// Minimal x25519 scalar multiplication (base point).
-fn x25519_scalar_mult(scalar: &[u8; 32]) -> [u8; 32] {
-    let mut base_point = [0u8; 32];
-    base_point[0] = 9;
-    x25519_mult(scalar, &base_point)
-}
+// ── Peer operations ─────────────────────────────────────────────────────────
 
-/// x25519 Diffie-Hellman function (RFC 7748).
-/// Field element is represented as [u64; 5] in radix 2^51.
-fn x25519_mult(k: &[u8; 32], u: &[u8; 32]) -> [u8; 32] {
-    let mut scalar = *k;
-    scalar[0] &= 248;
-    scalar[31] &= 127;
-    scalar[31] |= 64;
-
-    let mut u_bytes = *u;
-    u_bytes[31] &= 127;
-    let x_1 = fe_from_bytes(&u_bytes);
-
-    let mut x_2 = fe_one();
-    let mut z_2 = fe_zero();
-    let mut x_3 = x_1;
-    let mut z_3 = fe_one();
-    let mut swap: u64 = 0;
-
-    for pos in (0..255).rev() {
-        let bit = ((scalar[pos >> 3] >> (pos & 7)) & 1) as u64;
-        swap ^= bit;
-        fe_cswap(&mut x_2, &mut x_3, swap);
-        fe_cswap(&mut z_2, &mut z_3, swap);
-        swap = bit;
-
-        let a = fe_add(&x_2, &z_2);
-        let aa = fe_sq(&a);
-        let b = fe_sub(&x_2, &z_2);
-        let bb = fe_sq(&b);
-        let e = fe_sub(&aa, &bb);
-        let c = fe_add(&x_3, &z_3);
-        let d = fe_sub(&x_3, &z_3);
-        let da = fe_mul(&d, &a);
-        let cb = fe_mul(&c, &b);
-        x_3 = fe_sq(&fe_add(&da, &cb));
-        z_3 = fe_mul(&x_1, &fe_sq(&fe_sub(&da, &cb)));
-        x_2 = fe_mul(&aa, &bb);
-        z_2 = fe_mul(&e, &fe_add(&aa, &fe_mul_121666(&e)));
-    }
-
-    fe_cswap(&mut x_2, &mut x_3, swap);
-    fe_cswap(&mut z_2, &mut z_3, swap);
-
-    let result = fe_mul(&x_2, &fe_inv(&z_2));
-    fe_to_bytes(&result)
-}
-
-// ── Field arithmetic for Curve25519 (radix 2^51) ────────────────────────────
-
-type Fe = [u64; 5];
-
-fn fe_zero() -> Fe {
-    [0; 5]
-}
-fn fe_one() -> Fe {
-    [1, 0, 0, 0, 0]
-}
-
-fn fe_from_bytes(s: &[u8; 32]) -> Fe {
-    let mut h = [0u128; 5];
-    let load8 = |b: &[u8]| -> u128 {
-        let mut r = 0u128;
-        for i in 0..b.len().min(8) {
-            r |= (b[i] as u128) << (8 * i);
-        }
-        r
-    };
-    h[0] = load8(&s[0..]) & 0x7ffffffffffff;
-    h[1] = (load8(&s[6..]) >> 3) & 0x7ffffffffffff;
-    h[2] = (load8(&s[12..]) >> 6) & 0x7ffffffffffff;
-    h[3] = (load8(&s[19..]) >> 1) & 0x7ffffffffffff;
-    h[4] = (load8(&s[24..]) >> 12) & 0x7ffffffffffff;
-    [
-        h[0] as u64,
-        h[1] as u64,
-        h[2] as u64,
-        h[3] as u64,
-        h[4] as u64,
-    ]
-}
-
-fn fe_to_bytes(h: &Fe) -> [u8; 32] {
-    let mut t = *h;
-    let mut q = (19 * t[4] + (1 << 50)) >> 51;
-    for i in 0..4 {
-        q = (t[i] + q) >> 51;
-    }
-    q = (t[4] + q) >> 51;
-    t[0] += 19 * q;
-    let carry = t[0] >> 51;
-    t[0] &= 0x7ffffffffffff;
-    t[1] += carry;
-    let carry = t[1] >> 51;
-    t[1] &= 0x7ffffffffffff;
-    t[2] += carry;
-    let carry = t[2] >> 51;
-    t[2] &= 0x7ffffffffffff;
-    t[3] += carry;
-    let carry = t[3] >> 51;
-    t[3] &= 0x7ffffffffffff;
-    t[4] += carry;
-    t[4] &= 0x7ffffffffffff;
-
-    let mut m = t[0].wrapping_sub(0x7ffffffffffed);
-    for i in 1..4 {
-        m &= t[i].wrapping_sub(0x7ffffffffffff);
-    }
-    m &= t[4].wrapping_sub(0x7ffffffffffff);
-    let mask = (m >> 63).wrapping_sub(1);
-    t[0] -= 0x7ffffffffffed & mask;
-    for i in 1..5 {
-        t[i] -= 0x7ffffffffffff & mask;
-    }
-
-    let mut s = [0u8; 32];
-    let combined: u128 = (t[0] as u128) | ((t[1] as u128) << 51) | ((t[2] as u128) << 102);
-    for i in 0..16 {
-        s[i] = (combined >> (8 * i)) as u8;
-    }
-    let combined2: u128 = ((t[2] as u128) >> 26) | ((t[3] as u128) << 25) | ((t[4] as u128) << 76);
-    for i in 0..16 {
-        s[i + 16] = (combined2 >> (8 * i)) as u8;
-    }
-    s
-}
-
-fn fe_add(a: &Fe, b: &Fe) -> Fe {
-    let mut r = [0u64; 5];
-    for i in 0..5 {
-        r[i] = a[i] + b[i];
-    }
-    r
-}
-
-fn fe_sub(a: &Fe, b: &Fe) -> Fe {
-    let two_p: Fe = [
-        0xfffffffffffda,
-        0xffffffffffffe,
-        0xffffffffffffe,
-        0xffffffffffffe,
-        0xffffffffffffe,
-    ];
-    let mut r = [0u64; 5];
-    for i in 0..5 {
-        r[i] = a[i] + two_p[i] - b[i];
-    }
-    r
-}
-
-fn fe_mul(a: &Fe, b: &Fe) -> Fe {
-    let mut t = [0u128; 5];
-    for i in 0..5 {
-        for j in 0..5 {
-            let idx = i + j;
-            let prod = (a[i] as u128) * (b[j] as u128);
-            if idx < 5 {
-                t[idx] += prod;
-            } else {
-                t[idx - 5] += prod * 19;
-            }
-        }
-    }
-    let mut r = [0u64; 5];
-    let mut carry = 0u128;
-    for i in 0..5 {
-        t[i] += carry;
-        r[i] = (t[i] & 0x7ffffffffffff) as u64;
-        carry = t[i] >> 51;
-    }
-    r[0] += (carry * 19) as u64;
-    let c = r[0] >> 51;
-    r[0] &= 0x7ffffffffffff;
-    r[1] += c;
-    r
-}
-
-fn fe_sq(a: &Fe) -> Fe {
-    fe_mul(a, a)
-}
-
-fn fe_mul_121666(a: &Fe) -> Fe {
-    let mut t = [0u128; 5];
-    for i in 0..5 {
-        t[i] = (a[i] as u128) * 121666;
-    }
-    let mut r = [0u64; 5];
-    let mut carry = 0u128;
-    for i in 0..5 {
-        t[i] += carry;
-        r[i] = (t[i] & 0x7ffffffffffff) as u64;
-        carry = t[i] >> 51;
-    }
-    r[0] += (carry * 19) as u64;
-    let c = r[0] >> 51;
-    r[0] &= 0x7ffffffffffff;
-    r[1] += c;
-    r
-}
-
-fn fe_inv(a: &Fe) -> Fe {
-    let mut t0 = fe_sq(a);
-    let mut t1 = fe_sq(&t0);
-    t1 = fe_sq(&t1);
-    t1 = fe_mul(&t1, a);
-    t0 = fe_mul(&t0, &t1);
-    let mut t2 = fe_sq(&t0);
-    t1 = fe_mul(&t1, &t2);
-    t2 = fe_sq(&t1);
-    for _ in 1..5 {
-        t2 = fe_sq(&t2);
-    }
-    t1 = fe_mul(&t2, &t1);
-    t2 = fe_sq(&t1);
-    for _ in 1..10 {
-        t2 = fe_sq(&t2);
-    }
-    t2 = fe_mul(&t2, &t1);
-    let mut t3 = fe_sq(&t2);
-    for _ in 1..20 {
-        t3 = fe_sq(&t3);
-    }
-    t2 = fe_mul(&t3, &t2);
-    t2 = fe_sq(&t2);
-    for _ in 1..10 {
-        t2 = fe_sq(&t2);
-    }
-    t1 = fe_mul(&t2, &t1);
-    t2 = fe_sq(&t1);
-    for _ in 1..50 {
-        t2 = fe_sq(&t2);
-    }
-    t2 = fe_mul(&t2, &t1);
-    t3 = fe_sq(&t2);
-    for _ in 1..100 {
-        t3 = fe_sq(&t3);
-    }
-    t2 = fe_mul(&t3, &t2);
-    t2 = fe_sq(&t2);
-    for _ in 1..50 {
-        t2 = fe_sq(&t2);
-    }
-    t1 = fe_mul(&t2, &t1);
-    t1 = fe_sq(&t1);
-    t1 = fe_sq(&t1);
-    t0 = fe_mul(&t1, &t0);
-    t1 = fe_sq(&t0);
-    t1 = fe_sq(&t1);
-    t1 = fe_sq(&t1);
-    fe_mul(&t1, a)
-}
-
-fn fe_cswap(a: &mut Fe, b: &mut Fe, swap: u64) {
-    let mask = 0u64.wrapping_sub(swap);
-    for i in 0..5 {
-        let t = mask & (a[i] ^ b[i]);
-        a[i] ^= t;
-        b[i] ^= t;
-    }
-}
-
-// ── Peer operations (STUBBED) ───────────────────────────────────────────────
-
-/// Add a WireGuard peer. (Stubbed — only persists config, no WG command execution)
+/// Add a WireGuard peer — configures via `wg set` and persists config.
 pub async fn add_peer(
-    _container_id: &str,
     data_dir: &Path,
     peer: &WgPeerConfig,
 ) -> anyhow::Result<()> {
-    // TODO: Execute native `wg set` command instead of Docker exec
-    warn!("WG add_peer stubbed (Docker disabled) — saving config only");
+    // Configure peer on the running interface
+    if let Err(e) = configure_wg_peer(&data_dir.join("wireguard"), peer).await {
+        warn!("Failed to configure WG peer on interface (may not be active): {}", e);
+    }
 
     // Persist peer config to disk
     let peers_dir = data_dir.join("wireguard").join("peers");
@@ -462,22 +305,78 @@ pub async fn add_peer(
     std::fs::rename(&tmp, &peer_file)?;
 
     info!(
-        "Saved WG peer config: {} ({})",
+        "Added WG peer: {} ({})",
         peer.name,
-        peer.pubkey[..8].to_string()
+        peer.pubkey[..8.min(peer.pubkey.len())].to_string()
     );
     Ok(())
 }
 
-/// Remove a WireGuard peer. (Stubbed — only removes config, no WG command execution)
+/// Configure a single peer on the WireGuard interface using `wg set`.
+async fn configure_wg_peer(wg_dir: &Path, peer: &WgPeerConfig) -> anyhow::Result<()> {
+    let mut args: Vec<String> = vec![
+        "set".to_string(),
+        WG_IFACE.to_string(),
+        "peer".to_string(),
+        peer.pubkey.clone(),
+        "allowed-ips".to_string(),
+        format!("{}/32", peer.allowed_ip),
+        "endpoint".to_string(),
+        peer.endpoint.clone(),
+    ];
+
+    // Handle PSK via temp file
+    let psk_file = if let Some(ref psk) = peer.psk {
+        let psk_path = wg_dir.join(format!("psk_{}.tmp", peer.node_id));
+        std::fs::write(&psk_path, psk)?;
+        args.push("preshared-key".to_string());
+        args.push(psk_path.to_str().unwrap().to_string());
+        Some(psk_path)
+    } else {
+        None
+    };
+
+    // Add persistent keepalive
+    args.push("persistent-keepalive".to_string());
+    args.push("25".to_string());
+
+    let output = tokio::process::Command::new("wg")
+        .args(&args)
+        .output()
+        .await?;
+
+    // Clean up PSK temp file
+    if let Some(psk_path) = psk_file {
+        let _ = std::fs::remove_file(&psk_path);
+    }
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(anyhow::anyhow!("wg set peer failed: {}", stderr.trim()));
+    }
+
+    Ok(())
+}
+
+/// Remove a WireGuard peer — removes from interface and deletes persisted config.
 pub async fn remove_peer(
-    _container_id: &str,
     data_dir: &Path,
     pubkey: &str,
     node_id: &str,
 ) -> anyhow::Result<()> {
-    // TODO: Execute native `wg set wg0 peer <pubkey> remove` instead of Docker exec
-    warn!("WG remove_peer stubbed (Docker disabled) — removing config only");
+    // Remove from running interface
+    let output = tokio::process::Command::new("wg")
+        .args(["set", WG_IFACE, "peer", pubkey, "remove"])
+        .output()
+        .await;
+    match output {
+        Ok(o) if !o.status.success() => {
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            warn!("wg remove peer warning: {}", stderr.trim());
+        }
+        Err(e) => warn!("Failed to run wg command: {}", e),
+        _ => {}
+    }
 
     // Remove persisted config
     let peer_file = data_dir
@@ -487,23 +386,54 @@ pub async fn remove_peer(
     let _ = std::fs::remove_file(&peer_file);
 
     info!(
-        "Removed WG peer config: {} ({})",
+        "Removed WG peer: {} ({})",
         node_id,
         &pubkey[..8.min(pubkey.len())]
     );
     Ok(())
 }
 
-/// Get WireGuard status. (Stubbed — returns empty list without Docker)
-pub async fn get_status(_container_id: &str) -> anyhow::Result<Vec<WgPeerStatus>> {
-    // TODO: Execute native `wg show wg0 dump` instead of Docker exec
-    warn!("WG get_status stubbed (Docker disabled) — returning empty");
-    Ok(Vec::new())
+/// Get WireGuard status by parsing `wg show howm0 dump`.
+pub async fn get_status() -> anyhow::Result<Vec<WgPeerStatus>> {
+    let output = tokio::process::Command::new("wg")
+        .args(["show", WG_IFACE, "dump"])
+        .output()
+        .await?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        // Interface might not exist
+        if stderr.contains("No such device") || stderr.contains("Unable to access") {
+            return Ok(Vec::new());
+        }
+        return Err(anyhow::anyhow!("wg show failed: {}", stderr.trim()));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut peers = Vec::new();
+
+    // Skip first line (interface info), parse peer lines
+    // Format: public-key\tpreshared-key\tendpoint\tallowed-ips\tlatest-handshake\ttransfer-rx\ttransfer-tx\tpersistent-keepalive
+    for line in stdout.lines().skip(1) {
+        let fields: Vec<&str> = line.split('\t').collect();
+        if fields.len() >= 7 {
+            peers.push(WgPeerStatus {
+                pubkey: fields[0].to_string(),
+                endpoint: fields[2].to_string(),
+                allowed_ips: fields[3].to_string(),
+                latest_handshake: fields[4].parse().unwrap_or(0),
+                transfer_rx: fields[5].parse().unwrap_or(0),
+                transfer_tx: fields[6].parse().unwrap_or(0),
+            });
+        }
+    }
+
+    Ok(peers)
 }
 
 // ── Address management ──────────────────────────────────────────────────────
 
-/// Assign the next free IP address in the 10.47.0.0/16 space.
+/// Assign the next free IP address in the 100.222.0.0/16 space.
 pub fn assign_next_address(data_dir: &Path) -> anyhow::Result<String> {
     let addr_file = data_dir.join("wireguard").join("addresses.json");
     let mut addresses: Vec<String> = if addr_file.exists() {
@@ -552,7 +482,6 @@ pub fn reclaim_address(data_dir: &Path, address: &str) -> anyhow::Result<()> {
 
 // ── Peer persistence ────────────────────────────────────────────────────────
 
-#[allow(dead_code)]
 fn load_peers(wg_dir: &Path) -> anyhow::Result<Vec<WgPeerConfig>> {
     let peers_dir = wg_dir.join("peers");
     if !peers_dir.exists() {

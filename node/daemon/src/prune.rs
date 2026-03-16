@@ -45,13 +45,12 @@ async fn run_prune(state: &AppState) {
         prune_days
     );
 
-    let wg_id = state.wg_container_id.read().await;
+    let wg_active = *state.wg_active.read().await;
 
     for peer in &stale_peers {
         // Remove WG peer
-        if let Some(ref container_id) = *wg_id {
+        if wg_active {
             let _ = wireguard::remove_peer(
-                container_id,
                 &state.config.data_dir,
                 &peer.wg_pubkey,
                 &peer.node_id,
