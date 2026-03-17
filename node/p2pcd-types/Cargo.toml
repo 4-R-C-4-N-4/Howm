@@ -1,0 +1,16 @@
+[package]
+name = "p2pcd-types"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+ciborium = "0.2"
+sha2 = "0.10"
+toml = "0.8"
+base64 = "0.22"
+dirs-next = "2"
+anyhow = "1"
+
+[dev-dependencies]
+hex = "0.4"

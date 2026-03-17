@@ -431,6 +431,306 @@ pub async fn get_status() -> anyhow::Result<Vec<WgPeerStatus>> {
     Ok(peers)
 }
 
+// ── WireGuard peer state monitor (P2P-CD Task 1.1) ──────────────────────────
+
+/// Events emitted by the WgPeerMonitor to the protocol engine.
+#[derive(Debug, Clone)]
+pub enum WgPeerEvent {
+    /// A peer has become reachable (new handshake detected).
+    PeerVisible(p2pcd_types::PeerId),
+    /// A peer's handshake has timed out or they dropped off the dump.
+    PeerUnreachable(p2pcd_types::PeerId),
+    /// A peer has been completely removed from the WireGuard interface.
+    PeerRemoved(p2pcd_types::PeerId),
+}
+
+/// Parse the output of `wg show <iface> dump` into `WgPeerState` structs.
+///
+/// Format (tab-separated, one peer per line after the interface self-line):
+/// `public-key\tpreshared-key\tendpoint\tallowed-ips\tlatest-handshake\ttransfer-rx\ttransfer-tx\tpersistent-keepalive`
+pub fn parse_wg_dump(output: &str) -> Vec<p2pcd_types::WgPeerState> {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+
+    let mut peers = Vec::new();
+    for line in output.lines().skip(1) {
+        let fields: Vec<&str> = line.split('\t').collect();
+        if fields.len() < 7 {
+            continue;
+        }
+
+        let pubkey_b64 = fields[0];
+        let endpoint_str = fields[2];
+        let allowed_ips_str = fields[3];
+        let latest_handshake: u64 = fields[4].parse().unwrap_or(0);
+        let rx_bytes: u64 = fields[5].parse().unwrap_or(0);
+        let tx_bytes: u64 = fields[6].parse().unwrap_or(0);
+
+        let Ok(key_bytes) = STANDARD.decode(pubkey_b64) else {
+            continue;
+        };
+        if key_bytes.len() != 32 {
+            continue;
+        }
+        let mut peer_id = [0u8; 32];
+        peer_id.copy_from_slice(&key_bytes);
+
+        let endpoint = if endpoint_str == "(none)" {
+            None
+        } else {
+            endpoint_str.parse().ok()
+        };
+
+        let allowed_ips: Vec<String> = allowed_ips_str
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+
+        peers.push(p2pcd_types::WgPeerState {
+            public_key: peer_id,
+            endpoint,
+            allowed_ips,
+            latest_handshake,
+            rx_bytes,
+            tx_bytes,
+        });
+    }
+    peers
+}
+
+/// Handshake timeout: if `latest_handshake` is older than this many seconds,
+/// the peer is considered unreachable even if still listed in the dump.
+const HANDSHAKE_TIMEOUT_SECS: u64 = 180;
+
+/// Background task that polls `wg show howm0 dump` and emits [`WgPeerEvent`]s
+/// whenever a peer's reachability changes.
+pub struct WgPeerMonitor {
+    poll_interval_ms: u64,
+    tx: tokio::sync::mpsc::Sender<WgPeerEvent>,
+}
+
+impl WgPeerMonitor {
+    pub fn new(poll_interval_ms: u64, tx: tokio::sync::mpsc::Sender<WgPeerEvent>) -> Self {
+        Self { poll_interval_ms, tx }
+    }
+
+    /// Spawn the background polling loop. Returns a `JoinHandle`.
+    pub fn spawn(self) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(self.run())
+    }
+
+    async fn run(self) {
+        use std::collections::{HashMap, HashSet};
+        use tokio::time::{sleep, Duration};
+
+        // last known handshake timestamp per peer
+        let mut last_handshake: HashMap<p2pcd_types::PeerId, u64> = HashMap::new();
+        // set of peers currently considered reachable
+        let mut reachable: HashSet<p2pcd_types::PeerId> = HashSet::new();
+
+        let interval = Duration::from_millis(self.poll_interval_ms);
+
+        loop {
+            sleep(interval).await;
+
+            let dump_output = match get_wg_dump_output().await {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::warn!("WgPeerMonitor: wg show dump failed: {}", e);
+                    continue;
+                }
+            };
+
+            let current_peers = parse_wg_dump(&dump_output);
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+
+            let mut seen_ids: HashSet<p2pcd_types::PeerId> = HashSet::new();
+
+            for peer in &current_peers {
+                let id = peer.public_key;
+                seen_ids.insert(id);
+
+                let is_fresh = peer.latest_handshake > 0
+                    && now.saturating_sub(peer.latest_handshake) < HANDSHAKE_TIMEOUT_SECS;
+                let prev_hs = last_handshake.get(&id).copied().unwrap_or(0);
+                let handshake_advanced = peer.latest_handshake > prev_hs;
+
+                if is_fresh && (handshake_advanced || !reachable.contains(&id)) {
+                    last_handshake.insert(id, peer.latest_handshake);
+                    if reachable.insert(id) {
+                        // newly visible
+                        let _ = self.tx.send(WgPeerEvent::PeerVisible(id)).await;
+                        tracing::info!(
+                            "WgPeerMonitor: peer visible: {}",
+                            peer_id_short(&id)
+                        );
+                    }
+                    // if already reachable + handshake advanced: just update ts, no new event
+                } else if !is_fresh && reachable.remove(&id) {
+                    let _ = self.tx.send(WgPeerEvent::PeerUnreachable(id)).await;
+                    tracing::info!(
+                        "WgPeerMonitor: peer unreachable: {}",
+                        peer_id_short(&id)
+                    );
+                }
+            }
+
+            // Peers that vanished entirely from the dump
+            let removed: Vec<p2pcd_types::PeerId> =
+                reachable.iter().filter(|id| !seen_ids.contains(*id)).copied().collect();
+            for id in removed {
+                reachable.remove(&id);
+                last_handshake.remove(&id);
+                let _ = self.tx.send(WgPeerEvent::PeerRemoved(id)).await;
+                tracing::info!("WgPeerMonitor: peer removed: {}", peer_id_short(&id));
+            }
+        }
+    }
+}
+
+/// Run `wg show howm0 dump` and return stdout.
+async fn get_wg_dump_output() -> anyhow::Result<String> {
+    let output = tokio::process::Command::new("wg")
+        .args(["show", WG_IFACE, "dump"])
+        .output()
+        .await?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("No such device") || stderr.contains("Unable to access") {
+            return Ok(String::new());
+        }
+        return Err(anyhow::anyhow!("wg show dump failed: {}", stderr.trim()));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// Format first 4 bytes of a PeerId as base64 for log messages.
+fn peer_id_short(id: &p2pcd_types::PeerId) -> String {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    STANDARD.encode(&id[..4])
+}
+
+// ── Monitor unit tests ───────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod monitor_tests {
+    use super::*;
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+
+    /// Build a valid `wg show dump`-style line for a given 32-byte peer key.
+    fn make_dump_line(
+        key: &[u8; 32],
+        endpoint: &str,
+        allowed_ips: &str,
+        handshake: u64,
+        rx: u64,
+        tx: u64,
+    ) -> String {
+        format!(
+            "{}\t(none)\t{}\t{}\t{}\t{}\t{}\t25",
+            STANDARD.encode(key),
+            endpoint,
+            allowed_ips,
+            handshake,
+            rx,
+            tx,
+        )
+    }
+
+    fn sample_dump() -> String {
+        let iface_key = [0u8; 32];
+        let peer1_key = [1u8; 32];
+        let peer2_key = [2u8; 32];
+        // Interface self-line (skipped by parse)
+        let iface_line = make_dump_line(&iface_key, "0.0.0.0:51820", "100.222.0.1/32", 0, 0, 0);
+        // Peer 1: has handshake, has endpoint
+        let peer1_line = make_dump_line(
+            &peer1_key,
+            "203.0.113.1:51820",
+            "100.222.0.2/32",
+            1700000000,
+            1024,
+            512,
+        );
+        // Peer 2: no handshake, no endpoint
+        let peer2_line = make_dump_line(&peer2_key, "(none)", "100.222.0.3/32", 0, 0, 0);
+        format!("{}\n{}\n{}\n", iface_line, peer1_line, peer2_line)
+    }
+
+    #[test]
+    fn parse_wg_dump_parses_peers() {
+        let dump = sample_dump();
+        let peers = parse_wg_dump(&dump);
+        // Interface self-line is skipped → 2 peer lines
+        assert_eq!(peers.len(), 2, "expected 2 peers, got {}", peers.len());
+
+        // Peer 1: has handshake, has endpoint
+        assert_eq!(peers[0].public_key, [1u8; 32]);
+        assert_eq!(peers[0].latest_handshake, 1700000000);
+        assert_eq!(peers[0].rx_bytes, 1024);
+        assert_eq!(peers[0].tx_bytes, 512);
+        assert!(peers[0].endpoint.is_some());
+        assert_eq!(peers[0].allowed_ips, vec!["100.222.0.2/32"]);
+
+        // Peer 2: no handshake, no endpoint
+        assert_eq!(peers[1].public_key, [2u8; 32]);
+        assert_eq!(peers[1].latest_handshake, 0);
+        assert!(peers[1].endpoint.is_none());
+    }
+
+    #[test]
+    fn parse_wg_dump_empty_output() {
+        assert!(parse_wg_dump("").is_empty());
+    }
+
+    #[test]
+    fn parse_wg_dump_interface_only() {
+        // One line (the interface self-line) — skip(1) skips it, nothing left
+        let iface_key = [0u8; 32];
+        let line = make_dump_line(&iface_key, "0.0.0.0:51820", "100.222.0.1/32", 0, 0, 0);
+        let peers = parse_wg_dump(&format!("{}\n", line));
+        assert!(peers.is_empty());
+    }
+
+    #[test]
+    fn parse_wg_dump_rejects_bad_key() {
+        // Line with garbage pubkey
+        let bad = "notavalidkey\t(none)\t1.2.3.4:51820\t100.222.0.5/32\t0\t0\t0\t25\n";
+        // Prepend a dummy interface line so it gets skipped
+        let dump = format!("{}\n{}", STANDARD.encode([0u8; 32]), bad);
+        let peers = parse_wg_dump(&dump);
+        assert!(peers.is_empty(), "bad key should be skipped");
+    }
+
+    #[test]
+    fn is_reachable_requires_nonzero_handshake() {
+        let state = p2pcd_types::WgPeerState {
+            public_key: [1u8; 32],
+            endpoint: None,
+            allowed_ips: vec![],
+            latest_handshake: 1700000000,
+            rx_bytes: 0,
+            tx_bytes: 0,
+        };
+        let never = p2pcd_types::WgPeerState { latest_handshake: 0, ..state.clone() };
+        assert!(state.is_reachable());
+        assert!(!never.is_reachable());
+    }
+
+    #[tokio::test]
+    async fn monitor_spawns_without_panic() {
+        use tokio::sync::mpsc;
+        let (tx, _rx) = mpsc::channel(16);
+        let monitor = WgPeerMonitor::new(50, tx);
+        let handle = monitor.spawn();
+        tokio::time::sleep(tokio::time::Duration::from_millis(120)).await;
+        handle.abort();
+    }
+}
+
 // ── Address management ──────────────────────────────────────────────────────
 
 /// Assign the next free IP address in the 100.222.0.0/16 space.

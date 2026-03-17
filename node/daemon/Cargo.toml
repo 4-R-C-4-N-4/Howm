@@ -30,6 +30,7 @@ anyhow = "1"
 hmac = "0.12"
 sha2 = "0.10"
 x25519-dalek = { version = "2", features = ["static_secrets"] }
+p2pcd-types = { path = "../p2pcd-types" }
 
 hostname = "0.3"
 
