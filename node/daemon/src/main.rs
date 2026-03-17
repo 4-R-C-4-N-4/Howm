@@ -5,6 +5,7 @@ use tracing_subscriber::{fmt, EnvFilter, layer::SubscriberExt, util::SubscriberI
 
 mod api;
 mod capabilities;
+mod p2pcd;
 mod config;
 mod discovery;
 mod error;
