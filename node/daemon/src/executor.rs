@@ -74,7 +74,13 @@ pub async fn stop_capability(pid: u32) -> anyhow::Result<()> {
             // Process already gone
             return Ok(());
         }
-        Err(e) => return Err(anyhow::anyhow!("Failed to send SIGTERM to pid {}: {}", pid, e)),
+        Err(e) => {
+            return Err(anyhow::anyhow!(
+                "Failed to send SIGTERM to pid {}: {}",
+                pid,
+                e
+            ))
+        }
     }
 
     // Wait up to 10 seconds for the process to exit
@@ -87,7 +93,10 @@ pub async fn stop_capability(pid: u32) -> anyhow::Result<()> {
     }
 
     // Force kill with SIGKILL
-    info!("Process {} did not exit after SIGTERM, sending SIGKILL", pid);
+    info!(
+        "Process {} did not exit after SIGTERM, sending SIGKILL",
+        pid
+    );
     let _ = kill(nix_pid, Signal::SIGKILL);
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 

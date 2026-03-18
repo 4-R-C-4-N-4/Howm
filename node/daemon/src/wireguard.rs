@@ -14,6 +14,7 @@ pub struct WgConfig {
     pub endpoint: Option<String>, // public addr:port for peers to reach us
     pub address: Option<String>,  // override WG address (100.222.x.y)
     pub data_dir: PathBuf,
+    #[allow(dead_code)]
     pub node_id: String,
 }
 
@@ -93,7 +94,10 @@ pub async fn init(config: &WgConfig) -> anyhow::Result<WgState> {
     // Try to create the WireGuard interface
     match setup_wg_interface(&private_key, &address, config.port, &wg_dir).await {
         Ok(()) => {
-            info!("WireGuard interface {} configured on port {}", WG_IFACE, config.port);
+            info!(
+                "WireGuard interface {} configured on port {}",
+                WG_IFACE, config.port
+            );
 
             // Load and configure saved peers
             let peers = load_peers(&wg_dir).unwrap_or_default();
@@ -114,8 +118,13 @@ pub async fn init(config: &WgConfig) -> anyhow::Result<WgState> {
             })
         }
         Err(e) => {
-            warn!("Failed to create WireGuard interface: {}. Falling back to WG-disabled mode.", e);
-            warn!("Ensure wireguard-tools is installed and you have root/CAP_NET_ADMIN privileges.");
+            warn!(
+                "Failed to create WireGuard interface: {}. Falling back to WG-disabled mode.",
+                e
+            );
+            warn!(
+                "Ensure wireguard-tools is installed and you have root/CAP_NET_ADMIN privileges."
+            );
             Ok(WgState {
                 public_key: Some(public_key),
                 address: Some(address),
@@ -176,11 +185,7 @@ async fn setup_wg_interface(
 
     // Assign IP address
     let output = tokio::process::Command::new("ip")
-        .args([
-            "addr", "add",
-            &format!("{}/16", address),
-            "dev", WG_IFACE,
-        ])
+        .args(["addr", "add", &format!("{}/16", address), "dev", WG_IFACE])
         .output()
         .await?;
     if !output.status.success() {
@@ -287,13 +292,13 @@ pub fn generate_psk() -> String {
 // ── Peer operations ─────────────────────────────────────────────────────────
 
 /// Add a WireGuard peer — configures via `wg set` and persists config.
-pub async fn add_peer(
-    data_dir: &Path,
-    peer: &WgPeerConfig,
-) -> anyhow::Result<()> {
+pub async fn add_peer(data_dir: &Path, peer: &WgPeerConfig) -> anyhow::Result<()> {
     // Configure peer on the running interface
     if let Err(e) = configure_wg_peer(&data_dir.join("wireguard"), peer).await {
-        warn!("Failed to configure WG peer on interface (may not be active): {}", e);
+        warn!(
+            "Failed to configure WG peer on interface (may not be active): {}",
+            e
+        );
     }
 
     // Persist peer config to disk
@@ -359,11 +364,7 @@ async fn configure_wg_peer(wg_dir: &Path, peer: &WgPeerConfig) -> anyhow::Result
 }
 
 /// Remove a WireGuard peer — removes from interface and deletes persisted config.
-pub async fn remove_peer(
-    data_dir: &Path,
-    pubkey: &str,
-    node_id: &str,
-) -> anyhow::Result<()> {
+pub async fn remove_peer(data_dir: &Path, pubkey: &str, node_id: &str) -> anyhow::Result<()> {
     // Remove from running interface
     let output = tokio::process::Command::new("wg")
         .args(["set", WG_IFACE, "peer", pubkey, "remove"])
@@ -435,6 +436,7 @@ pub async fn get_status() -> anyhow::Result<Vec<WgPeerStatus>> {
 
 /// Events emitted by the WgPeerMonitor to the protocol engine.
 #[derive(Debug, Clone)]
+#[allow(clippy::enum_variant_names)]
 pub enum WgPeerEvent {
     /// A peer has become reachable (new handshake detected).
     PeerVisible(p2pcd_types::PeerId),
@@ -511,7 +513,10 @@ pub struct WgPeerMonitor {
 
 impl WgPeerMonitor {
     pub fn new(poll_interval_ms: u64, tx: tokio::sync::mpsc::Sender<WgPeerEvent>) -> Self {
-        Self { poll_interval_ms, tx }
+        Self {
+            poll_interval_ms,
+            tx,
+        }
     }
 
     /// Spawn the background polling loop. Returns a `JoinHandle`.
@@ -563,24 +568,21 @@ impl WgPeerMonitor {
                     if reachable.insert(id) {
                         // newly visible
                         let _ = self.tx.send(WgPeerEvent::PeerVisible(id)).await;
-                        tracing::info!(
-                            "WgPeerMonitor: peer visible: {}",
-                            peer_id_short(&id)
-                        );
+                        tracing::info!("WgPeerMonitor: peer visible: {}", peer_id_short(&id));
                     }
                     // if already reachable + handshake advanced: just update ts, no new event
                 } else if !is_fresh && reachable.remove(&id) {
                     let _ = self.tx.send(WgPeerEvent::PeerUnreachable(id)).await;
-                    tracing::info!(
-                        "WgPeerMonitor: peer unreachable: {}",
-                        peer_id_short(&id)
-                    );
+                    tracing::info!("WgPeerMonitor: peer unreachable: {}", peer_id_short(&id));
                 }
             }
 
             // Peers that vanished entirely from the dump
-            let removed: Vec<p2pcd_types::PeerId> =
-                reachable.iter().filter(|id| !seen_ids.contains(*id)).copied().collect();
+            let removed: Vec<p2pcd_types::PeerId> = reachable
+                .iter()
+                .filter(|id| !seen_ids.contains(*id))
+                .copied()
+                .collect();
             for id in removed {
                 reachable.remove(&id);
                 last_handshake.remove(&id);
@@ -616,6 +618,7 @@ fn peer_id_short(id: &p2pcd_types::PeerId) -> String {
 // ── Monitor unit tests ───────────────────────────────────────────────────────
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod monitor_tests {
     use super::*;
     use base64::{engine::general_purpose::STANDARD, Engine as _};
@@ -715,7 +718,10 @@ mod monitor_tests {
             rx_bytes: 0,
             tx_bytes: 0,
         };
-        let never = p2pcd_types::WgPeerState { latest_handshake: 0, ..state.clone() };
+        let never = p2pcd_types::WgPeerState {
+            latest_handshake: 0,
+            ..state.clone()
+        };
         assert!(state.is_reachable());
         assert!(!never.is_reachable());
     }
@@ -766,6 +772,7 @@ pub fn assign_next_address(data_dir: &Path) -> anyhow::Result<String> {
 }
 
 /// Reclaim a previously assigned IP address, making it available for reuse.
+#[allow(dead_code)]
 pub fn reclaim_address(data_dir: &Path, address: &str) -> anyhow::Result<()> {
     let addr_file = data_dir.join("wireguard").join("addresses.json");
     if !addr_file.exists() {

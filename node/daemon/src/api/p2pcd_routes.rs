@@ -19,58 +19,58 @@ use axum::{
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde::{Deserialize, Serialize};
 
-use crate::state::AppState;
 use crate::p2pcd::engine::SessionOutcome;
+use crate::state::AppState;
 use p2pcd_types::PeerId;
 
 // ── Response types ────────────────────────────────────────────────────────────
 
 #[derive(Serialize)]
 pub struct EngineStatusResponse {
-    pub running:       bool,
+    pub running: bool,
     pub local_peer_id: String,
     pub session_count: usize,
-    pub listen_port:   Option<u16>,
+    pub listen_port: Option<u16>,
 }
 
 #[derive(Serialize)]
 pub struct SessionResponse {
-    pub peer_id:    String,
-    pub state:      String,
+    pub peer_id: String,
+    pub state: String,
     pub active_set: Vec<String>,
-    pub uptime_s:   u64,
+    pub uptime_s: u64,
 }
 
 #[derive(Serialize)]
 pub struct ManifestResponse {
-    pub peer_id:          String,
-    pub sequence_num:     u64,
+    pub peer_id: String,
+    pub sequence_num: u64,
     pub protocol_version: u64,
-    pub hash_algorithm:   String,
-    pub personal_hash:    String,
-    pub capabilities:     Vec<CapabilityResponse>,
+    pub hash_algorithm: String,
+    pub personal_hash: String,
+    pub capabilities: Vec<CapabilityResponse>,
 }
 
 #[derive(Serialize)]
 pub struct CapabilityResponse {
-    pub name:   String,
-    pub role:   String,
+    pub name: String,
+    pub role: String,
     pub mutual: bool,
 }
 
 #[derive(Serialize)]
 pub struct CacheEntryResponse {
-    pub peer_id:       String,
+    pub peer_id: String,
     pub personal_hash: String,
-    pub outcome:       String,
-    pub age_s:         u64,
-    pub expired:       bool,
+    pub outcome: String,
+    pub age_s: u64,
+    pub expired: bool,
 }
 
 #[derive(Serialize)]
 pub struct PeersForCapResponse {
     pub capability: String,
-    pub peers:      Vec<String>, // base64 peer_ids
+    pub peers: Vec<String>, // base64 peer_ids
 }
 
 #[derive(Serialize)]
@@ -88,19 +88,19 @@ pub struct AddFriendRequest {
 pub async fn p2pcd_status(State(state): State<AppState>) -> impl IntoResponse {
     match &state.p2pcd_engine {
         None => Json(EngineStatusResponse {
-            running:       false,
+            running: false,
             local_peer_id: String::new(),
             session_count: 0,
-            listen_port:   None,
+            listen_port: None,
         }),
         Some(engine) => {
             let sessions = engine.active_sessions().await;
             let manifest = engine.local_manifest().await;
             Json(EngineStatusResponse {
-                running:       true,
+                running: true,
                 local_peer_id: STANDARD.encode(manifest.peer_id),
                 session_count: sessions.len(),
-                listen_port:   Some(7654), // TODO: expose from config
+                listen_port: Some(7654), // TODO: expose from config
             })
         }
     }
@@ -111,12 +111,17 @@ pub async fn p2pcd_sessions(State(state): State<AppState>) -> impl IntoResponse 
         None => Json(Vec::<SessionResponse>::new()),
         Some(engine) => {
             let sessions = engine.active_sessions().await;
-            Json(sessions.iter().map(|s| SessionResponse {
-                peer_id:    STANDARD.encode(s.peer_id),
-                state:      format!("{:?}", s.state),
-                active_set: s.active_set.clone(),
-                uptime_s:   s.uptime_s,
-            }).collect::<Vec<_>>())
+            Json(
+                sessions
+                    .iter()
+                    .map(|s| SessionResponse {
+                        peer_id: STANDARD.encode(s.peer_id),
+                        state: format!("{:?}", s.state),
+                        active_set: s.active_set.clone(),
+                        uptime_s: s.uptime_s,
+                    })
+                    .collect::<Vec<_>>(),
+            )
         }
     }
 }
@@ -130,16 +135,15 @@ pub async fn p2pcd_session_detail(
         Some(e) => e,
     };
 
-    let peer_id = decode_peer_id(&peer_id_b64)
-        .map_err(|_| StatusCode::BAD_REQUEST)?;
+    let peer_id = decode_peer_id(&peer_id_b64).map_err(|_| StatusCode::BAD_REQUEST)?;
 
     let sessions = engine.active_sessions().await;
     match sessions.iter().find(|s| s.peer_id == peer_id) {
         Some(s) => Ok(Json(SessionResponse {
-            peer_id:    peer_id_b64,
-            state:      format!("{:?}", s.state),
+            peer_id: peer_id_b64,
+            state: format!("{:?}", s.state),
             active_set: s.active_set.clone(),
-            uptime_s:   s.uptime_s,
+            uptime_s: s.uptime_s,
         })),
         None => Err(StatusCode::NOT_FOUND),
     }
@@ -151,16 +155,20 @@ pub async fn p2pcd_manifest(State(state): State<AppState>) -> impl IntoResponse 
         Some(engine) => {
             let m = engine.local_manifest().await;
             Ok(Json(ManifestResponse {
-                peer_id:          STANDARD.encode(m.peer_id),
-                sequence_num:     m.sequence_num,
+                peer_id: STANDARD.encode(m.peer_id),
+                sequence_num: m.sequence_num,
                 protocol_version: m.protocol_version,
-                hash_algorithm:   m.hash_algorithm,
-                personal_hash:    STANDARD.encode(&m.personal_hash),
-                capabilities:     m.capabilities.iter().map(|c| CapabilityResponse {
-                    name:   c.name.clone(),
-                    role:   format!("{:?}", c.role),
-                    mutual: c.mutual,
-                }).collect(),
+                hash_algorithm: m.hash_algorithm,
+                personal_hash: STANDARD.encode(&m.personal_hash),
+                capabilities: m
+                    .capabilities
+                    .iter()
+                    .map(|c| CapabilityResponse {
+                        name: c.name.clone(),
+                        role: format!("{:?}", c.role),
+                        mutual: c.mutual,
+                    })
+                    .collect(),
             }))
         }
     }
@@ -170,23 +178,29 @@ pub async fn p2pcd_cache(State(state): State<AppState>) -> impl IntoResponse {
     match &state.p2pcd_engine {
         None => Json(Vec::<CacheEntryResponse>::new()),
         Some(engine) => {
-            use std::time::{SystemTime, UNIX_EPOCH, Duration};
+            use std::time::{Duration, SystemTime, UNIX_EPOCH};
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or(Duration::ZERO)
                 .as_secs();
             let cache = engine.peer_cache_snapshot().await;
-            Json(cache.iter().map(|(id, entry)| CacheEntryResponse {
-                peer_id:       STANDARD.encode(id),
-                personal_hash: STANDARD.encode(&entry.personal_hash),
-                outcome:       match entry.last_outcome {
-                    SessionOutcome::Active => "active",
-                    SessionOutcome::None   => "none",
-                    SessionOutcome::Denied => "denied",
-                }.to_string(),
-                age_s:         now.saturating_sub(entry.timestamp),
-                expired:       entry.is_expired(),
-            }).collect::<Vec<_>>())
+            Json(
+                cache
+                    .iter()
+                    .map(|(id, entry)| CacheEntryResponse {
+                        peer_id: STANDARD.encode(id),
+                        personal_hash: STANDARD.encode(&entry.personal_hash),
+                        outcome: match entry.last_outcome {
+                            SessionOutcome::Active => "active",
+                            SessionOutcome::None => "none",
+                            SessionOutcome::Denied => "denied",
+                        }
+                        .to_string(),
+                        age_s: now.saturating_sub(entry.timestamp),
+                        expired: entry.is_expired(),
+                    })
+                    .collect::<Vec<_>>(),
+            )
         }
     }
 }
@@ -196,7 +210,10 @@ pub async fn p2pcd_peers_for(
     Path(cap_name): Path<String>,
 ) -> impl IntoResponse {
     match &state.p2pcd_engine {
-        None => Json(PeersForCapResponse { capability: cap_name, peers: vec![] }),
+        None => Json(PeersForCapResponse {
+            capability: cap_name,
+            peers: vec![],
+        }),
         Some(engine) => {
             let peers = engine.active_peers_for_capability(&cap_name).await;
             Json(PeersForCapResponse {
@@ -210,7 +227,9 @@ pub async fn p2pcd_peers_for(
 pub async fn p2pcd_list_friends(State(state): State<AppState>) -> impl IntoResponse {
     match &state.p2pcd_engine {
         None => Json(FriendsResponse { friends: vec![] }),
-        Some(engine) => Json(FriendsResponse { friends: engine.list_friends().await }),
+        Some(engine) => Json(FriendsResponse {
+            friends: engine.list_friends().await,
+        }),
     }
 }
 
@@ -220,11 +239,11 @@ pub async fn p2pcd_add_friend(
 ) -> impl IntoResponse {
     match &state.p2pcd_engine {
         None => Err(StatusCode::SERVICE_UNAVAILABLE),
-        Some(engine) => {
-            engine.add_friend(&body.pubkey).await
-                .map(|_| StatusCode::OK)
-                .map_err(|_| StatusCode::BAD_REQUEST)
-        }
+        Some(engine) => engine
+            .add_friend(&body.pubkey)
+            .await
+            .map(|_| StatusCode::OK)
+            .map_err(|_| StatusCode::BAD_REQUEST),
     }
 }
 
@@ -234,11 +253,11 @@ pub async fn p2pcd_remove_friend(
 ) -> impl IntoResponse {
     match &state.p2pcd_engine {
         None => Err(StatusCode::SERVICE_UNAVAILABLE),
-        Some(engine) => {
-            engine.remove_friend(&pubkey).await
-                .map(|_| StatusCode::OK)
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
-        }
+        Some(engine) => engine
+            .remove_friend(&pubkey)
+            .await
+            .map(|_| StatusCode::OK)
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR),
     }
 }
 

@@ -14,8 +14,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::{bail, Context, Result};
 
 use p2pcd_types::{
-    CloseReason, DiscoveryManifest, PeerId, ProtocolMessage, ScopeParams, TrustPolicy,
-    compute_intersection,
+    compute_intersection, CloseReason, DiscoveryManifest, PeerId, ProtocolMessage, ScopeParams,
+    TrustPolicy,
 };
 
 use super::transport::P2pcdTransport;
@@ -24,6 +24,7 @@ use super::transport::P2pcdTransport;
 
 /// All states a P2P-CD session can be in per spec §6.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum SessionState {
     /// WireGuard handshake detected; no TCP connection yet.
     PeerVisible,
@@ -43,11 +44,13 @@ pub enum SessionState {
 
 impl SessionState {
     /// Returns true if this is a terminal state.
+    #[allow(dead_code)]
     pub fn is_terminal(&self) -> bool {
         matches!(self, SessionState::Closed { .. })
     }
 
     /// Returns true if this is a state where an active TCP transport exists.
+    #[allow(dead_code)]
     pub fn has_transport(&self) -> bool {
         matches!(
             self,
@@ -170,37 +173,62 @@ pub async fn run_initiator_exchange(
             .context("no transport in initiator exchange")?;
 
         // Step 1: send our OFFER
-        transport.send(&ProtocolMessage::Offer { manifest: local_manifest.clone() })
-            .await.context("send OFFER")?;
+        transport
+            .send(&ProtocolMessage::Offer {
+                manifest: local_manifest.clone(),
+            })
+            .await
+            .context("send OFFER")?;
 
         // Step 2: receive remote OFFER
         let remote_manifest = recv_offer(transport).await?;
 
         // Step 3: compute intersection
-        let our_active_set = compute_intersection(&local_manifest, &remote_manifest, trust_policies);
+        let our_active_set =
+            compute_intersection(&local_manifest, &remote_manifest, trust_policies);
         let our_params = reconcile_params(&our_active_set, &local_manifest, &remote_manifest);
 
         // Step 4: send our CONFIRM
-        transport.send(&ProtocolMessage::Confirm {
-            personal_hash: local_manifest.personal_hash.clone(),
-            active_set: our_active_set.clone(),
-            accepted_params: if our_params.is_empty() { Option::None } else { Some(our_params.clone()) },
-        }).await.context("send CONFIRM")?;
+        transport
+            .send(&ProtocolMessage::Confirm {
+                personal_hash: local_manifest.personal_hash.clone(),
+                active_set: our_active_set.clone(),
+                accepted_params: if our_params.is_empty() {
+                    Option::None
+                } else {
+                    Some(our_params.clone())
+                },
+            })
+            .await
+            .context("send CONFIRM")?;
 
         // Step 5: receive remote CONFIRM (or CLOSE)
         let outcome = match transport.recv().await.context("recv CONFIRM/CLOSE")? {
-            ProtocolMessage::Confirm { active_set: remote_set, accepted_params: remote_p, .. } => {
+            ProtocolMessage::Confirm {
+                active_set: remote_set,
+                accepted_params: remote_p,
+                ..
+            } => {
                 let final_set = intersect_sets(&our_active_set, &remote_set);
                 let final_params = reconcile_confirm_params(
-                    &final_set, &our_params, &remote_p.unwrap_or_default(),
+                    &final_set,
+                    &our_params,
+                    &remote_p.unwrap_or_default(),
                 );
                 Ok((final_set, final_params))
             }
             ProtocolMessage::Close { reason, .. } => {
-                tracing::info!("session {}: peer CLOSE({:?}) during exchange", peer_short(&peer_id), reason);
+                tracing::info!(
+                    "session {}: peer CLOSE({:?}) during exchange",
+                    peer_short(&peer_id),
+                    reason
+                );
                 Err(reason)
             }
-            other => bail!("unexpected during CONFIRM wait: {:?}", std::mem::discriminant(&other)),
+            other => bail!(
+                "unexpected during CONFIRM wait: {:?}",
+                std::mem::discriminant(&other)
+            ),
         };
         (remote_manifest, outcome)
     };
@@ -243,35 +271,57 @@ pub async fn run_responder_exchange(
         let remote_manifest = recv_offer(transport).await?;
 
         // Step 2: send our OFFER
-        transport.send(&ProtocolMessage::Offer { manifest: local_manifest.clone() })
-            .await.context("send OFFER")?;
+        transport
+            .send(&ProtocolMessage::Offer {
+                manifest: local_manifest.clone(),
+            })
+            .await
+            .context("send OFFER")?;
 
         // Step 3: receive remote CONFIRM (or CLOSE)
-        let (remote_active_set, remote_params) = match transport.recv().await.context("recv CONFIRM/CLOSE")? {
-            ProtocolMessage::Confirm { active_set, accepted_params, .. } => {
-                (active_set, accepted_params.unwrap_or_default())
-            }
-            ProtocolMessage::Close { reason, .. } => {
-                tracing::info!("session {}: peer CLOSE({:?}) before our CONFIRM", peer_short(&peer_id), reason);
-                return {
-                    drop(transport); // end borrow before mutating session
-                    session.remote_manifest = Some(remote_manifest);
-                    session.transition(SessionState::Closed { reason })
-                };
-            }
-            other => bail!("unexpected during responder CONFIRM wait: {:?}", std::mem::discriminant(&other)),
-        };
+        let (remote_active_set, remote_params) =
+            match transport.recv().await.context("recv CONFIRM/CLOSE")? {
+                ProtocolMessage::Confirm {
+                    active_set,
+                    accepted_params,
+                    ..
+                } => (active_set, accepted_params.unwrap_or_default()),
+                ProtocolMessage::Close { reason, .. } => {
+                    tracing::info!(
+                        "session {}: peer CLOSE({:?}) before our CONFIRM",
+                        peer_short(&peer_id),
+                        reason
+                    );
+                    return {
+                        let _ = transport; // end borrow before mutating session
+                        session.remote_manifest = Some(remote_manifest);
+                        session.transition(SessionState::Closed { reason })
+                    };
+                }
+                other => bail!(
+                    "unexpected during responder CONFIRM wait: {:?}",
+                    std::mem::discriminant(&other)
+                ),
+            };
 
         // Step 4: compute our intersection
-        let our_active_set = compute_intersection(&local_manifest, &remote_manifest, trust_policies);
+        let our_active_set =
+            compute_intersection(&local_manifest, &remote_manifest, trust_policies);
         let our_params = reconcile_params(&our_active_set, &local_manifest, &remote_manifest);
 
         // Step 5: send our CONFIRM
-        transport.send(&ProtocolMessage::Confirm {
-            personal_hash: local_manifest.personal_hash.clone(),
-            active_set: our_active_set.clone(),
-            accepted_params: if our_params.is_empty() { Option::None } else { Some(our_params.clone()) },
-        }).await.context("send CONFIRM")?;
+        transport
+            .send(&ProtocolMessage::Confirm {
+                personal_hash: local_manifest.personal_hash.clone(),
+                active_set: our_active_set.clone(),
+                accepted_params: if our_params.is_empty() {
+                    Option::None
+                } else {
+                    Some(our_params.clone())
+                },
+            })
+            .await
+            .context("send CONFIRM")?;
 
         // Step 6: reconcile
         let final_set = intersect_sets(&our_active_set, &remote_active_set);
@@ -307,10 +357,7 @@ async fn recv_offer(transport: &mut P2pcdTransport) -> Result<DiscoveryManifest>
         ProtocolMessage::Close { reason, .. } => {
             bail!("peer sent CLOSE({:?}) instead of OFFER", reason)
         }
-        other => bail!(
-            "expected OFFER, got {:?}",
-            std::mem::discriminant(&other)
-        ),
+        other => bail!("expected OFFER, got {:?}", std::mem::discriminant(&other)),
     }
 }
 
@@ -396,11 +443,11 @@ pub fn peer_short(id: &PeerId) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::p2pcd::transport::{connect, P2pcdListener};
     use p2pcd_types::{
-        CapabilityDeclaration, CloseReason, DiscoveryManifest, ProtocolMessage,
-        Role, ScopeParams, PROTOCOL_VERSION,
+        CapabilityDeclaration, CloseReason, DiscoveryManifest, Role, ScopeParams,
+        PROTOCOL_VERSION,
     };
-    use crate::p2pcd::transport::{P2pcdListener, connect};
     use std::collections::HashMap;
 
     fn make_manifest(id: u8, caps: Vec<CapabilityDeclaration>) -> DiscoveryManifest {
@@ -419,7 +466,10 @@ mod tests {
             name: "p2pcd.social.post.1".to_string(),
             role,
             mutual: false,
-            scope: Some(ScopeParams { rate_limit: 100, ttl: 3600 }),
+            scope: Some(ScopeParams {
+                rate_limit: 100,
+                ttl: 3600,
+            }),
         }
     }
 
@@ -442,7 +492,10 @@ mod tests {
         s.transition(SessionState::Handshake).unwrap();
         s.transition(SessionState::CapabilityExchange).unwrap();
         s.transition(SessionState::Active).unwrap();
-        s.transition(SessionState::Closed { reason: CloseReason::Normal }).unwrap();
+        s.transition(SessionState::Closed {
+            reason: CloseReason::Normal,
+        })
+        .unwrap();
         // Re-open after close
         s.transition(SessionState::PeerVisible).unwrap();
     }
@@ -460,7 +513,9 @@ mod tests {
         let manifest = make_manifest(3, vec![]);
         let mut session = Session::new([3u8; 32], manifest.clone());
         session.transition(SessionState::Handshake).unwrap();
-        session.transition(SessionState::CapabilityExchange).unwrap();
+        session
+            .transition(SessionState::CapabilityExchange)
+            .unwrap();
         // Empty active_set → None
         finalize_session(&mut session, vec![], BTreeMap::new()).unwrap();
         assert_eq!(session.state, SessionState::None);
@@ -471,20 +526,29 @@ mod tests {
         let manifest = make_manifest(4, vec![social_cap(Role::Provide)]);
         let mut session = Session::new([4u8; 32], manifest.clone());
         session.transition(SessionState::Handshake).unwrap();
-        session.transition(SessionState::CapabilityExchange).unwrap();
+        session
+            .transition(SessionState::CapabilityExchange)
+            .unwrap();
         finalize_session(
             &mut session,
             vec!["p2pcd.social.post.1".to_string()],
             BTreeMap::new(),
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(session.state, SessionState::Active);
         assert_eq!(session.active_set, vec!["p2pcd.social.post.1"]);
     }
 
     #[test]
     fn scope_reconcile_most_restrictive() {
-        let a = ScopeParams { rate_limit: 100, ttl: 3600 };
-        let b = ScopeParams { rate_limit: 50,  ttl: 7200 };
+        let a = ScopeParams {
+            rate_limit: 100,
+            ttl: 3600,
+        };
+        let b = ScopeParams {
+            rate_limit: 50,
+            ttl: 7200,
+        };
         let r = a.reconcile(&b);
         assert_eq!(r.rate_limit, 50);
         assert_eq!(r.ttl, 3600);
@@ -495,14 +559,8 @@ mod tests {
     /// Two nodes, both with social.post (Provide + Consume) — should reach ACTIVE.
     #[tokio::test]
     async fn normal_normal_full_exchange() {
-        let local_manifest = make_manifest(1, vec![
-            social_cap(Role::Provide),
-            heartbeat_cap(),
-        ]);
-        let remote_manifest = make_manifest(2, vec![
-            social_cap(Role::Consume),
-            heartbeat_cap(),
-        ]);
+        let local_manifest = make_manifest(1, vec![social_cap(Role::Provide), heartbeat_cap()]);
+        let remote_manifest = make_manifest(2, vec![social_cap(Role::Consume), heartbeat_cap()]);
 
         let listener = P2pcdListener::bind("127.0.0.1:0".parse().unwrap())
             .await
@@ -516,7 +574,9 @@ mod tests {
             let (transport, _) = listener.accept().await.unwrap();
             let mut session = Session::new([1u8; 32], rm);
             session.transport = Some(transport);
-            run_responder_exchange(&mut session, &HashMap::new()).await.unwrap();
+            run_responder_exchange(&mut session, &HashMap::new())
+                .await
+                .unwrap();
             session.state.clone()
         });
 
@@ -524,17 +584,30 @@ mod tests {
         let transport = connect(addr).await.unwrap();
         let mut session = Session::new([2u8; 32], lm);
         session.transport = Some(transport);
-        run_initiator_exchange(&mut session, &HashMap::new()).await.unwrap();
+        run_initiator_exchange(&mut session, &HashMap::new())
+            .await
+            .unwrap();
 
         let initiator_state = session.state.clone();
         let responder_state = responder_task.await.unwrap();
 
-        assert_eq!(initiator_state, SessionState::Active, "initiator should be ACTIVE");
-        assert_eq!(responder_state, SessionState::Active, "responder should be ACTIVE");
+        assert_eq!(
+            initiator_state,
+            SessionState::Active,
+            "initiator should be ACTIVE"
+        );
+        assert_eq!(
+            responder_state,
+            SessionState::Active,
+            "responder should be ACTIVE"
+        );
 
         assert!(
-            session.active_set.contains(&"p2pcd.social.post.1".to_string()),
-            "social.post should be in active_set, got {:?}", session.active_set
+            session
+                .active_set
+                .contains(&"p2pcd.social.post.1".to_string()),
+            "social.post should be in active_set, got {:?}",
+            session.active_set
         );
     }
 
@@ -562,23 +635,36 @@ mod tests {
             let (transport, _) = listener.accept().await.unwrap();
             let mut session = Session::new([3u8; 32], rm);
             session.transport = Some(transport);
-            run_responder_exchange(&mut session, &HashMap::new()).await.unwrap();
+            run_responder_exchange(&mut session, &HashMap::new())
+                .await
+                .unwrap();
             (session.state.clone(), session.active_set.clone())
         });
 
         let transport = connect(addr).await.unwrap();
         let mut session = Session::new([4u8; 32], local_manifest);
         session.transport = Some(transport);
-        run_initiator_exchange(&mut session, &HashMap::new()).await.unwrap();
+        run_initiator_exchange(&mut session, &HashMap::new())
+            .await
+            .unwrap();
 
         let (resp_state, resp_set) = responder_task.await.unwrap();
 
         // social: Both+Both mutual=false → no match
         // heartbeat: Both+Both mutual=true → match
-        assert!(!session.active_set.contains(&"p2pcd.social.post.1".to_string()),
-            "lurker+lurker social should NOT match");
-        assert!(session.active_set.contains(&"core.heartbeat.liveness.1".to_string()),
-            "heartbeat should match, got {:?}", session.active_set);
+        assert!(
+            !session
+                .active_set
+                .contains(&"p2pcd.social.post.1".to_string()),
+            "lurker+lurker social should NOT match"
+        );
+        assert!(
+            session
+                .active_set
+                .contains(&"core.heartbeat.liveness.1".to_string()),
+            "heartbeat should match, got {:?}",
+            session.active_set
+        );
         assert_eq!(session.state, SessionState::Active);
 
         assert!(!resp_set.contains(&"p2pcd.social.post.1".to_string()));
@@ -608,18 +694,30 @@ mod tests {
             let (transport, _) = listener.accept().await.unwrap();
             let mut session = Session::new([5u8; 32], rm);
             session.transport = Some(transport);
-            run_responder_exchange(&mut session, &HashMap::new()).await.unwrap();
+            run_responder_exchange(&mut session, &HashMap::new())
+                .await
+                .unwrap();
             session.state.clone()
         });
 
         let transport = connect(addr).await.unwrap();
         let mut session = Session::new([6u8; 32], local_manifest);
         session.transport = Some(transport);
-        run_initiator_exchange(&mut session, &HashMap::new()).await.unwrap();
+        run_initiator_exchange(&mut session, &HashMap::new())
+            .await
+            .unwrap();
 
         let responder_state = responder_task.await.unwrap();
-        assert_eq!(session.state, SessionState::None, "initiator should be NONE");
-        assert_eq!(responder_state, SessionState::None, "responder should be NONE");
+        assert_eq!(
+            session.state,
+            SessionState::None,
+            "initiator should be NONE"
+        );
+        assert_eq!(
+            responder_state,
+            SessionState::None,
+            "responder should be NONE"
+        );
         assert!(session.active_set.is_empty());
     }
 }

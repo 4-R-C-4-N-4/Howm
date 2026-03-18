@@ -2,8 +2,8 @@
 // This replaces the CLI-flag-based config in daemon/src/config.rs.
 
 use crate::{
-    CapabilityDeclaration, ClassificationTier, DiscoveryManifest, PeerId,
-    Role, ScopeParams, TrustPolicy,
+    CapabilityDeclaration, ClassificationTier, DiscoveryManifest, PeerId, Role, ScopeParams,
+    TrustPolicy,
 };
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -14,18 +14,18 @@ use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PeerConfig {
-    pub identity:     IdentityConfig,
-    pub protocol:     ProtocolConfig,
-    pub transport:    TransportConfig,
-    pub discovery:    DiscoveryConfig,
+    pub identity: IdentityConfig,
+    pub protocol: ProtocolConfig,
+    pub transport: TransportConfig,
+    pub discovery: DiscoveryConfig,
     #[serde(default)]
     pub capabilities: HashMap<String, CapabilityConfig>,
     #[serde(default)]
-    pub friends:      FriendsConfig,
+    pub friends: FriendsConfig,
     #[serde(default)]
-    pub invite:       InviteConfig,
+    pub invite: InviteConfig,
     #[serde(default)]
-    pub data:         DataConfig,
+    pub data: DataConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -50,8 +50,12 @@ pub struct ProtocolConfig {
     pub hash_algorithm: String,
 }
 
-fn default_protocol_version() -> u64 { 1 }
-fn default_hash_algorithm() -> String { "sha-256".to_string() }
+fn default_protocol_version() -> u64 {
+    1
+}
+fn default_hash_algorithm() -> String {
+    "sha-256".to_string()
+}
 
 impl Default for ProtocolConfig {
     fn default() -> Self {
@@ -75,9 +79,15 @@ pub struct TransportConfig {
     pub http_port: u16,
 }
 
-fn default_listen_port() -> u16 { 7654 }
-fn default_wg_interface() -> String { "howm0".to_string() }
-fn default_http_port() -> u16 { 7000 }
+fn default_listen_port() -> u16 {
+    7654
+}
+fn default_wg_interface() -> String {
+    "howm0".to_string()
+}
+fn default_http_port() -> u16 {
+    7000
+}
 
 impl Default for TransportConfig {
     fn default() -> Self {
@@ -105,8 +115,12 @@ pub struct DiscoveryConfig {
     pub broadcast_full_manifest: bool,
 }
 
-fn default_discovery_mode() -> String { "wireguard".to_string() }
-fn default_poll_interval_ms() -> u64 { 2000 }
+fn default_discovery_mode() -> String {
+    "wireguard".to_string()
+}
+fn default_poll_interval_ms() -> u64 {
+    2000
+}
 
 impl Default for DiscoveryConfig {
     fn default() -> Self {
@@ -152,7 +166,7 @@ impl From<&RoleConfig> for Role {
         match r {
             RoleConfig::Provide => Role::Provide,
             RoleConfig::Consume => Role::Consume,
-            RoleConfig::Both    => Role::Both,
+            RoleConfig::Both => Role::Both,
         }
     }
 }
@@ -167,7 +181,10 @@ pub struct ScopeConfig {
 
 impl From<&ScopeConfig> for ScopeParams {
     fn from(s: &ScopeConfig) -> Self {
-        ScopeParams { rate_limit: s.rate_limit, ttl: s.ttl }
+        ScopeParams {
+            rate_limit: s.rate_limit,
+            ttl: s.ttl,
+        }
     }
 }
 
@@ -188,8 +205,12 @@ pub struct HeartbeatParams {
     pub timeout_ms: u64,
 }
 
-fn default_heartbeat_interval() -> u64 { 5000 }
-fn default_heartbeat_timeout() -> u64 { 15000 }
+fn default_heartbeat_interval() -> u64 {
+    5000
+}
+fn default_heartbeat_timeout() -> u64 {
+    15000
+}
 
 // ─── Friends list ─────────────────────────────────────────────────────────────
 
@@ -214,10 +235,18 @@ pub struct InviteConfig {
     pub open_prune_days: u64,
 }
 
-fn default_invite_ttl() -> u64 { 900 }
-fn default_open_max_peers() -> u32 { 256 }
-fn default_open_rate_limit() -> u32 { 10 }
-fn default_open_prune_days() -> u64 { 5 }
+fn default_invite_ttl() -> u64 {
+    900
+}
+fn default_open_max_peers() -> u32 {
+    256
+}
+fn default_open_rate_limit() -> u32 {
+    10
+}
+fn default_open_prune_days() -> u64 {
+    5
+}
 
 impl Default for InviteConfig {
     fn default() -> Self {
@@ -262,8 +291,10 @@ pub fn validate_capability_name(name: &str) -> bool {
         return false;
     }
     // All other parts: [a-z0-9-]+
-    parts[..parts.len()-1].iter().all(|p| {
-        !p.is_empty() && p.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    parts[..parts.len() - 1].iter().all(|p| {
+        !p.is_empty()
+            && p.chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
     })
 }
 
@@ -272,8 +303,7 @@ impl PeerConfig {
     pub fn load(path: &Path) -> Result<Self> {
         let content = std::fs::read_to_string(path)
             .with_context(|| format!("read config file: {}", path.display()))?;
-        toml::from_str(&content)
-            .with_context(|| format!("parse config file: {}", path.display()))
+        toml::from_str(&content).with_context(|| format!("parse config file: {}", path.display()))
     }
 
     /// Generate a default Normal User archetype config (POC §6.1).
@@ -290,28 +320,37 @@ impl PeerConfig {
             capabilities: {
                 let mut m = HashMap::new();
                 // Single social capability — Both/mutual:true, direction handled at app layer
-                m.insert("social_feed".to_string(), CapabilityConfig {
-                    name: "howm.social.feed.1".to_string(),
-                    role: RoleConfig::Both,
-                    mutual: true,
-                    scope: Some(ScopeConfig { rate_limit: 10, ttl: 3600 }),
-                    classification: Some(ClassificationConfig {
-                        default_tier: ClassificationTier::Public,
-                        overrides: HashMap::new(),
-                    }),
-                    params: None,
-                });
-                m.insert("heartbeat".to_string(), CapabilityConfig {
-                    name: "core.heartbeat.liveness.1".to_string(),
-                    role: RoleConfig::Both,
-                    mutual: true,
-                    scope: None,
-                    classification: None,
-                    params: Some(HeartbeatParams {
-                        interval_ms: 5000,
-                        timeout_ms: 15000,
-                    }),
-                });
+                m.insert(
+                    "social_feed".to_string(),
+                    CapabilityConfig {
+                        name: "howm.social.feed.1".to_string(),
+                        role: RoleConfig::Both,
+                        mutual: true,
+                        scope: Some(ScopeConfig {
+                            rate_limit: 10,
+                            ttl: 3600,
+                        }),
+                        classification: Some(ClassificationConfig {
+                            default_tier: ClassificationTier::Public,
+                            overrides: HashMap::new(),
+                        }),
+                        params: None,
+                    },
+                );
+                m.insert(
+                    "heartbeat".to_string(),
+                    CapabilityConfig {
+                        name: "core.heartbeat.liveness.1".to_string(),
+                        role: RoleConfig::Both,
+                        mutual: true,
+                        scope: None,
+                        classification: None,
+                        params: Some(HeartbeatParams {
+                            interval_ms: 5000,
+                            timeout_ms: 15000,
+                        }),
+                    },
+                );
                 m
             },
             friends: FriendsConfig::default(),
@@ -325,7 +364,9 @@ impl PeerConfig {
     /// Convert config into a DiscoveryManifest.
     /// personal_hash is computed and embedded.
     pub fn to_manifest(&self, peer_id: PeerId, sequence_num: u64) -> DiscoveryManifest {
-        let mut caps: Vec<CapabilityDeclaration> = self.capabilities.values()
+        let mut caps: Vec<CapabilityDeclaration> = self
+            .capabilities
+            .values()
             .map(|c| CapabilityDeclaration {
                 name: c.name.clone(),
                 role: Role::from(&c.role),
@@ -352,7 +393,10 @@ impl PeerConfig {
     /// Build TrustPolicy map for all capabilities with classification config.
     pub fn trust_policies(&self) -> HashMap<String, TrustPolicy> {
         // Parse friends list once
-        let friends_set: std::collections::HashSet<PeerId> = self.friends.list.iter()
+        let friends_set: std::collections::HashSet<PeerId> = self
+            .friends
+            .list
+            .iter()
             .filter_map(|b64| parse_wg_pubkey(b64))
             .collect();
 
@@ -360,16 +404,19 @@ impl PeerConfig {
         for cap_cfg in self.capabilities.values() {
             if let Some(class) = &cap_cfg.classification {
                 // Parse per-peer overrides
-                let overrides: HashMap<PeerId, ClassificationTier> = class.overrides.iter()
-                    .filter_map(|(b64, tier)| {
-                        parse_wg_pubkey(b64).map(|pk| (pk, *tier))
-                    })
+                let overrides: HashMap<PeerId, ClassificationTier> = class
+                    .overrides
+                    .iter()
+                    .filter_map(|(b64, tier)| parse_wg_pubkey(b64).map(|pk| (pk, *tier)))
                     .collect();
-                policies.insert(cap_cfg.name.clone(), TrustPolicy {
-                    default_tier: class.default_tier,
-                    overrides,
-                    friends: friends_set.clone(),
-                });
+                policies.insert(
+                    cap_cfg.name.clone(),
+                    TrustPolicy {
+                        default_tier: class.default_tier,
+                        overrides,
+                        friends: friends_set.clone(),
+                    },
+                );
             }
         }
         policies
@@ -385,7 +432,9 @@ impl PeerConfig {
 pub fn parse_wg_pubkey(b64: &str) -> Option<PeerId> {
     use base64::Engine;
     let bytes = base64::engine::general_purpose::STANDARD.decode(b64).ok()?;
-    if bytes.len() != 32 { return None; }
+    if bytes.len() != 32 {
+        return None;
+    }
     let mut arr = [0u8; 32];
     arr.copy_from_slice(&bytes);
     Some(arr)
@@ -473,7 +522,11 @@ list = []
         let manifest = cfg.to_manifest(peer_id, 1);
         assert_eq!(manifest.capabilities.len(), 2);
         // Capabilities must be sorted
-        let names: Vec<_> = manifest.capabilities.iter().map(|c| c.name.as_str()).collect();
+        let names: Vec<_> = manifest
+            .capabilities
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect();
         let mut sorted = names.clone();
         sorted.sort();
         assert_eq!(names, sorted);
@@ -492,12 +545,12 @@ list = []
 
     #[test]
     fn validate_capability_names() {
-        assert!( validate_capability_name("p2pcd.social.post.1"));
-        assert!( validate_capability_name("core.heartbeat.liveness.1"));
-        assert!( validate_capability_name("org.example.cap.2"));
+        assert!(validate_capability_name("p2pcd.social.post.1"));
+        assert!(validate_capability_name("core.heartbeat.liveness.1"));
+        assert!(validate_capability_name("org.example.cap.2"));
         assert!(!validate_capability_name("invalid"));
         assert!(!validate_capability_name("p2pcd.1"));
         assert!(!validate_capability_name("p2pcd.social.post.alpha")); // version must be int
-        assert!(!validate_capability_name("P2PCD.social.post.1"));    // uppercase not allowed
+        assert!(!validate_capability_name("P2PCD.social.post.1")); // uppercase not allowed
     }
 }

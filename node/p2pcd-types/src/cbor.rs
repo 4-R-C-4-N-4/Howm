@@ -3,9 +3,8 @@
 // Do NOT use serde for wire format — use ciborium directly.
 
 use crate::{
-    capability_keys, manifest_keys, message_keys, scope_keys,
-    CapabilityDeclaration, CloseReason, DiscoveryManifest, MessageType,
-    ProtocolMessage, Role, ScopeParams, PEER_ID_LEN,
+    capability_keys, manifest_keys, message_keys, scope_keys, CapabilityDeclaration, CloseReason,
+    DiscoveryManifest, MessageType, ProtocolMessage, Role, ScopeParams, PEER_ID_LEN,
 };
 use anyhow::{anyhow, bail, Context, Result};
 use ciborium::value::Value;
@@ -17,8 +16,7 @@ use std::io::Read;
 
 fn cbor_to_bytes(val: &Value) -> Result<Vec<u8>> {
     let mut out = Vec::new();
-    ciborium::ser::into_writer(val, &mut out)
-        .map_err(|e| anyhow!("CBOR encode error: {e}"))?;
+    ciborium::ser::into_writer(val, &mut out).map_err(|e| anyhow!("CBOR encode error: {e}"))?;
     Ok(out)
 }
 
@@ -119,10 +117,16 @@ fn int_key(k: u64) -> Value {
 pub fn scope_to_cbor_value(scope: &ScopeParams) -> Value {
     let mut pairs = Vec::new();
     if scope.rate_limit > 0 {
-        pairs.push((int_key(scope_keys::RATE_LIMIT), Value::Integer(ciborium::value::Integer::from(scope.rate_limit))));
+        pairs.push((
+            int_key(scope_keys::RATE_LIMIT),
+            Value::Integer(ciborium::value::Integer::from(scope.rate_limit)),
+        ));
     }
     if scope.ttl > 0 {
-        pairs.push((int_key(scope_keys::TTL), Value::Integer(ciborium::value::Integer::from(scope.ttl))));
+        pairs.push((
+            int_key(scope_keys::TTL),
+            Value::Integer(ciborium::value::Integer::from(scope.ttl)),
+        ));
     }
     Value::Map(pairs)
 }
@@ -134,7 +138,7 @@ pub fn scope_from_cbor_value(val: &Value) -> Result<ScopeParams> {
     };
     Ok(ScopeParams {
         rate_limit: map_get_int(map, scope_keys::RATE_LIMIT).unwrap_or(0),
-        ttl:        map_get_int(map, scope_keys::TTL).unwrap_or(0),
+        ttl: map_get_int(map, scope_keys::TTL).unwrap_or(0),
     })
 }
 
@@ -142,8 +146,14 @@ pub fn scope_from_cbor_value(val: &Value) -> Result<ScopeParams> {
 
 pub fn cap_to_cbor_value(cap: &CapabilityDeclaration) -> Value {
     let mut pairs = vec![
-        (int_key(capability_keys::NAME), Value::Text(cap.name.clone())),
-        (int_key(capability_keys::ROLE), Value::Integer(ciborium::value::Integer::from(cap.role as u64))),
+        (
+            int_key(capability_keys::NAME),
+            Value::Text(cap.name.clone()),
+        ),
+        (
+            int_key(capability_keys::ROLE),
+            Value::Integer(ciborium::value::Integer::from(cap.role as u64)),
+        ),
     ];
     if cap.mutual {
         pairs.push((int_key(capability_keys::MUTUAL), Value::Bool(true)));
@@ -171,7 +181,12 @@ pub fn cap_from_cbor_value(val: &Value) -> Result<CapabilityDeclaration> {
         .map(|m| scope_from_cbor_value(&Value::Map(m)))
         .transpose()?;
 
-    Ok(CapabilityDeclaration { name, role, mutual, scope })
+    Ok(CapabilityDeclaration {
+        name,
+        role,
+        mutual,
+        scope,
+    })
 }
 
 // ─── DiscoveryManifest CBOR ───────────────────────────────────────────────────
@@ -183,17 +198,33 @@ impl DiscoveryManifest {
         let mut m = self.clone();
         m.sort_capabilities();
 
-        let caps_array: Vec<Value> = m.capabilities.iter()
-            .map(cap_to_cbor_value)
-            .collect();
+        let caps_array: Vec<Value> = m.capabilities.iter().map(cap_to_cbor_value).collect();
 
         let pairs = vec![
-            (int_key(manifest_keys::PROTOCOL_VERSION), Value::Integer(ciborium::value::Integer::from(m.protocol_version))),
-            (int_key(manifest_keys::PEER_ID),          Value::Bytes(m.peer_id.to_vec())),
-            (int_key(manifest_keys::SEQUENCE_NUM),     Value::Integer(ciborium::value::Integer::from(m.sequence_num))),
-            (int_key(manifest_keys::CAPABILITIES),     Value::Array(caps_array)),
-            (int_key(manifest_keys::PERSONAL_HASH),    Value::Bytes(m.personal_hash.clone())),
-            (int_key(manifest_keys::HASH_ALGORITHM),   Value::Text(m.hash_algorithm.clone())),
+            (
+                int_key(manifest_keys::PROTOCOL_VERSION),
+                Value::Integer(ciborium::value::Integer::from(m.protocol_version)),
+            ),
+            (
+                int_key(manifest_keys::PEER_ID),
+                Value::Bytes(m.peer_id.to_vec()),
+            ),
+            (
+                int_key(manifest_keys::SEQUENCE_NUM),
+                Value::Integer(ciborium::value::Integer::from(m.sequence_num)),
+            ),
+            (
+                int_key(manifest_keys::CAPABILITIES),
+                Value::Array(caps_array),
+            ),
+            (
+                int_key(manifest_keys::PERSONAL_HASH),
+                Value::Bytes(m.personal_hash.clone()),
+            ),
+            (
+                int_key(manifest_keys::HASH_ALGORITHM),
+                Value::Text(m.hash_algorithm.clone()),
+            ),
         ];
 
         cbor_to_bytes(&Value::Map(pairs)).expect("manifest CBOR encode should not fail")
@@ -212,7 +243,10 @@ impl DiscoveryManifest {
         let peer_id_bytes = map_get_bytes(map, manifest_keys::PEER_ID)
             .ok_or_else(|| anyhow!("manifest: missing peer_id"))?;
         if peer_id_bytes.len() != PEER_ID_LEN {
-            bail!("manifest: peer_id must be {PEER_ID_LEN} bytes, got {}", peer_id_bytes.len());
+            bail!(
+                "manifest: peer_id must be {PEER_ID_LEN} bytes, got {}",
+                peer_id_bytes.len()
+            );
         }
         let mut peer_id = [0u8; PEER_ID_LEN];
         peer_id.copy_from_slice(&peer_id_bytes);
@@ -222,7 +256,8 @@ impl DiscoveryManifest {
 
         let caps_array = map_get_array(map, manifest_keys::CAPABILITIES)
             .ok_or_else(|| anyhow!("manifest: missing capabilities"))?;
-        let capabilities = caps_array.iter()
+        let capabilities = caps_array
+            .iter()
             .map(cap_from_cbor_value)
             .collect::<Result<Vec<_>>>()
             .context("manifest: capabilities decode")?;
@@ -274,7 +309,8 @@ impl ProtocolMessage {
     /// Read a length-prefixed CBOR message from a reader.
     pub fn decode(reader: &mut impl Read) -> Result<Self> {
         let mut len_buf = [0u8; 4];
-        reader.read_exact(&mut len_buf)
+        reader
+            .read_exact(&mut len_buf)
             .context("read message length prefix")?;
         let len = u32::from_be_bytes(len_buf) as usize;
 
@@ -284,7 +320,8 @@ impl ProtocolMessage {
         }
 
         let mut payload = vec![0u8; len];
-        reader.read_exact(&mut payload)
+        reader
+            .read_exact(&mut payload)
             .context("read message payload")?;
 
         Self::from_cbor_bytes(&payload)
@@ -296,50 +333,84 @@ impl ProtocolMessage {
                 let manifest_cbor = manifest.to_cbor();
                 let manifest_val = decode_cbor(&manifest_cbor).expect("encode manifest for offer");
                 Value::Map(vec![
-                    (int_key(message_keys::MESSAGE_TYPE), Value::Integer(ciborium::value::Integer::from(MessageType::Offer as u64))),
+                    (
+                        int_key(message_keys::MESSAGE_TYPE),
+                        Value::Integer(ciborium::value::Integer::from(MessageType::Offer as u64)),
+                    ),
                     (int_key(message_keys::MANIFEST), manifest_val),
                 ])
             }
 
-            ProtocolMessage::Confirm { personal_hash, active_set, accepted_params } => {
-                let active_array = Value::Array(
-                    active_set.iter().map(|s| Value::Text(s.clone())).collect()
-                );
+            ProtocolMessage::Confirm {
+                personal_hash,
+                active_set,
+                accepted_params,
+            } => {
+                let active_array =
+                    Value::Array(active_set.iter().map(|s| Value::Text(s.clone())).collect());
                 let mut pairs = vec![
-                    (int_key(message_keys::MESSAGE_TYPE), Value::Integer(ciborium::value::Integer::from(MessageType::Confirm as u64))),
-                    (int_key(message_keys::PERSONAL_HASH), Value::Bytes(personal_hash.clone())),
+                    (
+                        int_key(message_keys::MESSAGE_TYPE),
+                        Value::Integer(ciborium::value::Integer::from(MessageType::Confirm as u64)),
+                    ),
+                    (
+                        int_key(message_keys::PERSONAL_HASH),
+                        Value::Bytes(personal_hash.clone()),
+                    ),
                     (int_key(message_keys::ACTIVE_SET), active_array),
                 ];
                 if let Some(params) = accepted_params {
-                    let params_map: Vec<(Value, Value)> = params.iter()
+                    let params_map: Vec<(Value, Value)> = params
+                        .iter()
                         .map(|(k, v)| (Value::Text(k.clone()), scope_to_cbor_value(v)))
                         .collect();
-                    pairs.push((int_key(message_keys::ACCEPTED_PARAMS), Value::Map(params_map)));
+                    pairs.push((
+                        int_key(message_keys::ACCEPTED_PARAMS),
+                        Value::Map(params_map),
+                    ));
                 }
                 Value::Map(pairs)
             }
 
-            ProtocolMessage::Close { personal_hash, reason } => {
-                Value::Map(vec![
-                    (int_key(message_keys::MESSAGE_TYPE), Value::Integer(ciborium::value::Integer::from(MessageType::Close as u64))),
-                    (int_key(message_keys::PERSONAL_HASH), Value::Bytes(personal_hash.clone())),
-                    (int_key(message_keys::REASON), Value::Integer(ciborium::value::Integer::from(*reason as u64))),
-                ])
-            }
+            ProtocolMessage::Close {
+                personal_hash,
+                reason,
+            } => Value::Map(vec![
+                (
+                    int_key(message_keys::MESSAGE_TYPE),
+                    Value::Integer(ciborium::value::Integer::from(MessageType::Close as u64)),
+                ),
+                (
+                    int_key(message_keys::PERSONAL_HASH),
+                    Value::Bytes(personal_hash.clone()),
+                ),
+                (
+                    int_key(message_keys::REASON),
+                    Value::Integer(ciborium::value::Integer::from(*reason as u64)),
+                ),
+            ]),
 
-            ProtocolMessage::Ping { timestamp } => {
-                Value::Map(vec![
-                    (int_key(message_keys::MESSAGE_TYPE), Value::Integer(ciborium::value::Integer::from(MessageType::Ping as u64))),
-                    (int_key(message_keys::TIMESTAMP), Value::Integer(ciborium::value::Integer::from(*timestamp))),
-                ])
-            }
+            ProtocolMessage::Ping { timestamp } => Value::Map(vec![
+                (
+                    int_key(message_keys::MESSAGE_TYPE),
+                    Value::Integer(ciborium::value::Integer::from(MessageType::Ping as u64)),
+                ),
+                (
+                    int_key(message_keys::TIMESTAMP),
+                    Value::Integer(ciborium::value::Integer::from(*timestamp)),
+                ),
+            ]),
 
-            ProtocolMessage::Pong { timestamp } => {
-                Value::Map(vec![
-                    (int_key(message_keys::MESSAGE_TYPE), Value::Integer(ciborium::value::Integer::from(MessageType::Pong as u64))),
-                    (int_key(message_keys::TIMESTAMP), Value::Integer(ciborium::value::Integer::from(*timestamp))),
-                ])
-            }
+            ProtocolMessage::Pong { timestamp } => Value::Map(vec![
+                (
+                    int_key(message_keys::MESSAGE_TYPE),
+                    Value::Integer(ciborium::value::Integer::from(MessageType::Pong as u64)),
+                ),
+                (
+                    int_key(message_keys::TIMESTAMP),
+                    Value::Integer(ciborium::value::Integer::from(*timestamp)),
+                ),
+            ]),
         };
         cbor_to_bytes(&val).expect("protocol message CBOR encode should not fail")
     }
@@ -372,33 +443,44 @@ impl ProtocolMessage {
                     .ok_or_else(|| anyhow!("confirm: missing personal_hash"))?;
                 let active_array = map_get_array(map, message_keys::ACTIVE_SET)
                     .ok_or_else(|| anyhow!("confirm: missing active_set"))?;
-                let active_set = active_array.iter()
-                    .map(|v| match v { Value::Text(s) => Ok(s.clone()), _ => bail!("active_set entry not text") })
+                let active_set = active_array
+                    .iter()
+                    .map(|v| match v {
+                        Value::Text(s) => Ok(s.clone()),
+                        _ => bail!("active_set entry not text"),
+                    })
                     .collect::<Result<Vec<_>>>()?;
 
-                let accepted_params = if let Some(params_map) = map_get_map(map, message_keys::ACCEPTED_PARAMS) {
-                    let mut out = BTreeMap::new();
-                    for (k, v) in &params_map {
-                        if let Value::Text(cap_name) = k {
-                            let scope = scope_from_cbor_value(v)?;
-                            out.insert(cap_name.clone(), scope);
+                let accepted_params =
+                    if let Some(params_map) = map_get_map(map, message_keys::ACCEPTED_PARAMS) {
+                        let mut out = BTreeMap::new();
+                        for (k, v) in &params_map {
+                            if let Value::Text(cap_name) = k {
+                                let scope = scope_from_cbor_value(v)?;
+                                out.insert(cap_name.clone(), scope);
+                            }
                         }
-                    }
-                    Some(out)
-                } else {
-                    None
-                };
+                        Some(out)
+                    } else {
+                        None
+                    };
 
-                Ok(ProtocolMessage::Confirm { personal_hash, active_set, accepted_params })
+                Ok(ProtocolMessage::Confirm {
+                    personal_hash,
+                    active_set,
+                    accepted_params,
+                })
             }
 
             MessageType::Close => {
                 let personal_hash = map_get_bytes(map, message_keys::PERSONAL_HASH)
                     .ok_or_else(|| anyhow!("close: missing personal_hash"))?;
                 let reason_u64 = map_get_int(map, message_keys::REASON).unwrap_or(0);
-                let reason = CloseReason::from_u64(reason_u64)
-                    .unwrap_or(CloseReason::Error);
-                Ok(ProtocolMessage::Close { personal_hash, reason })
+                let reason = CloseReason::from_u64(reason_u64).unwrap_or(CloseReason::Error);
+                Ok(ProtocolMessage::Close {
+                    personal_hash,
+                    reason,
+                })
             }
 
             MessageType::Ping => {
@@ -436,7 +518,10 @@ mod tests {
                 name: "howm.social.feed.1".to_string(),
                 role: Role::Both,
                 mutual: true,
-                scope: Some(ScopeParams { rate_limit: 10, ttl: 3600 }),
+                scope: Some(ScopeParams {
+                    rate_limit: 10,
+                    ttl: 3600,
+                }),
             },
         ];
         let mut m = DiscoveryManifest {
@@ -491,14 +576,23 @@ mod tests {
         let encoded = m.to_cbor();
         let decoded = DiscoveryManifest::from_cbor(&encoded).unwrap();
         // Should be sorted after decode (encoding sorts them)
-        let names: Vec<_> = decoded.capabilities.iter().map(|c| c.name.as_str()).collect();
-        assert_eq!(names, vec!["core.heartbeat.liveness.1", "howm.social.feed.1"]);
+        let names: Vec<_> = decoded
+            .capabilities
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["core.heartbeat.liveness.1", "howm.social.feed.1"]
+        );
     }
 
     #[test]
     fn offer_round_trip() {
         let m = sample_manifest();
-        let msg = ProtocolMessage::Offer { manifest: m.clone() };
+        let msg = ProtocolMessage::Offer {
+            manifest: m.clone(),
+        };
         let encoded = msg.encode();
         let decoded = ProtocolMessage::decode(&mut encoded.as_slice()).unwrap();
         match decoded {
@@ -513,16 +607,29 @@ mod tests {
     #[test]
     fn confirm_round_trip() {
         let mut params = BTreeMap::new();
-        params.insert("p2pcd.social.post.1".to_string(), ScopeParams { rate_limit: 5, ttl: 3600 });
+        params.insert(
+            "p2pcd.social.post.1".to_string(),
+            ScopeParams {
+                rate_limit: 5,
+                ttl: 3600,
+            },
+        );
         let msg = ProtocolMessage::Confirm {
             personal_hash: vec![0xDE, 0xAD],
-            active_set: vec!["core.heartbeat.liveness.1".to_string(), "p2pcd.social.post.1".to_string()],
+            active_set: vec![
+                "core.heartbeat.liveness.1".to_string(),
+                "p2pcd.social.post.1".to_string(),
+            ],
             accepted_params: Some(params.clone()),
         };
         let encoded = msg.encode();
         let decoded = ProtocolMessage::decode(&mut encoded.as_slice()).unwrap();
         match decoded {
-            ProtocolMessage::Confirm { personal_hash, active_set, accepted_params } => {
+            ProtocolMessage::Confirm {
+                personal_hash,
+                active_set,
+                accepted_params,
+            } => {
                 assert_eq!(personal_hash, vec![0xDE, 0xAD]);
                 assert_eq!(active_set.len(), 2);
                 let ap = accepted_params.unwrap();
@@ -551,11 +658,16 @@ mod tests {
     #[test]
     fn ping_pong_round_trip() {
         let ts = 1_700_000_000u64;
-        for msg in [ProtocolMessage::Ping { timestamp: ts }, ProtocolMessage::Pong { timestamp: ts }] {
+        for msg in [
+            ProtocolMessage::Ping { timestamp: ts },
+            ProtocolMessage::Pong { timestamp: ts },
+        ] {
             let encoded = msg.encode();
             let decoded = ProtocolMessage::decode(&mut encoded.as_slice()).unwrap();
             let decoded_ts = match decoded {
-                ProtocolMessage::Ping { timestamp } | ProtocolMessage::Pong { timestamp } => timestamp,
+                ProtocolMessage::Ping { timestamp } | ProtocolMessage::Pong { timestamp } => {
+                    timestamp
+                }
                 _ => panic!("unexpected message type"),
             };
             assert_eq!(decoded_ts, ts);

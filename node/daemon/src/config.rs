@@ -67,7 +67,6 @@ pub struct Config {
     pub ui_dir: Option<PathBuf>,
 }
 
-
 impl Config {
     /// WireGuard is enabled unless --no-wg is passed.
     pub fn wg_enabled(&self) -> bool {

@@ -49,12 +49,12 @@ pub mod scope_keys {
 /// CBOR integer map keys for protocol messages (outer envelope)
 pub mod message_keys {
     pub const MESSAGE_TYPE: u64 = 1;
-    pub const MANIFEST: u64 = 2;         // for OFFER
-    pub const PERSONAL_HASH: u64 = 3;    // for CONFIRM and CLOSE
-    pub const ACTIVE_SET: u64 = 4;       // for CONFIRM
-    pub const ACCEPTED_PARAMS: u64 = 5;  // for CONFIRM
-    pub const REASON: u64 = 6;           // for CLOSE
-    pub const TIMESTAMP: u64 = 7;        // for PING/PONG
+    pub const MANIFEST: u64 = 2; // for OFFER
+    pub const PERSONAL_HASH: u64 = 3; // for CONFIRM and CLOSE
+    pub const ACTIVE_SET: u64 = 4; // for CONFIRM
+    pub const ACCEPTED_PARAMS: u64 = 5; // for CONFIRM
+    pub const REASON: u64 = 6; // for CLOSE
+    pub const TIMESTAMP: u64 = 7; // for PING/PONG
 }
 
 // ─── Wire message types ───────────────────────────────────────────────────────
@@ -62,11 +62,11 @@ pub mod message_keys {
 #[repr(u64)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MessageType {
-    Offer   = 1,
+    Offer = 1,
     Confirm = 2,
-    Close   = 3,
-    Ping    = 4,
-    Pong    = 5,
+    Close = 3,
+    Ping = 4,
+    Pong = 5,
 }
 
 impl MessageType {
@@ -85,24 +85,24 @@ impl MessageType {
 #[repr(u64)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CloseReason {
-    Normal             = 0,
-    NoMatch            = 1,
-    AuthFailure        = 2,
+    Normal = 0,
+    NoMatch = 1,
+    AuthFailure = 2,
     VersionUnsupported = 3,
-    Timeout            = 4,
-    Error              = 255,
+    Timeout = 4,
+    Error = 255,
 }
 
 impl CloseReason {
     pub fn from_u64(v: u64) -> Option<Self> {
         match v {
-            0   => Some(CloseReason::Normal),
-            1   => Some(CloseReason::NoMatch),
-            2   => Some(CloseReason::AuthFailure),
-            3   => Some(CloseReason::VersionUnsupported),
-            4   => Some(CloseReason::Timeout),
+            0 => Some(CloseReason::Normal),
+            1 => Some(CloseReason::NoMatch),
+            2 => Some(CloseReason::AuthFailure),
+            3 => Some(CloseReason::VersionUnsupported),
+            4 => Some(CloseReason::Timeout),
             255 => Some(CloseReason::Error),
-            _   => None,
+            _ => None,
         }
     }
 }
@@ -114,7 +114,7 @@ impl CloseReason {
 pub enum Role {
     Provide = 1,
     Consume = 2,
-    Both    = 3,
+    Both = 3,
 }
 
 impl Role {
@@ -133,9 +133,9 @@ impl Role {
         use Role::*;
         match (self, other) {
             (Provide, Consume) | (Consume, Provide) => true,
-            (Both, Provide)    | (Provide, Both)    => true,
-            (Both, Consume)    | (Consume, Both)    => true,
-            (Both, Both)                            => self_mutual && other_mutual,
+            (Both, Provide) | (Provide, Both) => true,
+            (Both, Consume) | (Consume, Both) => true,
+            (Both, Both) => self_mutual && other_mutual,
             (Provide, Provide) | (Consume, Consume) => false,
         }
     }
@@ -174,11 +174,11 @@ impl ScopeParams {
         ScopeParams {
             rate_limit: match (self.rate_limit, other.rate_limit) {
                 (0, x) | (x, 0) => x,
-                (a, b)          => a.min(b),
+                (a, b) => a.min(b),
             },
             ttl: match (self.ttl, other.ttl) {
                 (0, x) | (x, 0) => x,
-                (a, b)          => a.min(b),
+                (a, b) => a.min(b),
             },
         }
     }
@@ -268,13 +268,13 @@ impl TrustPolicy {
     pub fn evaluate(&self, remote_peer_id: &PeerId) -> bool {
         if let Some(tier) = self.overrides.get(remote_peer_id) {
             return match tier {
-                ClassificationTier::Public  => true,
+                ClassificationTier::Public => true,
                 ClassificationTier::Friends => self.friends.contains(remote_peer_id),
                 ClassificationTier::Blocked => false,
             };
         }
         match self.default_tier {
-            ClassificationTier::Public  => true,
+            ClassificationTier::Public => true,
             ClassificationTier::Friends => self.friends.contains(remote_peer_id),
             ClassificationTier::Blocked => false,
         }
@@ -299,11 +299,10 @@ pub fn compute_intersection(
                 continue;
             }
             // Role match check per §7.4
-            if !local_cap.role.matches(
-                &remote_cap.role,
-                local_cap.mutual,
-                remote_cap.mutual,
-            ) {
+            if !local_cap
+                .role
+                .matches(&remote_cap.role, local_cap.mutual, remote_cap.mutual)
+            {
                 continue;
             }
             // Trust gate check using remote manifest's peer_id (= WG public key)
@@ -374,9 +373,9 @@ mod tests {
     fn role_both_both_requires_mutual() {
         // Both + Both only matches when both have mutual=true
         assert!(!Role::Both.matches(&Role::Both, false, false));
-        assert!(!Role::Both.matches(&Role::Both, true,  false));
+        assert!(!Role::Both.matches(&Role::Both, true, false));
         assert!(!Role::Both.matches(&Role::Both, false, true));
-        assert!( Role::Both.matches(&Role::Both, true,  true));
+        assert!(Role::Both.matches(&Role::Both, true, true));
     }
 
     #[test]
@@ -389,8 +388,14 @@ mod tests {
 
     #[test]
     fn scope_reconcile_min_wins() {
-        let a = ScopeParams { rate_limit: 10, ttl: 3600 };
-        let b = ScopeParams { rate_limit: 5,  ttl: 7200 };
+        let a = ScopeParams {
+            rate_limit: 10,
+            ttl: 3600,
+        };
+        let b = ScopeParams {
+            rate_limit: 5,
+            ttl: 7200,
+        };
         let r = a.reconcile(&b);
         assert_eq!(r.rate_limit, 5);
         assert_eq!(r.ttl, 3600);
@@ -398,8 +403,14 @@ mod tests {
 
     #[test]
     fn scope_reconcile_zero_is_unlimited() {
-        let a = ScopeParams { rate_limit: 0,  ttl: 0 };
-        let b = ScopeParams { rate_limit: 10, ttl: 3600 };
+        let a = ScopeParams {
+            rate_limit: 0,
+            ttl: 0,
+        };
+        let b = ScopeParams {
+            rate_limit: 10,
+            ttl: 3600,
+        };
         let r = a.reconcile(&b);
         // 0 = unlimited; take the other value
         assert_eq!(r.rate_limit, 10);
@@ -408,8 +419,14 @@ mod tests {
 
     #[test]
     fn scope_reconcile_both_zero_stays_zero() {
-        let a = ScopeParams { rate_limit: 0, ttl: 0 };
-        let b = ScopeParams { rate_limit: 0, ttl: 0 };
+        let a = ScopeParams {
+            rate_limit: 0,
+            ttl: 0,
+        };
+        let b = ScopeParams {
+            rate_limit: 0,
+            ttl: 0,
+        };
         let r = a.reconcile(&b);
         assert_eq!(r.rate_limit, 0);
         assert_eq!(r.ttl, 0);
@@ -417,7 +434,9 @@ mod tests {
 
     // ── TrustPolicy::evaluate tests ──────────────────────────────────────────
 
-    fn peer(b: u8) -> PeerId { [b; 32] }
+    fn peer(b: u8) -> PeerId {
+        [b; 32]
+    }
 
     #[test]
     fn trust_public_allows_all() {
@@ -442,7 +461,7 @@ mod tests {
             },
         };
         assert!(!policy.evaluate(&peer(0xFF))); // stranger
-        assert!( policy.evaluate(&peer(0x01))); // friend
+        assert!(policy.evaluate(&peer(0x01))); // friend
     }
 
     #[test]
@@ -474,7 +493,12 @@ mod tests {
     // ── compute_intersection tests (from POC doc §9 scenarios) ──────────────
 
     fn cap(name: &str, role: Role, mutual: bool) -> CapabilityDeclaration {
-        CapabilityDeclaration { name: name.to_string(), role, mutual, scope: None }
+        CapabilityDeclaration {
+            name: name.to_string(),
+            role,
+            mutual,
+            scope: None,
+        }
     }
 
     fn manifest(id: u8, caps: Vec<CapabilityDeclaration>) -> DiscoveryManifest {

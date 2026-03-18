@@ -16,16 +16,13 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result};
 use tokio::sync::{mpsc, Mutex, RwLock};
 
-use p2pcd_types::{
-    CloseReason, DiscoveryManifest, PeerId, TrustPolicy,
-    config::PeerConfig,
-};
+use p2pcd_types::{config::PeerConfig, CloseReason, DiscoveryManifest, PeerId, TrustPolicy};
 
-use crate::wireguard::{WgPeerEvent, WgPeerMonitor};
+use super::cap_notify::CapabilityNotifier;
+use super::heartbeat::{HeartbeatEvent, HeartbeatManager};
 use super::session::{self, Session, SessionState};
 use super::transport::{self, P2pcdListener};
-use super::heartbeat::{HeartbeatEvent, HeartbeatManager};
-use super::cap_notify::CapabilityNotifier;
+use crate::wireguard::{WgPeerEvent, WgPeerMonitor};
 
 /// Peer cache TTL: entries older than this are ignored (re-negotiate).
 const CACHE_TTL_SECS: u64 = 3600;
@@ -46,8 +43,8 @@ pub enum SessionOutcome {
 pub struct PeerCacheEntry {
     /// The remote peer's personal_hash at time of negotiation.
     pub personal_hash: Vec<u8>,
-    pub last_outcome:  SessionOutcome,
-    pub timestamp:     u64,
+    pub last_outcome: SessionOutcome,
+    pub timestamp: u64,
 }
 
 impl PeerCacheEntry {
@@ -60,24 +57,24 @@ impl PeerCacheEntry {
 
 #[derive(Debug, Clone)]
 pub struct SessionSummary {
-    pub peer_id:    PeerId,
-    pub state:      SessionState,
+    pub peer_id: PeerId,
+    pub state: SessionState,
     pub active_set: Vec<String>,
-    pub uptime_s:   u64,
+    pub uptime_s: u64,
 }
 
 // ── ProtocolEngine ───────────────────────────────────────────────────────────
 
 pub struct ProtocolEngine {
-    config:         RwLock<PeerConfig>,
+    config: RwLock<PeerConfig>,
     local_manifest: RwLock<DiscoveryManifest>,
     trust_policies: RwLock<HashMap<String, TrustPolicy>>,
-    local_peer_id:  PeerId,
+    local_peer_id: PeerId,
     /// sequence_num — incremented on each rebroadcast.
-    sequence_num:   Mutex<u64>,
+    sequence_num: Mutex<u64>,
 
     /// All sessions indexed by remote peer_id.
-    sessions:   Arc<RwLock<HashMap<PeerId, Session>>>,
+    sessions: Arc<RwLock<HashMap<PeerId, Session>>>,
     /// Peer cache indexed by remote peer_id.
     peer_cache: Arc<Mutex<HashMap<PeerId, PeerCacheEntry>>>,
     /// Fires HTTP callbacks to capabilities on peer-active / peer-inactive.
@@ -85,6 +82,7 @@ pub struct ProtocolEngine {
     /// Live heartbeat task handles, keyed by peer_id. Aborted on session close.
     heartbeat_handles: Arc<Mutex<HashMap<PeerId, tokio::task::JoinHandle<()>>>>,
     /// Sender half used by heartbeat tasks to report timeout events to the engine.
+    #[allow(dead_code)]
     hb_event_tx: mpsc::Sender<HeartbeatEvent>,
 }
 
@@ -101,12 +99,12 @@ impl ProtocolEngine {
         let (hb_event_tx, _) = mpsc::channel(1);
 
         Self {
-            config:         RwLock::new(config),
+            config: RwLock::new(config),
             local_manifest: RwLock::new(local_manifest),
             trust_policies: RwLock::new(trust_policies),
             local_peer_id,
-            sequence_num:   Mutex::new(seq),
-            sessions:   Arc::new(RwLock::new(HashMap::new())),
+            sequence_num: Mutex::new(seq),
+            sessions: Arc::new(RwLock::new(HashMap::new())),
             peer_cache: Arc::new(Mutex::new(HashMap::new())),
             notifier,
             heartbeat_handles: Arc::new(Mutex::new(HashMap::new())),
@@ -152,7 +150,9 @@ impl ProtocolEngine {
         while let Some(event) = rx.recv().await {
             match event {
                 WgPeerEvent::PeerVisible(id) => {
-                    Arc::clone(&self).on_peer_visible(id, Arc::clone(&hb_event_tx)).await
+                    Arc::clone(&self)
+                        .on_peer_visible(id, Arc::clone(&hb_event_tx))
+                        .await
                 }
                 WgPeerEvent::PeerUnreachable(id) => {
                     self.on_peer_unreachable(id, CloseReason::Timeout).await
@@ -316,7 +316,10 @@ impl ProtocolEngine {
         let peer_id = match self.identify_peer_by_addr(remote_addr.ip()).await {
             Some(id) => id,
             None => {
-                tracing::warn!("engine: inbound from unknown addr {}, dropping", remote_addr);
+                tracing::warn!(
+                    "engine: inbound from unknown addr {}, dropping",
+                    remote_addr
+                );
                 return Ok(());
             }
         };
@@ -368,7 +371,10 @@ impl ProtocolEngine {
         let wg_ip = match self.resolve_peer_addr(peer_id).await {
             Some(addr) => addr.ip(),
             None => {
-                tracing::debug!("engine: can't resolve WG IP for notifier ({})", short(peer_id));
+                tracing::debug!(
+                    "engine: can't resolve WG IP for notifier ({})",
+                    short(peer_id)
+                );
                 return;
             }
         };
@@ -387,10 +393,7 @@ impl ProtocolEngine {
 
     // ── Heartbeat timeout event loop ──────────────────────────────────────────
 
-    async fn heartbeat_event_loop(
-        self: Arc<Self>,
-        mut hb_rx: mpsc::Receiver<HeartbeatEvent>,
-    ) {
+    async fn heartbeat_event_loop(self: Arc<Self>, mut hb_rx: mpsc::Receiver<HeartbeatEvent>) {
         while let Some(event) = hb_rx.recv().await {
             match event {
                 HeartbeatEvent::Pong { peer_id, rtt_ms } => {
@@ -403,7 +406,8 @@ impl ProtocolEngine {
                 }
                 HeartbeatEvent::Timeout { peer_id } => {
                     tracing::warn!("engine: heartbeat TIMEOUT {}", short(peer_id));
-                    self.on_peer_unreachable(peer_id, CloseReason::Timeout).await;
+                    self.on_peer_unreachable(peer_id, CloseReason::Timeout)
+                        .await;
                 }
             }
         }
@@ -414,21 +418,32 @@ impl ProtocolEngine {
     async fn record_session_outcome(&self, s: &Session) {
         let outcome = match &s.state {
             SessionState::Active => SessionOutcome::Active,
-            SessionState::None   => SessionOutcome::None,
+            SessionState::None => SessionOutcome::None,
             SessionState::Denied => SessionOutcome::Denied,
-            _                    => return,
+            _ => return,
         };
-        let hash = s.remote_manifest.as_ref()
+        let hash = s
+            .remote_manifest
+            .as_ref()
             .map(|m| m.personal_hash.clone())
             .unwrap_or_default();
 
         let mut cache = self.peer_cache.lock().await;
-        let entry = PeerCacheEntry { personal_hash: hash.clone(), last_outcome: outcome, timestamp: unix_now() };
-        tracing::debug!("engine: cache {} → {:?}", short(s.remote_peer_id), entry.last_outcome);
+        let entry = PeerCacheEntry {
+            personal_hash: hash.clone(),
+            last_outcome: outcome,
+            timestamp: unix_now(),
+        };
+        tracing::debug!(
+            "engine: cache {} → {:?}",
+            short(s.remote_peer_id),
+            entry.last_outcome
+        );
         cache.insert(s.remote_peer_id, entry);
     }
 
     /// Invalidate a peer's cache entry (e.g. when we know their manifest changed).
+    #[allow(dead_code)]
     pub async fn invalidate_cache(&self, peer_id: &PeerId) {
         self.peer_cache.lock().await.remove(peer_id);
     }
@@ -440,7 +455,8 @@ impl ProtocolEngine {
         use base64::{engine::general_purpose::STANDARD, Engine as _};
 
         // Validate it decodes to a 32-byte key
-        let bytes = STANDARD.decode(pubkey_b64)
+        let bytes = STANDARD
+            .decode(pubkey_b64)
             .map_err(|_| anyhow::anyhow!("invalid base64 pubkey"))?;
         anyhow::ensure!(bytes.len() == 32, "pubkey must be 32 bytes");
 
@@ -531,18 +547,24 @@ impl ProtocolEngine {
     pub async fn active_sessions(&self) -> Vec<SessionSummary> {
         let sessions = self.sessions.read().await;
         let now = unix_now();
-        sessions.values().map(|s| SessionSummary {
-            peer_id:    s.remote_peer_id,
-            state:      s.state.clone(),
-            active_set: s.active_set.clone(),
-            uptime_s:   now.saturating_sub(s.created_at),
-        }).collect()
+        sessions
+            .values()
+            .map(|s| SessionSummary {
+                peer_id: s.remote_peer_id,
+                state: s.state.clone(),
+                active_set: s.active_set.clone(),
+                uptime_s: now.saturating_sub(s.created_at),
+            })
+            .collect()
     }
 
     pub async fn active_peers_for_capability(&self, cap_name: &str) -> Vec<PeerId> {
         let sessions = self.sessions.read().await;
-        sessions.values()
-            .filter(|s| s.state == SessionState::Active && s.active_set.iter().any(|c| c == cap_name))
+        sessions
+            .values()
+            .filter(|s| {
+                s.state == SessionState::Active && s.active_set.iter().any(|c| c == cap_name)
+            })
             .map(|s| s.remote_peer_id)
             .collect()
     }
@@ -552,7 +574,9 @@ impl ProtocolEngine {
     }
 
     pub async fn peer_cache_snapshot(&self) -> Vec<(PeerId, PeerCacheEntry)> {
-        self.peer_cache.lock().await
+        self.peer_cache
+            .lock()
+            .await
             .iter()
             .map(|(k, v)| (*k, v.clone()))
             .collect()
@@ -642,11 +666,11 @@ fn short(id: PeerId) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use p2pcd_types::{CapabilityDeclaration, Role, PROTOCOL_VERSION};
     use crate::p2pcd::{
         session::{run_initiator_exchange, run_responder_exchange, Session},
-        transport::{P2pcdListener, connect},
+        transport::{connect, P2pcdListener},
     };
+    use p2pcd_types::{CapabilityDeclaration, Role, PROTOCOL_VERSION};
     use std::collections::HashMap;
 
     fn make_manifest(id: u8) -> DiscoveryManifest {
@@ -654,14 +678,12 @@ mod tests {
             protocol_version: PROTOCOL_VERSION,
             peer_id: [id; 32],
             sequence_num: 1,
-            capabilities: vec![
-                CapabilityDeclaration {
-                    name: "core.heartbeat.liveness.1".to_string(),
-                    role: Role::Both,
-                    mutual: true,
-                    scope: None,
-                },
-            ],
+            capabilities: vec![CapabilityDeclaration {
+                name: "core.heartbeat.liveness.1".to_string(),
+                role: Role::Both,
+                mutual: true,
+                scope: None,
+            }],
             personal_hash: vec![id; 32],
             hash_algorithm: "sha-256".to_string(),
         }
@@ -669,7 +691,9 @@ mod tests {
 
     #[tokio::test]
     async fn two_nodes_reach_active() {
-        let listener = P2pcdListener::bind("127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let listener = P2pcdListener::bind("127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
         let addr = listener.local_addr;
 
         let b_manifest = make_manifest(2);
@@ -677,18 +701,24 @@ mod tests {
             let (transport, _) = listener.accept().await.unwrap();
             let mut s = Session::new([1u8; 32], b_manifest);
             s.transport = Some(transport);
-            run_responder_exchange(&mut s, &HashMap::new()).await.unwrap();
+            run_responder_exchange(&mut s, &HashMap::new())
+                .await
+                .unwrap();
             (s.state.clone(), s.active_set.clone())
         });
 
         let mut a = Session::new([2u8; 32], make_manifest(1));
         a.transport = Some(connect(addr).await.unwrap());
-        run_initiator_exchange(&mut a, &HashMap::new()).await.unwrap();
+        run_initiator_exchange(&mut a, &HashMap::new())
+            .await
+            .unwrap();
 
         let (b_state, b_set) = responder_task.await.unwrap();
         assert_eq!(a.state, SessionState::Active);
         assert_eq!(b_state, SessionState::Active);
-        assert!(a.active_set.contains(&"core.heartbeat.liveness.1".to_string()));
+        assert!(a
+            .active_set
+            .contains(&"core.heartbeat.liveness.1".to_string()));
         assert!(b_set.contains(&"core.heartbeat.liveness.1".to_string()));
     }
 
@@ -696,8 +726,8 @@ mod tests {
     fn peer_cache_expiry() {
         let entry = PeerCacheEntry {
             personal_hash: vec![],
-            last_outcome:  SessionOutcome::None,
-            timestamp:     0, // epoch — definitely expired
+            last_outcome: SessionOutcome::None,
+            timestamp: 0, // epoch — definitely expired
         };
         assert!(entry.is_expired());
 
@@ -711,10 +741,10 @@ mod tests {
     #[test]
     fn session_summary_fields() {
         let s = SessionSummary {
-            peer_id:    [1u8; 32],
-            state:      SessionState::Active,
+            peer_id: [1u8; 32],
+            state: SessionState::Active,
             active_set: vec!["core.heartbeat.liveness.1".to_string()],
-            uptime_s:   42,
+            uptime_s: 42,
         };
         assert_eq!(s.active_set.len(), 1);
     }

@@ -2,17 +2,17 @@ use clap::Parser;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tracing::info;
-use tracing_subscriber::{fmt, EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
+use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 mod api;
 mod capabilities;
-mod p2pcd;
 mod config;
 mod error;
 mod executor;
 mod identity;
 mod invite;
 mod open_invite;
+mod p2pcd;
 mod peers;
 mod proxy;
 mod state;
@@ -48,7 +48,6 @@ async fn main() -> anyhow::Result<()> {
             .init();
         std::mem::forget(_guard);
     }
-
 
     // Load or create identity
     let mut identity = identity::load_or_create(&config.data_dir, config.name.clone())?;
@@ -89,10 +88,13 @@ async fn main() -> anyhow::Result<()> {
         // Check if the process is still alive
         let alive = cap
             .pid
-            .map(|pid| executor::check_health(pid))
+            .map(executor::check_health)
             .unwrap_or(false);
         if alive {
-            info!("Capability '{}' process still running (pid={:?})", cap.name, cap.pid);
+            info!(
+                "Capability '{}' process still running (pid={:?})",
+                cap.name, cap.pid
+            );
             continue;
         }
         // Process is dead — restart from the binary
@@ -273,10 +275,11 @@ fn build_p2pcd_engine(
     let pubkey_b64 = identity
         .wg_pubkey
         .as_deref()
-        .or_else(|| wg_state.public_key.as_deref())
+        .or(wg_state.public_key.as_deref())
         .ok_or_else(|| anyhow::anyhow!("No WireGuard public key available for P2P-CD engine"))?;
 
-    let key_bytes = STANDARD.decode(pubkey_b64)
+    let key_bytes = STANDARD
+        .decode(pubkey_b64)
         .map_err(|e| anyhow::anyhow!("Failed to decode WG pubkey: {}", e))?;
     if key_bytes.len() != 32 {
         anyhow::bail!("WG public key is {} bytes, expected 32", key_bytes.len());
@@ -294,10 +297,17 @@ fn build_p2pcd_engine(
         // Write the default config for the user to inspect/modify
         if let Ok(toml_str) = toml::to_string_pretty(&default_cfg) {
             let _ = std::fs::write(&toml_path, toml_str);
-            info!("Generated default p2pcd-peer.toml at {}", toml_path.display());
+            info!(
+                "Generated default p2pcd-peer.toml at {}",
+                toml_path.display()
+            );
         }
         default_cfg
     };
 
-    Ok(Arc::new(p2pcd::engine::ProtocolEngine::new(peer_config, peer_id, notifier)))
+    Ok(Arc::new(p2pcd::engine::ProtocolEngine::new(
+        peer_config,
+        peer_id,
+        notifier,
+    )))
 }

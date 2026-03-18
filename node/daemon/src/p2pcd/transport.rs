@@ -17,6 +17,7 @@ use tokio::time::timeout;
 use p2pcd_types::ProtocolMessage;
 
 /// Default P2P-CD protocol TCP port.
+#[allow(dead_code)]
 pub const DEFAULT_P2PCD_PORT: u16 = 7654;
 
 /// Default read/write timeout.
@@ -34,15 +35,20 @@ pub struct P2pcdTransport {
 impl P2pcdTransport {
     /// Wrap an already-connected `TcpStream`.
     pub fn new(stream: TcpStream) -> Self {
-        Self { stream, io_timeout: DEFAULT_IO_TIMEOUT }
+        Self {
+            stream,
+            io_timeout: DEFAULT_IO_TIMEOUT,
+        }
     }
 
     /// Wrap with a custom I/O timeout.
+    #[allow(dead_code)]
     pub fn with_timeout(stream: TcpStream, io_timeout: Duration) -> Self {
         Self { stream, io_timeout }
     }
 
     /// Remote address of the peer.
+    #[allow(dead_code)]
     pub fn peer_addr(&self) -> Result<SocketAddr> {
         self.stream.peer_addr().context("get peer addr")
     }
@@ -98,6 +104,7 @@ impl P2pcdTransport {
     }
 
     /// Close the underlying TCP connection.
+    #[allow(dead_code)]
     pub async fn close(mut self) -> Result<()> {
         self.stream.shutdown().await.context("tcp shutdown")
     }
@@ -132,14 +139,11 @@ impl P2pcdTransport {
         tokio::spawn(async move {
             while let Some(msg) = send_rx.recv().await {
                 let encoded = msg.encode();
-                if let Err(e) = tokio::time::timeout(
-                    io_timeout,
-                    async {
-                        write_half.write_all(&encoded).await?;
-                        write_half.flush().await?;
-                        Ok::<(), std::io::Error>(())
-                    },
-                )
+                if let Err(e) = tokio::time::timeout(io_timeout, async {
+                    write_half.write_all(&encoded).await?;
+                    write_half.flush().await?;
+                    Ok::<(), std::io::Error>(())
+                })
                 .await
                 {
                     tracing::debug!("p2pcd channel write error: {:?}", e);
@@ -153,11 +157,8 @@ impl P2pcdTransport {
             loop {
                 // Read 4-byte length header
                 let mut header = [0u8; 4];
-                let read_result = tokio::time::timeout(
-                    io_timeout,
-                    read_half.read_exact(&mut header),
-                )
-                .await;
+                let read_result =
+                    tokio::time::timeout(io_timeout, read_half.read_exact(&mut header)).await;
                 match read_result {
                     Ok(Ok(_)) => {}
                     _ => break,
@@ -169,11 +170,8 @@ impl P2pcdTransport {
                 }
 
                 let mut buf = vec![0u8; len];
-                let read_result = tokio::time::timeout(
-                    io_timeout,
-                    read_half.read_exact(&mut buf),
-                )
-                .await;
+                let read_result =
+                    tokio::time::timeout(io_timeout, read_half.read_exact(&mut buf)).await;
                 match read_result {
                     Ok(Ok(_)) => {}
                     _ => break,
@@ -215,7 +213,10 @@ impl P2pcdListener {
             .with_context(|| format!("bind P2PCD listener on {}", addr))?;
         let local_addr = listener.local_addr()?;
         tracing::info!("P2P-CD TCP listener on {}", local_addr);
-        Ok(Self { local_addr, listener })
+        Ok(Self {
+            local_addr,
+            listener,
+        })
     }
 
     /// Accept one incoming connection, returning a `P2pcdTransport`.
@@ -239,9 +240,7 @@ pub async fn connect(addr: SocketAddr) -> Result<P2pcdTransport> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use p2pcd_types::{
-        CloseReason, DiscoveryManifest, ProtocolMessage, PROTOCOL_VERSION,
-    };
+    use p2pcd_types::{CloseReason, DiscoveryManifest, ProtocolMessage, PROTOCOL_VERSION};
     use std::collections::BTreeMap;
 
     fn make_manifest(id: u8) -> DiscoveryManifest {
@@ -272,7 +271,9 @@ mod tests {
 
         let mut client = connect(addr).await.unwrap();
         let manifest = make_manifest(1);
-        let outgoing = ProtocolMessage::Offer { manifest: manifest.clone() };
+        let outgoing = ProtocolMessage::Offer {
+            manifest: manifest.clone(),
+        };
         client.send(&outgoing).await.unwrap();
 
         let echoed = client.recv().await.unwrap();
@@ -341,8 +342,15 @@ mod tests {
 
         let received = accept_task.await.unwrap();
         assert!(
-            matches!(received, ProtocolMessage::Close { reason: CloseReason::Normal, .. }),
-            "expected Close(Normal), got {:?}", received
+            matches!(
+                received,
+                ProtocolMessage::Close {
+                    reason: CloseReason::Normal,
+                    ..
+                }
+            ),
+            "expected Close(Normal), got {:?}",
+            received
         );
     }
 
@@ -357,12 +365,18 @@ mod tests {
             let (mut server, _) = listener.accept().await.unwrap();
             let msg = server.recv().await.unwrap();
             if let ProtocolMessage::Ping { timestamp } = msg {
-                server.send(&ProtocolMessage::Pong { timestamp }).await.unwrap();
+                server
+                    .send(&ProtocolMessage::Pong { timestamp })
+                    .await
+                    .unwrap();
             }
         });
 
         let mut client = connect(addr).await.unwrap();
-        client.send(&ProtocolMessage::Ping { timestamp: 12345 }).await.unwrap();
+        client
+            .send(&ProtocolMessage::Ping { timestamp: 12345 })
+            .await
+            .unwrap();
         let pong = client.recv().await.unwrap();
         assert!(matches!(pong, ProtocolMessage::Pong { timestamp: 12345 }));
 
@@ -405,7 +419,10 @@ mod tests {
         let mut params = BTreeMap::new();
         params.insert(
             "p2pcd.social.post.1".to_string(),
-            ScopeParams { rate_limit: 10, ttl: 3600 },
+            ScopeParams {
+                rate_limit: 10,
+                ttl: 3600,
+            },
         );
 
         let mut client = connect(addr).await.unwrap();
@@ -418,7 +435,10 @@ mod tests {
 
         let received = accept_task.await.unwrap();
         match received {
-            ProtocolMessage::Confirm { accepted_params: Some(p), .. } => {
+            ProtocolMessage::Confirm {
+                accepted_params: Some(p),
+                ..
+            } => {
                 let scope = p.get("p2pcd.social.post.1").unwrap();
                 assert_eq!(scope.rate_limit, 10);
                 assert_eq!(scope.ttl, 3600);

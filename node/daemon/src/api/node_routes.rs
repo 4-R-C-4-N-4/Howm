@@ -78,8 +78,7 @@ pub async fn remove_peer(
     if let Some(pubkey) = peer_pubkey {
         let wg_active = *state.wg_active.read().await;
         if wg_active {
-            let _ = wireguard::remove_peer(&state.config.data_dir, &pubkey, &node_id)
-                .await;
+            let _ = wireguard::remove_peer(&state.config.data_dir, &pubkey, &node_id).await;
         }
     }
 

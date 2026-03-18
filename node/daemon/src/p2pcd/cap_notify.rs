@@ -18,7 +18,6 @@ use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
@@ -30,29 +29,30 @@ use p2pcd_types::{PeerId, ScopeParams};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PeerActivePayload {
     /// Base64-encoded WireGuard public key (= peer_id).
-    pub peer_id:        String,
+    pub peer_id: String,
     /// Peer's WireGuard IP address (for the capability to connect directly).
-    pub wg_address:     String,
+    pub wg_address: String,
     /// Capability name this notification is for.
-    pub capability:     String,
+    pub capability: String,
     /// Agreed scope params for this capability (may be default/zero).
-    pub scope:          ScopeParams,
+    pub scope: ScopeParams,
     /// Unix timestamp of when the session became ACTIVE.
-    pub active_since:   u64,
+    pub active_since: u64,
 }
 
 /// Payload sent to a capability when a peer is no longer available.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PeerInactivePayload {
-    pub peer_id:    String,
+    pub peer_id: String,
     pub capability: String,
-    pub reason:     String,
+    pub reason: String,
 }
 
 // ── Capability registry ───────────────────────────────────────────────────────
 
 /// A registered capability endpoint that receives P2P-CD peer notifications.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct CapabilityEndpoint {
     /// Capability name (e.g. "p2pcd.social.post.1").
     pub cap_name: String,
@@ -76,11 +76,15 @@ impl CapabilityNotifier {
 
     /// Register a capability to receive peer notifications.
     pub async fn register(&self, cap_name: String, port: u16) {
-        let endpoint = CapabilityEndpoint { cap_name: cap_name.clone(), port };
+        let endpoint = CapabilityEndpoint {
+            cap_name: cap_name.clone(),
+            port,
+        };
         self.endpoints.write().await.insert(cap_name, endpoint);
     }
 
     /// Unregister a capability.
+    #[allow(dead_code)]
     pub async fn unregister(&self, cap_name: &str) {
         self.endpoints.write().await.remove(cap_name);
     }
@@ -102,10 +106,10 @@ impl CapabilityNotifier {
         for cap_name in active_set {
             if let Some(ep) = endpoints.get(cap_name) {
                 let payload = PeerActivePayload {
-                    peer_id:      peer_id_b64.clone(),
-                    wg_address:   wg_address.to_string(),
-                    capability:   cap_name.clone(),
-                    scope:        scope_params.get(cap_name).cloned().unwrap_or_default(),
+                    peer_id: peer_id_b64.clone(),
+                    wg_address: wg_address.to_string(),
+                    capability: cap_name.clone(),
+                    scope: scope_params.get(cap_name).cloned().unwrap_or_default(),
                     active_since,
                 };
                 let url = format!("http://127.0.0.1:{}/p2pcd/peer-active", ep.port);
@@ -115,12 +119,7 @@ impl CapabilityNotifier {
     }
 
     /// Notify all capabilities that a peer is no longer available.
-    pub async fn notify_peer_inactive(
-        &self,
-        peer_id: PeerId,
-        active_set: &[String],
-        reason: &str,
-    ) {
+    pub async fn notify_peer_inactive(&self, peer_id: PeerId, active_set: &[String], reason: &str) {
         use base64::{engine::general_purpose::STANDARD, Engine as _};
         let peer_id_b64 = STANDARD.encode(peer_id);
 
@@ -128,9 +127,9 @@ impl CapabilityNotifier {
         for cap_name in active_set {
             if let Some(ep) = endpoints.get(cap_name) {
                 let payload = PeerInactivePayload {
-                    peer_id:    peer_id_b64.clone(),
+                    peer_id: peer_id_b64.clone(),
                     capability: cap_name.clone(),
-                    reason:     reason.to_string(),
+                    reason: reason.to_string(),
                 };
                 let url = format!("http://127.0.0.1:{}/p2pcd/peer-inactive", ep.port);
                 tokio::spawn(post_inactive_notification(url, payload));
@@ -153,7 +152,11 @@ async fn post_notification(url: String, payload: PeerActivePayload) {
             tracing::warn!("cap_notify: POST {} returned {}", url, resp.status());
         }
         Err(e) => {
-            tracing::debug!("cap_notify: POST {} failed (cap may not be running): {}", url, e);
+            tracing::debug!(
+                "cap_notify: POST {} failed (cap may not be running): {}",
+                url,
+                e
+            );
         }
     }
 }
@@ -171,15 +174,17 @@ async fn post_inactive_notification(url: String, payload: PeerInactivePayload) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::{routing::post, Json, Router};
     use std::collections::BTreeMap;
-    use axum::{routing::post, Router, Json};
     use tokio::net::TcpListener;
 
     async fn handle_peer_active(Json(_body): Json<PeerActivePayload>) -> axum::http::StatusCode {
         axum::http::StatusCode::OK
     }
 
-    async fn handle_peer_inactive(Json(_body): Json<PeerInactivePayload>) -> axum::http::StatusCode {
+    async fn handle_peer_inactive(
+        Json(_body): Json<PeerInactivePayload>,
+    ) -> axum::http::StatusCode {
         axum::http::StatusCode::OK
     }
 
@@ -190,7 +195,7 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
 
         let router = Router::new()
-            .route("/p2pcd/peer-active",   post(handle_peer_active))
+            .route("/p2pcd/peer-active", post(handle_peer_active))
             .route("/p2pcd/peer-inactive", post(handle_peer_inactive));
 
         tokio::spawn(async move {
@@ -201,7 +206,9 @@ mod tests {
         tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
 
         let notifier = CapabilityNotifier::new();
-        notifier.register("core.heartbeat.liveness.1".to_string(), port).await;
+        notifier
+            .register("core.heartbeat.liveness.1".to_string(), port)
+            .await;
 
         let peer_id = [1u8; 32];
         let wg_addr: IpAddr = "100.222.0.2".parse().unwrap();
@@ -209,11 +216,15 @@ mod tests {
         let scope = BTreeMap::new();
 
         // Should not panic
-        notifier.notify_peer_active(peer_id, wg_addr, &active_set, &scope, 0).await;
+        notifier
+            .notify_peer_active(peer_id, wg_addr, &active_set, &scope, 0)
+            .await;
         // Give the spawned HTTP call time to fire
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
-        notifier.notify_peer_inactive(peer_id, &active_set, "Normal").await;
+        notifier
+            .notify_peer_inactive(peer_id, &active_set, "Normal")
+            .await;
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
     }
 
@@ -224,7 +235,15 @@ mod tests {
         let active_set = vec!["unknown.cap.1".to_string()];
         let scope = BTreeMap::new();
         // Should not panic even if cap not registered
-        notifier.notify_peer_active(peer_id, "100.222.0.3".parse().unwrap(), &active_set, &scope, 0).await;
+        notifier
+            .notify_peer_active(
+                peer_id,
+                "100.222.0.3".parse().unwrap(),
+                &active_set,
+                &scope,
+                0,
+            )
+            .await;
     }
 
     #[test]

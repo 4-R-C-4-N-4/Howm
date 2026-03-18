@@ -1,7 +1,6 @@
 use crate::{
     api::auth_layer::RateLimiter, capabilities::CapabilityEntry, config::Config,
-    identity::NodeIdentity, peers::Peer,
-    p2pcd::engine::ProtocolEngine,
+    identity::NodeIdentity, p2pcd::engine::ProtocolEngine, peers::Peer,
 };
 use std::sync::Arc;
 use tokio::sync::RwLock;

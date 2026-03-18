@@ -7,7 +7,6 @@ use axum::{
     routing::{any, delete, get, post},
     Router,
 };
-use axum::routing::patch;
 use std::path::PathBuf;
 use tower_http::services::{ServeDir, ServeFile};
 
@@ -61,7 +60,10 @@ pub fn build_router(state: AppState, ui_dir: Option<PathBuf>) -> Router {
         )
         // P2P-CD friends management (require bearer auth)
         .route("/p2pcd/friends", post(p2pcd_routes::p2pcd_add_friend))
-        .route("/p2pcd/friends/:pubkey", delete(p2pcd_routes::p2pcd_remove_friend))
+        .route(
+            "/p2pcd/friends/:pubkey",
+            delete(p2pcd_routes::p2pcd_remove_friend),
+        )
         .layer(middleware::from_fn_with_state(
             state.clone(),
             bearer_auth_middleware,
@@ -91,13 +93,16 @@ pub fn build_router(state: AppState, ui_dir: Option<PathBuf>) -> Router {
         // Proxy
         .route("/cap/:name/*rest", any(proxy_routes::proxy_handler))
         // P2P-CD read-only endpoints (no bearer needed)
-        .route("/p2pcd/status",             get(p2pcd_routes::p2pcd_status))
-        .route("/p2pcd/sessions",           get(p2pcd_routes::p2pcd_sessions))
-        .route("/p2pcd/sessions/:peer_id",  get(p2pcd_routes::p2pcd_session_detail))
-        .route("/p2pcd/manifest",           get(p2pcd_routes::p2pcd_manifest))
-        .route("/p2pcd/cache",              get(p2pcd_routes::p2pcd_cache))
-        .route("/p2pcd/peers-for/:cap",     get(p2pcd_routes::p2pcd_peers_for))
-        .route("/p2pcd/friends",            get(p2pcd_routes::p2pcd_list_friends));
+        .route("/p2pcd/status", get(p2pcd_routes::p2pcd_status))
+        .route("/p2pcd/sessions", get(p2pcd_routes::p2pcd_sessions))
+        .route(
+            "/p2pcd/sessions/:peer_id",
+            get(p2pcd_routes::p2pcd_session_detail),
+        )
+        .route("/p2pcd/manifest", get(p2pcd_routes::p2pcd_manifest))
+        .route("/p2pcd/cache", get(p2pcd_routes::p2pcd_cache))
+        .route("/p2pcd/peers-for/:cap", get(p2pcd_routes::p2pcd_peers_for))
+        .route("/p2pcd/friends", get(p2pcd_routes::p2pcd_list_friends));
 
     let mut router = Router::new()
         .merge(authenticated)

@@ -100,11 +100,7 @@ pub async fn install_capability(
     };
 
     // 5. Prepare data directory
-    let data_dir = state
-        .config
-        .data_dir
-        .join("cap-data")
-        .join(&manifest.name);
+    let data_dir = state.config.data_dir.join("cap-data").join(&manifest.name);
     std::fs::create_dir_all(&data_dir)
         .map_err(|e| AppError::Internal(format!("Failed to create data dir: {}", e)))?;
     let data_dir_str = data_dir.to_string_lossy().to_string();
@@ -224,7 +220,9 @@ pub async fn start_capability(
     }
 
     info!("Started capability '{}' (pid={})", name, pid);
-    Ok(Json(json!({ "status": "started", "name": name, "pid": pid })))
+    Ok(Json(
+        json!({ "status": "started", "name": name, "pid": pid }),
+    ))
 }
 
 // ── Uninstall ────────────────────────────────────────────────────────────────
