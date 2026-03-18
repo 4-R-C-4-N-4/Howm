@@ -19,6 +19,10 @@ struct Config {
 
     #[arg(long, default_value = "/data", env = "DATA_DIR")]
     data_dir: PathBuf,
+
+    /// Port the Howm daemon HTTP API listens on (for P2P-CD peer queries).
+    #[arg(long, default_value = "7000", env = "HOWM_DAEMON_PORT")]
+    daemon_port: u16,
 }
 
 #[tokio::main]
@@ -29,17 +33,28 @@ async fn main() -> anyhow::Result<()> {
 
     let config = Config::parse();
 
-    // Ensure data directory exists
     std::fs::create_dir_all(&config.data_dir)?;
 
-    let state = api::FeedState {
-        data_dir: config.data_dir.clone(),
-    };
+    let state = api::FeedState::new(config.data_dir.clone(), config.daemon_port);
+
+    // Restore active peers from daemon on startup (Task 7.3)
+    {
+        let state_clone = state.clone();
+        tokio::spawn(async move {
+            api::init_peers_from_daemon(state_clone).await;
+        });
+    }
 
     let app = Router::new()
-        .route("/feed", get(api::get_feed))
-        .route("/post", post(api::create_post))
+        // Existing feed endpoints
+        .route("/feed",   get(api::get_feed))
+        .route("/post",   post(api::create_post))
         .route("/health", get(api::health))
+        // Active peer list (for debugging / UI)
+        .route("/peers",  get(api::list_social_peers))
+        // P2P-CD daemon callbacks (Task 7.3)
+        .route("/p2pcd/peer-active",   post(api::p2pcd_peer_active))
+        .route("/p2pcd/peer-inactive", post(api::p2pcd_peer_inactive))
         .with_state(state);
 
     let addr: SocketAddr = format!("0.0.0.0:{}", config.port).parse()?;

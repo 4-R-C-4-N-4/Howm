@@ -1,5 +1,6 @@
 use clap::Parser;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use tracing::info;
 use tracing_subscriber::{fmt, EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -137,17 +138,35 @@ async fn main() -> anyhow::Result<()> {
     );
 
     // Generate or load API bearer token (S2)
-    let api_token=api::auth_layer::load_or_create_token(&config.data_dir)?;
+    let api_token = api::auth_layer::load_or_create_token(&config.data_dir)?;
     info!("API bearer token: {}", api_token);
 
     // Build app state
-    let state = state::AppState::new(
+    let mut state = state::AppState::new(
         identity.clone(),
         peers,
         capabilities,
         config.clone(),
         api_token,
     );
+
+    // Construct P2P-CD protocol engine (only when WG is active)
+    let p2pcd_engine = if wg_state.tunnel_handle.is_some() {
+        match build_p2pcd_engine(&config, &identity, &wg_state) {
+            Ok(engine) => {
+                info!("P2P-CD engine initialised");
+                Some(engine)
+            }
+            Err(e) => {
+                tracing::warn!("P2P-CD engine init failed (continuing without): {}", e);
+                None
+            }
+        }
+    } else {
+        info!("WG disabled — P2P-CD engine not started");
+        None
+    };
+    state.p2pcd_engine = p2pcd_engine.clone();
 
     // Store WG active state
     {
@@ -158,23 +177,35 @@ async fn main() -> anyhow::Result<()> {
     // Build Axum router
     let router = api::build_router(state.clone(), config.ui_dir.clone());
 
-    // Background: discovery loop
-    let discovery_state = state.clone();
-    tokio::spawn(async move {
-        discovery::start_loop(discovery_state).await;
-    });
+    // Background: P2P-CD engine
+    if let Some(ref engine) = p2pcd_engine {
+        let engine_arc = Arc::clone(engine);
+        tokio::spawn(async move {
+            if let Err(e) = engine_arc.run().await {
+                tracing::error!("P2P-CD engine exited with error: {}", e);
+            }
+        });
+    }
 
-    // Background: capability health check loop (S10)
-    let health_state = state.clone();
-    tokio::spawn(async move {
-        health::start_loop(health_state).await;
-    });
+    // Legacy discovery/health/prune loops: only run when P2P-CD engine is NOT active.
+    // When the engine is running it supersedes HTTP-polling discovery and heartbeat.
+    // Task 7.2: these will be fully removed once P2P-CD is the sole discovery path.
+    if state.p2pcd_engine.is_none() {
+        let discovery_state = state.clone();
+        tokio::spawn(async move {
+            discovery::start_loop(discovery_state).await;
+        });
 
-    // Background: prune stale public peers
-    let prune_state = state.clone();
-    tokio::spawn(async move {
-        prune::start_loop(prune_state).await;
-    });
+        let health_state = state.clone();
+        tokio::spawn(async move {
+            health::start_loop(health_state).await;
+        });
+
+        let prune_state = state.clone();
+        tokio::spawn(async move {
+            prune::start_loop(prune_state).await;
+        });
+    }
 
     // Background: graceful shutdown handler (SIGTERM / SIGINT / Ctrl-C)
     let shutdown_app_state = state.clone();
@@ -218,6 +249,10 @@ async fn wait_for_shutdown_signal() {
 }
 
 async fn do_shutdown(state: &state::AppState) {
+    // Gracefully close all P2P-CD sessions
+    if let Some(ref engine) = state.p2pcd_engine {
+        engine.shutdown().await;
+    }
     // Stop all running capability processes
     let caps = state.capabilities.read().await.clone();
     for cap in &caps {
@@ -233,4 +268,46 @@ async fn do_shutdown(state: &state::AppState) {
             tracing::warn!("WG shutdown error: {}", e);
         }
     }
+}
+
+// ── P2P-CD engine builder ────────────────────────────────────────────────────
+
+fn build_p2pcd_engine(
+    config: &Config,
+    identity: &identity::NodeIdentity,
+    wg_state: &wireguard::WgState,
+) -> anyhow::Result<Arc<p2pcd::engine::ProtocolEngine>> {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+
+    // Derive PeerId from the WireGuard public key stored in identity
+    let pubkey_b64 = identity
+        .wg_pubkey
+        .as_deref()
+        .or_else(|| wg_state.public_key.as_deref())
+        .ok_or_else(|| anyhow::anyhow!("No WireGuard public key available for P2P-CD engine"))?;
+
+    let key_bytes = STANDARD.decode(pubkey_b64)
+        .map_err(|e| anyhow::anyhow!("Failed to decode WG pubkey: {}", e))?;
+    if key_bytes.len() != 32 {
+        anyhow::bail!("WG public key is {} bytes, expected 32", key_bytes.len());
+    }
+    let mut peer_id = [0u8; 32];
+    peer_id.copy_from_slice(&key_bytes);
+
+    // Load or generate p2pcd-peer.toml
+    let toml_path = config.data_dir.join("p2pcd-peer.toml");
+    let peer_config = if toml_path.exists() {
+        p2pcd_types::config::PeerConfig::load(&toml_path)
+            .map_err(|e| anyhow::anyhow!("Failed to load p2pcd-peer.toml: {}", e))?
+    } else {
+        let default_cfg = p2pcd_types::config::PeerConfig::generate_default(&config.data_dir);
+        // Write the default config for the user to inspect/modify
+        if let Ok(toml_str) = toml::to_string_pretty(&default_cfg) {
+            let _ = std::fs::write(&toml_path, toml_str);
+            info!("Generated default p2pcd-peer.toml at {}", toml_path.display());
+        }
+        default_cfg
+    };
+
+    Ok(Arc::new(p2pcd::engine::ProtocolEngine::new(peer_config, peer_id)))
 }

@@ -1,6 +1,7 @@
 use crate::{
     api::auth_layer::RateLimiter, capabilities::CapabilityEntry, config::Config,
     discovery::NetworkIndex, identity::NodeIdentity, peers::Peer,
+    p2pcd::engine::ProtocolEngine,
 };
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -22,6 +23,8 @@ pub struct AppState {
     pub install_rate_limiter: Arc<RateLimiter>,
     /// Rate limiter for open invite join requests
     pub open_join_rate_limiter: Arc<RateLimiter>,
+    /// P2P-CD protocol engine (None if WG disabled)
+    pub p2pcd_engine: Option<Arc<ProtocolEngine>>,
 }
 
 impl AppState {
@@ -45,6 +48,7 @@ impl AppState {
             invite_rate_limiter: Arc::new(RateLimiter::new(5, 60)),
             install_rate_limiter: Arc::new(RateLimiter::new(2, 60)),
             open_join_rate_limiter,
+            p2pcd_engine: None,
         }
     }
 }

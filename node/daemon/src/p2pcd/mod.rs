@@ -7,6 +7,7 @@
 //   heartbeat  — PING/PONG liveness (Task 4.1)
 //   cap_notify — Capability notification interface (Task 6.2)
 
+pub mod cap_notify;
 pub mod engine;
 pub mod heartbeat;
 pub mod session;
