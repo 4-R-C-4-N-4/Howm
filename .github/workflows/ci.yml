@@ -45,10 +45,48 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
 
   # ─────────────────────────────────────────────
-  # Build & Test (matrix)
+  # Web UI — build and upload dist artifact
+  # ─────────────────────────────────────────────
+  build-ui:
+    name: Build Web UI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: ui/web/package-lock.json
+
+      - name: Install dependencies
+        working-directory: ui/web
+        run: npm ci
+
+      - name: Lint
+        working-directory: ui/web
+        run: npm run lint --if-present
+
+      - name: Build
+        working-directory: ui/web
+        run: npm run build
+
+      - name: Upload UI dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-dist-ci
+          path: ui/web/dist
+          retention-days: 3
+          if-no-files-found: error
+
+  # ─────────────────────────────────────────────
+  # Build & Test (matrix) — needs UI dist so
+  # include_dir! embeds the real UI
   # ─────────────────────────────────────────────
   build:
     name: Build & Test (${{ matrix.os }})
+    needs: [build-ui]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -67,6 +105,12 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+
+      - name: Download UI dist
+        uses: actions/download-artifact@v4
+        with:
+          name: ui-dist-ci
+          path: ui/web/dist
 
       - name: Cache cargo registry & build
         uses: actions/cache@v4
@@ -96,52 +140,3 @@ jobs:
             node/target/${{ matrix.target }}/release/howm.exe
           if-no-files-found: error
           retention-days: 7
-
-  # ─────────────────────────────────────────────
-  # Docker (social-feed capability)
-  # ─────────────────────────────────────────────
-  docker:
-    name: Build Docker Images
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build social-feed capability image
-        uses: docker/build-push-action@v6
-        with:
-          context: capabilities/social-feed
-          push: false
-          tags: cap-social-feed:test
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-  # ─────────────────────────────────────────────
-  # Web UI
-  # ─────────────────────────────────────────────
-  web-ui:
-    name: Build Web UI
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          cache: "npm"
-          cache-dependency-path: ui/web/package-lock.json
-
-      - name: Install dependencies
-        working-directory: ui/web
-        run: npm ci
-
-      - name: Lint
-        working-directory: ui/web
-        run: npm run lint --if-present
-
-      - name: Build
-        working-directory: ui/web
-        run: npm run build

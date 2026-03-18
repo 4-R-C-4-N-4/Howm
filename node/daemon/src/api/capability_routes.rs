@@ -138,6 +138,7 @@ pub async fn install_capability(
         data_dir: data_dir_str,
         status: CapStatus::Running,
         visibility,
+        ui: manifest.ui.clone(),
     };
 
     // 7. Persist

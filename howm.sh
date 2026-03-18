@@ -103,6 +103,26 @@ if [[ $NO_UI -eq 0 ]]; then
     fi
 fi
 
+# ── Build web UI ─────────────────────────────────────────────────────────────
+# In production mode the UI is compiled into the binary via include_dir!, so it
+# must be built BEFORE cargo build.  In dev mode Vite serves it separately.
+if [[ $NO_UI -eq 0 ]]; then
+    info "Installing UI dependencies..."
+    cd "$ROOT_DIR/ui/web"
+    npm install --silent
+    if [[ -n "$DEV_FLAG" ]]; then
+        info "Starting web UI dev server..."
+        npm run dev &
+        UI_PID=$!
+        success "Web UI dev server starting on http://localhost:5173 (PID $UI_PID)"
+    else
+        info "Building web UI (production)..."
+        npm run build 2>&1 | tail -3
+        success "Web UI built — will be embedded into the binary"
+    fi
+    cd "$ROOT_DIR"
+fi
+
 # ── Build daemon ─────────────────────────────────────────────────────────────
 if [[ $RELEASE_MODE -eq 1 ]]; then
     info "Building howm (release)..."
@@ -127,32 +147,12 @@ else
     success "Howm up to date (no changes)"
 fi
 
-# ── Build web UI ─────────────────────────────────────────────────────────
-UI_DIR=""
-if [[ $NO_UI -eq 0 ]]; then
-    info "Installing UI dependencies..."
-    cd "$ROOT_DIR/ui/web"
-    npm install --silent
-    if [[ -n "$DEV_FLAG" ]]; then
-        info "Starting web UI dev server..."
-        npm run dev &
-        UI_PID=$!
-        success "Web UI starting on http://localhost:5173 (PID $UI_PID)"
-    else
-        info "Building web UI (production)..."
-        npx vite build --outDir dist 2>&1 | tail -3
-        UI_DIR="$ROOT_DIR/ui/web/dist"
-        success "Web UI built: $UI_DIR"
-    fi
-fi
-
 # ── Start daemon ────────────────────────────────────────────────────────────
 DAEMON_ARGS=(--port "$PORT")
 [[ -n "$DATA_DIR" ]]      && DAEMON_ARGS+=(--data-dir "$DATA_DIR")
 [[ -n "$NODE_NAME" ]]     && DAEMON_ARGS+=(--name "$NODE_NAME")
 [[ -n "$DEV_FLAG" ]]      && DAEMON_ARGS+=("$DEV_FLAG")
 [[ -n "$DEBUG_FLAG" ]]    && DAEMON_ARGS+=("$DEBUG_FLAG")
-[[ -n "$UI_DIR" ]]        && DAEMON_ARGS+=(--ui-dir "$UI_DIR")
 
 # WireGuard flags
 if [[ $NO_WG -eq 1 ]]; then
@@ -200,10 +200,12 @@ printf "${GREEN}│${NC}  Daemon API:  http://localhost:%-17s${GREEN}│${NC}\n"
 if [[ -n "$API_TOKEN" ]]; then
 printf "${GREEN}│${NC}  API Token:   %-33s${GREEN}│${NC}\n" "$API_TOKEN"
 fi
-if [[ -n "$UI_DIR" ]]; then
-printf "${GREEN}│${NC}  Web UI:      http://localhost:%-17s${GREEN}│${NC}\n" "$PORT"
-elif [[ $NO_UI -eq 0 ]]; then
-echo -e "${GREEN}│${NC}  Web UI:      http://localhost:5173              ${GREEN}│${NC}"
+if [[ $NO_UI -eq 0 ]]; then
+  if [[ -n "$DEV_FLAG" ]]; then
+    echo -e "${GREEN}│${NC}  Web UI:      http://localhost:5173              ${GREEN}│${NC}"
+  else
+    printf "${GREEN}│${NC}  Web UI:      http://localhost:%-17s${GREEN}│${NC}\n" "$PORT"
+  fi
 fi
 if [[ $NO_WG -eq 0 ]]; then
   WG_INFO="WG port $WG_PORT"

@@ -16,6 +16,7 @@ pub mod network_routes;
 pub mod node_routes;
 pub mod p2pcd_routes;
 pub mod proxy_routes;
+pub mod settings_routes;
 
 /// Single router for the daemon.
 ///
@@ -64,6 +65,11 @@ pub fn build_router(state: AppState, ui_dir: Option<PathBuf>) -> Router {
             "/p2pcd/friends/:pubkey",
             delete(p2pcd_routes::p2pcd_remove_friend),
         )
+        // Settings mutations (require bearer auth)
+        .route(
+            "/settings/p2pcd",
+            axum::routing::put(settings_routes::update_p2pcd_config),
+        )
         .layer(middleware::from_fn_with_state(
             state.clone(),
             bearer_auth_middleware,
@@ -102,23 +108,34 @@ pub fn build_router(state: AppState, ui_dir: Option<PathBuf>) -> Router {
         .route("/p2pcd/manifest", get(p2pcd_routes::p2pcd_manifest))
         .route("/p2pcd/cache", get(p2pcd_routes::p2pcd_cache))
         .route("/p2pcd/peers-for/:cap", get(p2pcd_routes::p2pcd_peers_for))
-        .route("/p2pcd/friends", get(p2pcd_routes::p2pcd_list_friends));
+        .route("/p2pcd/friends", get(p2pcd_routes::p2pcd_list_friends))
+        // Settings (read-only, no auth required)
+        .route("/settings/node", get(settings_routes::get_node_settings))
+        .route("/settings/identity", get(settings_routes::get_identity))
+        .route("/settings/p2pcd", get(settings_routes::get_p2pcd_config));
 
     let mut router = Router::new()
         .merge(authenticated)
         .merge(open)
         .with_state(state);
 
-    // Serve static UI files if --ui-dir is provided.
-    // Fallback to index.html for SPA client-side routing.
+    // Serve static UI files if --ui-dir is provided; fall back to embedded UI.
     if let Some(dir) = ui_dir {
         if dir.exists() {
             let index = dir.join("index.html");
-            router = router.fallback_service(ServeDir::new(&dir).fallback(ServeFile::new(index)));
+            router = router.fallback_service(
+                ServeDir::new(&dir).fallback(ServeFile::new(index)),
+            );
             tracing::info!("Serving UI from {}", dir.display());
         } else {
-            tracing::warn!("UI directory {} does not exist, skipping", dir.display());
+            tracing::warn!(
+                "UI directory {} does not exist — using embedded UI",
+                dir.display()
+            );
+            router = router.fallback(crate::embedded_ui::serve_embedded);
         }
+    } else {
+        router = router.fallback(crate::embedded_ui::serve_embedded);
     }
 
     router

@@ -7,6 +7,7 @@ use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, Env
 mod api;
 mod capabilities;
 mod config;
+mod embedded_ui;
 mod error;
 mod executor;
 mod identity;

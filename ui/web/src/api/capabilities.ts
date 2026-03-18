@@ -1,13 +1,19 @@
 import api from './client';
 
+export interface CapabilityUi {
+  label: string;
+  icon?: string;
+  entry: string;
+  style: string;
+}
+
 export interface Capability {
   name: string;
   version: string;
   port: number;
-  container_id: string;
-  image: string;
   status: string | { Error: string };
   visibility: string;
+  ui?: CapabilityUi;
 }
 
 export const getCapabilities = () =>

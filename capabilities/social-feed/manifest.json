@@ -1,0 +1,24 @@
+{
+  "name": "social.feed",
+  "version": "0.1.0",
+  "description": "Distributed social feed capability",
+  "binary": "./social-feed",
+  "port": 7001,
+  "api": {
+    "base_path": "/cap/social",
+    "endpoints": [
+      { "name": "get_feed", "method": "GET", "path": "/feed" },
+      { "name": "create_post", "method": "POST", "path": "/post" },
+      { "name": "health", "method": "GET", "path": "/health" }
+    ]
+  },
+  "permissions": {
+    "visibility": "friends"
+  },
+  "ui": {
+    "label": "Feed",
+    "icon": "message-circle",
+    "entry": "/ui/",
+    "style": "iframe"
+  }
+}

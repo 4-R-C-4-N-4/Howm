@@ -1,6 +1,19 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UiManifest {
+    pub label: String,
+    pub icon: Option<String>,
+    pub entry: String,
+    #[serde(default = "default_ui_style")]
+    pub style: String,
+}
+
+fn default_ui_style() -> String {
+    "iframe".to_string()
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub enum CapStatus {
     Running,
@@ -19,6 +32,7 @@ pub struct CapabilityEntry {
     pub data_dir: String,
     pub status: CapStatus,
     pub visibility: String,
+    pub ui: Option<UiManifest>,
 }
 
 /// Capability manifest read from manifest.json on disk.
@@ -33,6 +47,7 @@ pub struct CapabilityManifest {
     pub api: Option<ApiManifest>,
     pub permissions: Option<PermissionsManifest>,
     pub resources: Option<ResourcesManifest>,
+    pub ui: Option<UiManifest>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
