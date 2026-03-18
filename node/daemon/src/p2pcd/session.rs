@@ -445,8 +445,7 @@ mod tests {
     use super::*;
     use crate::p2pcd::transport::{connect, P2pcdListener};
     use p2pcd_types::{
-        CapabilityDeclaration, CloseReason, DiscoveryManifest, Role, ScopeParams,
-        PROTOCOL_VERSION,
+        CapabilityDeclaration, CloseReason, DiscoveryManifest, Role, ScopeParams, PROTOCOL_VERSION,
     };
     use std::collections::HashMap;
 

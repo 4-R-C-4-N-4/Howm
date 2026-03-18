@@ -84,6 +84,8 @@ pub struct ProtocolEngine {
     /// Sender half used by heartbeat tasks to report timeout events to the engine.
     #[allow(dead_code)]
     hb_event_tx: mpsc::Sender<HeartbeatEvent>,
+    /// Test-only peer addr overrides: bypasses `wg show` lookup.
+    peer_addr_overrides: Arc<RwLock<HashMap<PeerId, SocketAddr>>>,
 }
 
 impl ProtocolEngine {
@@ -109,7 +111,14 @@ impl ProtocolEngine {
             notifier,
             heartbeat_handles: Arc::new(Mutex::new(HashMap::new())),
             hb_event_tx,
+            peer_addr_overrides: Arc::new(RwLock::new(HashMap::new())),
         }
+    }
+
+    /// Inject a static peer address, bypassing `wg show` (used by integration tests).
+    #[cfg(test)]
+    pub async fn set_peer_addr(&self, peer_id: PeerId, addr: SocketAddr) {
+        self.peer_addr_overrides.write().await.insert(peer_id, addr);
     }
 
     /// Run the engine. Spawns WgPeerMonitor and binds TCP listener.
@@ -133,6 +142,23 @@ impl ProtocolEngine {
         // We store it in a temporary Arc so all spawned session tasks share the same tx.
         let hb_event_tx = Arc::new(hb_tx);
 
+        tokio::select! {
+            r = Arc::clone(&self).event_loop(wg_rx, Arc::clone(&hb_event_tx)) => r,
+            r = Arc::clone(&self).accept_loop(listener, Arc::clone(&hb_event_tx)) => r,
+            _ = Arc::clone(&self).heartbeat_event_loop(hb_rx) => Ok(()),
+        }
+    }
+
+    /// Test entry point: run with caller-supplied wg_rx and pre-bound listener.
+    /// Does NOT spawn WgPeerMonitor — caller drives WgPeerEvents directly.
+    #[cfg(test)]
+    pub async fn run_with(
+        self: Arc<Self>,
+        wg_rx: mpsc::Receiver<WgPeerEvent>,
+        listener: P2pcdListener,
+    ) -> Result<()> {
+        let (hb_tx, hb_rx) = mpsc::channel::<HeartbeatEvent>(128);
+        let hb_event_tx = Arc::new(hb_tx);
         tokio::select! {
             r = Arc::clone(&self).event_loop(wg_rx, Arc::clone(&hb_event_tx)) => r,
             r = Arc::clone(&self).accept_loop(listener, Arc::clone(&hb_event_tx)) => r,
@@ -360,7 +386,23 @@ impl ProtocolEngine {
             if let Some(transport) = s.transport.take() {
                 let (send_tx, recv_rx) = transport.into_channels();
                 let hb_tx_clone = (*hb_event_tx).clone();
-                let hb = HeartbeatManager::with_defaults(peer_id, hb_tx_clone);
+                // Read heartbeat timing from local capability config; fall back to defaults.
+                let cfg = self.config.read().await;
+                let hb_params = cfg
+                    .capabilities
+                    .values()
+                    .find(|c| c.name == "core.heartbeat.liveness.1")
+                    .and_then(|c| c.params.clone());
+                drop(cfg);
+                let hb = match hb_params {
+                    Some(p) => HeartbeatManager::new(
+                        peer_id,
+                        p.interval_ms,
+                        p.timeout_ms,
+                        hb_tx_clone,
+                    ),
+                    None => HeartbeatManager::with_defaults(peer_id, hb_tx_clone),
+                };
                 let handle = hb.spawn(send_tx, recv_rx);
                 self.heartbeat_handles.lock().await.insert(peer_id, handle);
                 tracing::info!("engine: heartbeat started for {}", short(peer_id));
@@ -597,6 +639,10 @@ impl ProtocolEngine {
     // ── Address helpers ───────────────────────────────────────────────────────
 
     async fn resolve_peer_addr(&self, peer_id: PeerId) -> Option<SocketAddr> {
+        // Check test override map first (bypasses `wg show`).
+        if let Some(addr) = self.peer_addr_overrides.read().await.get(&peer_id).copied() {
+            return Some(addr);
+        }
         use base64::{engine::general_purpose::STANDARD, Engine as _};
         let listen_port = self.config.read().await.transport.listen_port;
         match crate::wireguard::get_status().await {
@@ -621,6 +667,12 @@ impl ProtocolEngine {
     }
 
     async fn identify_peer_by_addr(&self, ip: IpAddr) -> Option<PeerId> {
+        // Check test override map first (reverse lookup by IP).
+        for (peer_id, addr) in self.peer_addr_overrides.read().await.iter() {
+            if addr.ip() == ip {
+                return Some(*peer_id);
+            }
+        }
         use base64::{engine::general_purpose::STANDARD, Engine as _};
         match crate::wireguard::get_status().await {
             Ok(peers) => {
@@ -720,6 +772,376 @@ mod tests {
             .active_set
             .contains(&"core.heartbeat.liveness.1".to_string()));
         assert!(b_set.contains(&"core.heartbeat.liveness.1".to_string()));
+    }
+
+    // ── Full-engine integration test ──────────────────────────────────────────
+    //
+    // Two ProtocolEngine instances on loopback. No WireGuard, no network.
+    // Alice dials Bob; both should reach Active and fire HTTP callbacks.
+
+    /// Build a minimal PeerConfig for tests: one `howm.social.feed.1` capability.
+    fn make_peer_config(listen_port: u16) -> p2pcd_types::config::PeerConfig {
+        use p2pcd_types::config::*;
+        PeerConfig {
+            identity: IdentityConfig {
+                wireguard_private_key_file: None,
+                wireguard_interface: None,
+                display_name: "test-peer".to_string(),
+            },
+            protocol: ProtocolConfig::default(),
+            transport: TransportConfig {
+                listen_port,
+                wireguard_interface: "test0".to_string(),
+                http_port: 0,
+            },
+            discovery: DiscoveryConfig::default(),
+            capabilities: {
+                let mut m = std::collections::HashMap::new();
+                m.insert(
+                    "social".to_string(),
+                    CapabilityConfig {
+                        name: "howm.social.feed.1".to_string(),
+                        role: RoleConfig::Both,
+                        mutual: true,
+                        scope: None,
+                        classification: None,
+                        params: None,
+                    },
+                );
+                m.insert(
+                    "heartbeat".to_string(),
+                    CapabilityConfig {
+                        name: "core.heartbeat.liveness.1".to_string(),
+                        role: RoleConfig::Both,
+                        mutual: true,
+                        scope: None,
+                        classification: None,
+                        params: None,
+                    },
+                );
+                m
+            },
+            friends: p2pcd_types::config::FriendsConfig::default(),
+            invite: p2pcd_types::config::InviteConfig::default(),
+            data: p2pcd_types::config::DataConfig {
+                dir: "/tmp/howm-test".to_string(),
+            },
+        }
+    }
+
+    /// Spawn a tiny axum server that counts POST hits to /p2pcd/peer-active and
+    /// /p2pcd/peer-inactive. Returns (base_url, active_count, inactive_count).
+    async fn spawn_mock_notifier() -> (
+        String,
+        Arc<std::sync::atomic::AtomicU32>,
+        Arc<std::sync::atomic::AtomicU32>,
+    ) {
+        use axum::{routing::post, Router};
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use tokio::net::TcpListener as TokioListener;
+
+        let active = Arc::new(AtomicU32::new(0));
+        let inactive = Arc::new(AtomicU32::new(0));
+
+        let a2 = Arc::clone(&active);
+        let i2 = Arc::clone(&inactive);
+        let app = Router::new()
+            .route(
+                "/p2pcd/peer-active",
+                post(move || {
+                    let c = Arc::clone(&a2);
+                    async move {
+                        c.fetch_add(1, Ordering::SeqCst);
+                        axum::http::StatusCode::OK
+                    }
+                }),
+            )
+            .route(
+                "/p2pcd/peer-inactive",
+                post(move || {
+                    let c = Arc::clone(&i2);
+                    async move {
+                        c.fetch_add(1, Ordering::SeqCst);
+                        axum::http::StatusCode::OK
+                    }
+                }),
+            );
+
+        let listener = TokioListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (format!("http://{}", addr), active, inactive)
+    }
+
+    #[tokio::test]
+    async fn full_engine_two_peers_reach_active() {
+        use crate::p2pcd::cap_notify::CapabilityNotifier;
+        use std::sync::atomic::Ordering;
+        use tokio::time::{sleep, Duration};
+
+        // Peer IDs
+        let alice_id: PeerId = [0xAAu8; 32];
+        let bob_id: PeerId = [0xBBu8; 32];
+
+        // Bob's listener — bind on port 0 (OS assigns ephemeral port)
+        let bob_listener = P2pcdListener::bind("127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
+        let bob_p2pcd_addr = bob_listener.local_addr;
+
+        // Mock HTTP notifier servers
+        let (alice_notifier_url, alice_active, _alice_inactive) = spawn_mock_notifier().await;
+        let (bob_notifier_url, bob_active, _bob_inactive) = spawn_mock_notifier().await;
+
+        // ── Build Alice's engine ──
+        let alice_notifier = Arc::new(CapabilityNotifier::new());
+        alice_notifier
+            .register("howm.social.feed.1".to_string(), 0)
+            .await;
+        // Override notifier URL so callbacks reach our mock server
+        alice_notifier
+            .register_with_url("howm.social.feed.1".to_string(), alice_notifier_url.clone())
+            .await;
+
+        let alice_engine = Arc::new(ProtocolEngine::new(
+            make_peer_config(0),
+            alice_id,
+            Arc::clone(&alice_notifier),
+        ));
+        // Tell Alice where Bob's P2P-CD port is
+        alice_engine.set_peer_addr(bob_id, bob_p2pcd_addr).await;
+
+        // Alice needs a listener too (even though Bob won't dial her in this test)
+        let alice_listener = P2pcdListener::bind("127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
+        let alice_p2pcd_addr = alice_listener.local_addr;
+
+        // ── Build Bob's engine ──
+        let bob_notifier = Arc::new(CapabilityNotifier::new());
+        bob_notifier
+            .register_with_url("howm.social.feed.1".to_string(), bob_notifier_url.clone())
+            .await;
+
+        let bob_engine = Arc::new(ProtocolEngine::new(
+            make_peer_config(bob_p2pcd_addr.port()),
+            bob_id,
+            Arc::clone(&bob_notifier),
+        ));
+        bob_engine.set_peer_addr(alice_id, alice_p2pcd_addr).await;
+
+        // ── Wg event channels ──
+        let (alice_wg_tx, alice_wg_rx) = mpsc::channel::<WgPeerEvent>(8);
+        let (_bob_wg_tx, bob_wg_rx) = mpsc::channel::<WgPeerEvent>(8);
+
+        // ── Run both engines ──
+        let alice_handle = tokio::spawn({
+            let e = Arc::clone(&alice_engine);
+            async move { e.run_with(alice_wg_rx, alice_listener).await }
+        });
+        let bob_handle = tokio::spawn({
+            let e = Arc::clone(&bob_engine);
+            async move { e.run_with(bob_wg_rx, bob_listener).await }
+        });
+
+        // Give engines a moment to start their accept loops
+        sleep(Duration::from_millis(20)).await;
+
+        // ── Inject PeerVisible: Alice sees Bob ──
+        alice_wg_tx
+            .send(WgPeerEvent::PeerVisible(bob_id))
+            .await
+            .unwrap();
+
+        // Wait for negotiation to complete (exchange is async, allow up to 2s)
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            sleep(Duration::from_millis(50)).await;
+
+            let alice_sessions = alice_engine.active_sessions().await;
+            let bob_sessions = bob_engine.active_sessions().await;
+
+            let alice_active_session = alice_sessions
+                .iter()
+                .any(|s| s.state == SessionState::Active && s.peer_id == bob_id);
+            let bob_active_session = bob_sessions
+                .iter()
+                .any(|s| s.state == SessionState::Active && s.peer_id == alice_id);
+
+            if alice_active_session && bob_active_session {
+                break;
+            }
+
+            if tokio::time::Instant::now() > deadline {
+                panic!(
+                    "Timed out waiting for Active sessions.\n\
+                     Alice sessions: {:?}\n\
+                     Bob sessions: {:?}",
+                    alice_sessions, bob_sessions
+                );
+            }
+        }
+
+        // ── Verify capability-notifier callbacks fired ──
+        // Give HTTP a moment to land
+        sleep(Duration::from_millis(100)).await;
+        assert!(
+            alice_active.load(Ordering::SeqCst) >= 1,
+            "Alice's mock notifier should have received peer-active"
+        );
+        assert!(
+            bob_active.load(Ordering::SeqCst) >= 1,
+            "Bob's mock notifier should have received peer-active"
+        );
+
+        // ── Inject PeerRemoved: Alice loses Bob ──
+        alice_wg_tx
+            .send(WgPeerEvent::PeerRemoved(bob_id))
+            .await
+            .unwrap();
+
+        // Give close event a moment to propagate
+        sleep(Duration::from_millis(200)).await;
+
+        // Sessions should now be Closed
+        let alice_sessions = alice_engine.active_sessions().await;
+        assert!(
+            !alice_sessions
+                .iter()
+                .any(|s| s.state == SessionState::Active && s.peer_id == bob_id),
+            "Alice's session with Bob should no longer be Active"
+        );
+
+        // Clean up engine tasks
+        alice_handle.abort();
+        bob_handle.abort();
+    }
+
+    /// Verify that a heartbeat timeout causes the engine to close the session.
+    ///
+    /// We use 50ms interval / 150ms timeout so the test completes in < 1s.
+    /// Alice connects to Bob; once Active we kill Bob's engine task so it stops
+    /// responding to PINGs. Alice's heartbeat should fire Timeout within ~300ms.
+    #[tokio::test]
+    async fn heartbeat_timeout_closes_session() {
+        use crate::p2pcd::cap_notify::CapabilityNotifier;
+        use tokio::time::{sleep, Duration};
+
+        let alice_id: PeerId = [0xCCu8; 32];
+        let bob_id: PeerId = [0xDDu8; 32];
+
+        let bob_listener = P2pcdListener::bind("127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
+        let bob_p2pcd_addr = bob_listener.local_addr;
+
+        let alice_notifier = Arc::new(CapabilityNotifier::new());
+        let alice_engine = Arc::new(ProtocolEngine::new(
+            make_peer_config_fast_heartbeat(0),
+            alice_id,
+            Arc::clone(&alice_notifier),
+        ));
+        alice_engine.set_peer_addr(bob_id, bob_p2pcd_addr).await;
+
+        let alice_listener = P2pcdListener::bind("127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
+        let alice_p2pcd_addr = alice_listener.local_addr;
+
+        let bob_notifier = Arc::new(CapabilityNotifier::new());
+        let bob_engine = Arc::new(ProtocolEngine::new(
+            make_peer_config_fast_heartbeat(bob_p2pcd_addr.port()),
+            bob_id,
+            Arc::clone(&bob_notifier),
+        ));
+        bob_engine.set_peer_addr(alice_id, alice_p2pcd_addr).await;
+
+        let (alice_wg_tx, alice_wg_rx) = mpsc::channel::<WgPeerEvent>(8);
+        let (_bob_wg_tx, bob_wg_rx) = mpsc::channel::<WgPeerEvent>(8);
+
+        let alice_handle = tokio::spawn({
+            let e = Arc::clone(&alice_engine);
+            async move { e.run_with(alice_wg_rx, alice_listener).await }
+        });
+        let bob_handle = tokio::spawn({
+            let e = Arc::clone(&bob_engine);
+            async move { e.run_with(bob_wg_rx, bob_listener).await }
+        });
+
+        sleep(Duration::from_millis(20)).await;
+
+        alice_wg_tx
+            .send(WgPeerEvent::PeerVisible(bob_id))
+            .await
+            .unwrap();
+
+        // Wait for both to reach Active
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            sleep(Duration::from_millis(20)).await;
+            let alice_active = alice_engine
+                .active_sessions()
+                .await
+                .iter()
+                .any(|s| s.state == SessionState::Active && s.peer_id == bob_id);
+            let bob_active = bob_engine
+                .active_sessions()
+                .await
+                .iter()
+                .any(|s| s.state == SessionState::Active && s.peer_id == alice_id);
+            if alice_active && bob_active {
+                break;
+            }
+            if tokio::time::Instant::now() > deadline {
+                panic!("Timed out waiting for Active sessions");
+            }
+        }
+
+        // Kill Bob's engine — he can no longer send PONGs
+        bob_handle.abort();
+
+        // Alice's heartbeat (150ms timeout) should fire within ~500ms
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(800);
+        loop {
+            sleep(Duration::from_millis(30)).await;
+            let still_active = alice_engine
+                .active_sessions()
+                .await
+                .iter()
+                .any(|s| s.state == SessionState::Active && s.peer_id == bob_id);
+            if !still_active {
+                break;
+            }
+            if tokio::time::Instant::now() > deadline {
+                panic!("Alice's session with Bob should have closed after heartbeat timeout");
+            }
+        }
+
+        alice_handle.abort();
+    }
+
+    /// Like make_peer_config but with very short heartbeat intervals for timeout tests.
+    fn make_peer_config_fast_heartbeat(listen_port: u16) -> p2pcd_types::config::PeerConfig {
+        use p2pcd_types::config::*;
+        let mut cfg = make_peer_config(listen_port);
+        // Inject fast heartbeat params so the timeout fires in milliseconds, not seconds.
+        cfg.capabilities.insert(
+            "heartbeat".to_string(),
+            CapabilityConfig {
+                name: "core.heartbeat.liveness.1".to_string(),
+                role: RoleConfig::Both,
+                mutual: true,
+                scope: None,
+                classification: None,
+                params: Some(HeartbeatParams {
+                    interval_ms: 50,
+                    timeout_ms: 150,
+                }),
+            },
+        );
+        cfg
     }
 
     #[test]

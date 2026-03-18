@@ -86,10 +86,7 @@ async fn main() -> anyhow::Result<()> {
             continue;
         }
         // Check if the process is still alive
-        let alive = cap
-            .pid
-            .map(executor::check_health)
-            .unwrap_or(false);
+        let alive = cap.pid.map(executor::check_health).unwrap_or(false);
         if alive {
             info!(
                 "Capability '{}' process still running (pid={:?})",

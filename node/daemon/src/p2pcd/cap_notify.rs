@@ -54,10 +54,13 @@ pub struct PeerInactivePayload {
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct CapabilityEndpoint {
-    /// Capability name (e.g. "p2pcd.social.post.1").
+    /// Capability name (e.g. \"p2pcd.social.post.1\").
     pub cap_name: String,
     /// Local port the capability is listening on.
     pub port: u16,
+    /// Optional full base URL override (used in tests to point at a mock server).
+    /// When set, overrides the default `http://127.0.0.1:<port>` base.
+    url_override: Option<String>,
 }
 
 /// Registry of capability endpoints to notify.
@@ -74,11 +77,24 @@ impl CapabilityNotifier {
         })
     }
 
-    /// Register a capability to receive peer notifications.
+    /// Register a capability to receive peer notifications (default URL: 127.0.0.1:<port>).
     pub async fn register(&self, cap_name: String, port: u16) {
         let endpoint = CapabilityEndpoint {
             cap_name: cap_name.clone(),
             port,
+            url_override: None,
+        };
+        self.endpoints.write().await.insert(cap_name, endpoint);
+    }
+
+    /// Register with a full base URL override — used in integration tests to
+    /// point at a mock HTTP server instead of a real capability on localhost.
+    #[cfg(test)]
+    pub async fn register_with_url(&self, cap_name: String, base_url: String) {
+        let endpoint = CapabilityEndpoint {
+            cap_name: cap_name.clone(),
+            port: 0,
+            url_override: Some(base_url),
         };
         self.endpoints.write().await.insert(cap_name, endpoint);
     }
@@ -112,7 +128,11 @@ impl CapabilityNotifier {
                     scope: scope_params.get(cap_name).cloned().unwrap_or_default(),
                     active_since,
                 };
-                let url = format!("http://127.0.0.1:{}/p2pcd/peer-active", ep.port);
+                let base = ep
+                    .url_override
+                    .clone()
+                    .unwrap_or_else(|| format!("http://127.0.0.1:{}", ep.port));
+                let url = format!("{}/p2pcd/peer-active", base);
                 tokio::spawn(post_notification(url, payload));
             }
         }
@@ -131,7 +151,11 @@ impl CapabilityNotifier {
                     capability: cap_name.clone(),
                     reason: reason.to_string(),
                 };
-                let url = format!("http://127.0.0.1:{}/p2pcd/peer-inactive", ep.port);
+                let base = ep
+                    .url_override
+                    .clone()
+                    .unwrap_or_else(|| format!("http://127.0.0.1:{}", ep.port));
+                let url = format!("{}/p2pcd/peer-inactive", base);
                 tokio::spawn(post_inactive_notification(url, payload));
             }
         }
