@@ -8,16 +8,13 @@ mod api;
 mod capabilities;
 mod p2pcd;
 mod config;
-mod discovery;
 mod error;
 mod executor;
-mod health;
 mod identity;
 mod invite;
 mod open_invite;
 mod peers;
 mod proxy;
-mod prune;
 mod state;
 mod wireguard;
 
@@ -150,9 +147,21 @@ async fn main() -> anyhow::Result<()> {
         api_token,
     );
 
+    // Build capability notifier and register running capabilities
+    let cap_notifier = p2pcd::cap_notify::CapabilityNotifier::new();
+    {
+        let caps = state.capabilities.read().await;
+        for cap in caps.iter() {
+            if matches!(cap.status, capabilities::CapStatus::Running) {
+                cap_notifier.register(cap.name.clone(), cap.port).await;
+                tracing::debug!("cap_notify: registered '{}' on port {}", cap.name, cap.port);
+            }
+        }
+    }
+
     // Construct P2P-CD protocol engine (only when WG is active)
     let p2pcd_engine = if wg_state.tunnel_handle.is_some() {
-        match build_p2pcd_engine(&config, &identity, &wg_state) {
+        match build_p2pcd_engine(&config, &identity, &wg_state, Arc::clone(&cap_notifier)) {
             Ok(engine) => {
                 info!("P2P-CD engine initialised");
                 Some(engine)
@@ -184,26 +193,6 @@ async fn main() -> anyhow::Result<()> {
             if let Err(e) = engine_arc.run().await {
                 tracing::error!("P2P-CD engine exited with error: {}", e);
             }
-        });
-    }
-
-    // Legacy discovery/health/prune loops: only run when P2P-CD engine is NOT active.
-    // When the engine is running it supersedes HTTP-polling discovery and heartbeat.
-    // Task 7.2: these will be fully removed once P2P-CD is the sole discovery path.
-    if state.p2pcd_engine.is_none() {
-        let discovery_state = state.clone();
-        tokio::spawn(async move {
-            discovery::start_loop(discovery_state).await;
-        });
-
-        let health_state = state.clone();
-        tokio::spawn(async move {
-            health::start_loop(health_state).await;
-        });
-
-        let prune_state = state.clone();
-        tokio::spawn(async move {
-            prune::start_loop(prune_state).await;
         });
     }
 
@@ -276,6 +265,7 @@ fn build_p2pcd_engine(
     config: &Config,
     identity: &identity::NodeIdentity,
     wg_state: &wireguard::WgState,
+    notifier: Arc<p2pcd::cap_notify::CapabilityNotifier>,
 ) -> anyhow::Result<Arc<p2pcd::engine::ProtocolEngine>> {
     use base64::{engine::general_purpose::STANDARD, Engine as _};
 
@@ -309,5 +299,5 @@ fn build_p2pcd_engine(
         default_cfg
     };
 
-    Ok(Arc::new(p2pcd::engine::ProtocolEngine::new(peer_config, peer_id)))
+    Ok(Arc::new(p2pcd::engine::ProtocolEngine::new(peer_config, peer_id, notifier)))
 }

@@ -101,6 +101,103 @@ impl P2pcdTransport {
     pub async fn close(mut self) -> Result<()> {
         self.stream.shutdown().await.context("tcp shutdown")
     }
+
+    /// Split this transport into a (send_tx, recv_rx) channel pair suitable
+    /// for passing to `HeartbeatManager::spawn`.
+    ///
+    /// The returned task forwards outbound `ProtocolMessage`s from `send_tx`
+    /// to the TCP stream and inbound messages from the TCP stream to `recv_rx`.
+    /// Both tasks run until the underlying TCP connection closes or the
+    /// channels are dropped.
+    ///
+    /// After calling this method the original `P2pcdTransport` is consumed —
+    /// all I/O goes through the channels.
+    pub fn into_channels(
+        self,
+    ) -> (
+        tokio::sync::mpsc::Sender<ProtocolMessage>,
+        tokio::sync::mpsc::Receiver<ProtocolMessage>,
+    ) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::sync::mpsc;
+
+        let (send_tx, mut send_rx) = mpsc::channel::<ProtocolMessage>(64);
+        let (recv_tx, recv_rx) = mpsc::channel::<ProtocolMessage>(64);
+
+        let io_timeout = self.io_timeout;
+        let stream = self.stream;
+        let (mut read_half, mut write_half) = tokio::io::split(stream);
+
+        // Writer task: forward messages from send_rx → TCP
+        tokio::spawn(async move {
+            while let Some(msg) = send_rx.recv().await {
+                let encoded = msg.encode();
+                if let Err(e) = tokio::time::timeout(
+                    io_timeout,
+                    async {
+                        write_half.write_all(&encoded).await?;
+                        write_half.flush().await?;
+                        Ok::<(), std::io::Error>(())
+                    },
+                )
+                .await
+                {
+                    tracing::debug!("p2pcd channel write error: {:?}", e);
+                    break;
+                }
+            }
+        });
+
+        // Reader task: forward messages from TCP → recv_tx
+        tokio::spawn(async move {
+            loop {
+                // Read 4-byte length header
+                let mut header = [0u8; 4];
+                let read_result = tokio::time::timeout(
+                    io_timeout,
+                    read_half.read_exact(&mut header),
+                )
+                .await;
+                match read_result {
+                    Ok(Ok(_)) => {}
+                    _ => break,
+                }
+
+                let len = u32::from_be_bytes(header) as usize;
+                if len > 1024 * 1024 {
+                    break;
+                }
+
+                let mut buf = vec![0u8; len];
+                let read_result = tokio::time::timeout(
+                    io_timeout,
+                    read_half.read_exact(&mut buf),
+                )
+                .await;
+                match read_result {
+                    Ok(Ok(_)) => {}
+                    _ => break,
+                }
+
+                let mut full = Vec::with_capacity(4 + len);
+                full.extend_from_slice(&header);
+                full.extend_from_slice(&buf);
+                match ProtocolMessage::decode(&mut full.as_slice()) {
+                    Ok(msg) => {
+                        if recv_tx.send(msg).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        tracing::debug!("p2pcd channel decode error: {:?}", e);
+                        break;
+                    }
+                }
+            }
+        });
+
+        (send_tx, recv_rx)
+    }
 }
 
 /// Accept loop: bind to `addr`, accept connections, and dispatch each to the

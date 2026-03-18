@@ -1,6 +1,6 @@
 use crate::{
     api::auth_layer::RateLimiter, capabilities::CapabilityEntry, config::Config,
-    discovery::NetworkIndex, identity::NodeIdentity, peers::Peer,
+    identity::NodeIdentity, peers::Peer,
     p2pcd::engine::ProtocolEngine,
 };
 use std::sync::Arc;
@@ -11,7 +11,6 @@ pub struct AppState {
     pub identity: NodeIdentity,
     pub peers: Arc<RwLock<Vec<Peer>>>,
     pub capabilities: Arc<RwLock<Vec<CapabilityEntry>>>,
-    pub network_index: Arc<RwLock<NetworkIndex>>,
     pub config: Config,
     /// Whether the WG tunnel is active (interface created successfully)
     pub wg_active: Arc<RwLock<bool>>,
@@ -41,7 +40,6 @@ impl AppState {
             identity,
             peers: Arc::new(RwLock::new(peers)),
             capabilities: Arc::new(RwLock::new(capabilities)),
-            network_index: Arc::new(RwLock::new(NetworkIndex::default())),
             config,
             wg_active: Arc::new(RwLock::new(false)),
             api_token,

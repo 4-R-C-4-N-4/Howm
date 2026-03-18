@@ -12,20 +12,49 @@ pub struct FeedQuery {
     pub trust: Option<String>,
 }
 
+/// List capabilities that have at least one active P2P-CD peer.
 pub async fn network_capabilities(State(state): State<AppState>) -> Json<Value> {
-    let index = state.network_index.read().await;
+    let capabilities = match &state.p2pcd_engine {
+        Some(engine) => {
+            let sessions = engine.active_sessions().await;
+            let mut cap_map: std::collections::HashMap<String, Vec<String>> =
+                std::collections::HashMap::new();
+            use base64::{engine::general_purpose::STANDARD, Engine as _};
+            for s in &sessions {
+                for cap in &s.active_set {
+                    cap_map
+                        .entry(cap.clone())
+                        .or_default()
+                        .push(STANDARD.encode(s.peer_id));
+                }
+            }
+            serde_json::to_value(cap_map).unwrap_or_default()
+        }
+        None => serde_json::Value::Object(Default::default()),
+    };
     Json(json!({
-        "capabilities": index.capabilities,
-        "last_updated": index.last_updated,
+        "capabilities": capabilities,
+        "source": "p2pcd",
     }))
 }
 
+/// Return the list of active peer IDs for a given capability name.
 pub async fn find_capability_providers(
     State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> Result<Json<Value>, AppError> {
-    let index = state.network_index.read().await;
-    let providers = index.capabilities.get(&name).cloned().unwrap_or_default();
+    let providers = match &state.p2pcd_engine {
+        Some(engine) => {
+            use base64::{engine::general_purpose::STANDARD, Engine as _};
+            engine
+                .active_peers_for_capability(&name)
+                .await
+                .into_iter()
+                .map(|id| STANDARD.encode(id))
+                .collect::<Vec<_>>()
+        }
+        None => vec![],
+    };
     Ok(Json(json!({ "providers": providers })))
 }
 

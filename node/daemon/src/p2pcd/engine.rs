@@ -24,6 +24,8 @@ use p2pcd_types::{
 use crate::wireguard::{WgPeerEvent, WgPeerMonitor};
 use super::session::{self, Session, SessionState};
 use super::transport::{self, P2pcdListener};
+use super::heartbeat::{HeartbeatEvent, HeartbeatManager};
+use super::cap_notify::CapabilityNotifier;
 
 /// Peer cache TTL: entries older than this are ignored (re-negotiate).
 const CACHE_TTL_SECS: u64 = 3600;
@@ -78,13 +80,25 @@ pub struct ProtocolEngine {
     sessions:   Arc<RwLock<HashMap<PeerId, Session>>>,
     /// Peer cache indexed by remote peer_id.
     peer_cache: Arc<Mutex<HashMap<PeerId, PeerCacheEntry>>>,
+    /// Fires HTTP callbacks to capabilities on peer-active / peer-inactive.
+    notifier: Arc<CapabilityNotifier>,
+    /// Live heartbeat task handles, keyed by peer_id. Aborted on session close.
+    heartbeat_handles: Arc<Mutex<HashMap<PeerId, tokio::task::JoinHandle<()>>>>,
+    /// Sender half used by heartbeat tasks to report timeout events to the engine.
+    hb_event_tx: mpsc::Sender<HeartbeatEvent>,
 }
 
 impl ProtocolEngine {
-    pub fn new(config: PeerConfig, local_peer_id: PeerId) -> Self {
+    pub fn new(
+        config: PeerConfig,
+        local_peer_id: PeerId,
+        notifier: Arc<CapabilityNotifier>,
+    ) -> Self {
         let seq = 1u64;
         let local_manifest = config.to_manifest(local_peer_id, seq);
         let trust_policies = config.trust_policies();
+        // Placeholder channel — replaced by run() before any sessions start.
+        let (hb_event_tx, _) = mpsc::channel(1);
 
         Self {
             config:         RwLock::new(config),
@@ -94,6 +108,9 @@ impl ProtocolEngine {
             sequence_num:   Mutex::new(seq),
             sessions:   Arc::new(RwLock::new(HashMap::new())),
             peer_cache: Arc::new(Mutex::new(HashMap::new())),
+            notifier,
+            heartbeat_handles: Arc::new(Mutex::new(HashMap::new())),
+            hb_event_tx,
         }
     }
 
@@ -110,26 +127,47 @@ impl ProtocolEngine {
         let listener = P2pcdListener::bind(listen_addr).await?;
         tracing::info!("P2P-CD engine listening on {}", listener.local_addr);
 
+        // Real heartbeat event channel — shared with all session runners via self.hb_event_tx.
+        // SAFETY: We swap in the real tx before any sessions start (no races possible here).
+        let (hb_tx, hb_rx) = mpsc::channel::<HeartbeatEvent>(128);
+        // Note: We can't mutate self.hb_event_tx through &Arc<Self> without UnsafeCell.
+        // The clean pattern is to pass hb_tx into run_*_session directly.
+        // We store it in a temporary Arc so all spawned session tasks share the same tx.
+        let hb_event_tx = Arc::new(hb_tx);
+
         tokio::select! {
-            r = Arc::clone(&self).event_loop(wg_rx) => r,
-            r = Arc::clone(&self).accept_loop(listener) => r,
+            r = Arc::clone(&self).event_loop(wg_rx, Arc::clone(&hb_event_tx)) => r,
+            r = Arc::clone(&self).accept_loop(listener, Arc::clone(&hb_event_tx)) => r,
+            _ = Arc::clone(&self).heartbeat_event_loop(hb_rx) => Ok(()),
         }
     }
 
     // ── WgPeerEvent loop ─────────────────────────────────────────────────────
 
-    async fn event_loop(self: Arc<Self>, mut rx: mpsc::Receiver<WgPeerEvent>) -> Result<()> {
+    async fn event_loop(
+        self: Arc<Self>,
+        mut rx: mpsc::Receiver<WgPeerEvent>,
+        hb_event_tx: Arc<mpsc::Sender<HeartbeatEvent>>,
+    ) -> Result<()> {
         while let Some(event) = rx.recv().await {
             match event {
-                WgPeerEvent::PeerVisible(id)     => Arc::clone(&self).on_peer_visible(id).await,
-                WgPeerEvent::PeerUnreachable(id) => self.on_peer_unreachable(id, CloseReason::Timeout).await,
-                WgPeerEvent::PeerRemoved(id)     => self.on_peer_removed(id).await,
+                WgPeerEvent::PeerVisible(id) => {
+                    Arc::clone(&self).on_peer_visible(id, Arc::clone(&hb_event_tx)).await
+                }
+                WgPeerEvent::PeerUnreachable(id) => {
+                    self.on_peer_unreachable(id, CloseReason::Timeout).await
+                }
+                WgPeerEvent::PeerRemoved(id) => self.on_peer_removed(id).await,
             }
         }
         Ok(())
     }
 
-    async fn on_peer_visible(self: Arc<Self>, peer_id: PeerId) {
+    async fn on_peer_visible(
+        self: Arc<Self>,
+        peer_id: PeerId,
+        hb_event_tx: Arc<mpsc::Sender<HeartbeatEvent>>,
+    ) {
         tracing::info!("engine: PEER_VISIBLE {}", short(peer_id));
 
         // Already in an active/in-progress session?
@@ -175,7 +213,7 @@ impl ProtocolEngine {
         };
 
         tokio::spawn(async move {
-            if let Err(e) = self.run_initiator_session(peer_id, addr).await {
+            if let Err(e) = self.run_initiator_session(peer_id, addr, hb_event_tx).await {
                 tracing::warn!("engine: initiator {} failed: {:?}", short(peer_id), e);
             }
         });
@@ -183,11 +221,28 @@ impl ProtocolEngine {
 
     async fn on_peer_unreachable(&self, peer_id: PeerId, reason: CloseReason) {
         tracing::info!("engine: PEER_UNREACHABLE {}", short(peer_id));
-        let mut sessions = self.sessions.write().await;
-        if let Some(s) = sessions.get_mut(&peer_id) {
-            if s.state == SessionState::Active {
-                let _ = session::send_close(s, reason).await;
+
+        // Abort heartbeat task for this peer
+        if let Some(handle) = self.heartbeat_handles.lock().await.remove(&peer_id) {
+            handle.abort();
+        }
+
+        let active_set = {
+            let mut sessions = self.sessions.write().await;
+            if let Some(s) = sessions.get_mut(&peer_id) {
+                if s.state == SessionState::Active {
+                    let _ = session::send_close(s, reason).await;
+                }
+                s.active_set.clone()
+            } else {
+                vec![]
             }
+        };
+
+        if !active_set.is_empty() {
+            self.notifier
+                .notify_peer_inactive(peer_id, &active_set, &format!("{:?}", reason))
+                .await;
         }
     }
 
@@ -200,13 +255,21 @@ impl ProtocolEngine {
 
     // ── TCP accept loop ───────────────────────────────────────────────────────
 
-    async fn accept_loop(self: Arc<Self>, listener: P2pcdListener) -> Result<()> {
+    async fn accept_loop(
+        self: Arc<Self>,
+        listener: P2pcdListener,
+        hb_event_tx: Arc<mpsc::Sender<HeartbeatEvent>>,
+    ) -> Result<()> {
         loop {
             match listener.accept().await {
                 Ok((transport, remote_addr)) => {
                     let engine = Arc::clone(&self);
+                    let hb_tx = Arc::clone(&hb_event_tx);
                     tokio::spawn(async move {
-                        if let Err(e) = engine.run_responder_session(transport, remote_addr).await {
+                        if let Err(e) = engine
+                            .run_responder_session(transport, remote_addr, hb_tx)
+                            .await
+                        {
                             tracing::warn!("engine: responder {} failed: {:?}", remote_addr, e);
                         }
                     });
@@ -221,7 +284,12 @@ impl ProtocolEngine {
 
     // ── Session runners ───────────────────────────────────────────────────────
 
-    async fn run_initiator_session(self: Arc<Self>, peer_id: PeerId, addr: SocketAddr) -> Result<()> {
+    async fn run_initiator_session(
+        self: Arc<Self>,
+        peer_id: PeerId,
+        addr: SocketAddr,
+        hb_event_tx: Arc<mpsc::Sender<HeartbeatEvent>>,
+    ) -> Result<()> {
         let transport = transport::connect(addr)
             .await
             .with_context(|| format!("connect to {}", short(peer_id)))?;
@@ -233,6 +301,7 @@ impl ProtocolEngine {
         s.transport = Some(transport);
         session::run_initiator_exchange(&mut s, &policies).await?;
 
+        self.post_session_setup(&mut s, hb_event_tx).await;
         self.record_session_outcome(&s).await;
         self.sessions.write().await.insert(peer_id, s);
         Ok(())
@@ -242,6 +311,7 @@ impl ProtocolEngine {
         self: Arc<Self>,
         transport: super::transport::P2pcdTransport,
         remote_addr: SocketAddr,
+        hb_event_tx: Arc<mpsc::Sender<HeartbeatEvent>>,
     ) -> Result<()> {
         let peer_id = match self.identify_peer_by_addr(remote_addr.ip()).await {
             Some(id) => id,
@@ -258,9 +328,85 @@ impl ProtocolEngine {
         s.transport = Some(transport);
         session::run_responder_exchange(&mut s, &policies).await?;
 
+        self.post_session_setup(&mut s, hb_event_tx).await;
         self.record_session_outcome(&s).await;
         self.sessions.write().await.insert(peer_id, s);
         Ok(())
+    }
+
+    // ── Post-exchange: wire heartbeat + fire capability notifications ──────────
+
+    async fn post_session_setup(
+        &self,
+        s: &mut Session,
+        hb_event_tx: Arc<mpsc::Sender<HeartbeatEvent>>,
+    ) {
+        if s.state != SessionState::Active {
+            return;
+        }
+
+        let peer_id = s.remote_peer_id;
+
+        // 1. Start heartbeat if core.heartbeat.liveness.1 is in the active_set
+        let wants_heartbeat = s
+            .active_set
+            .iter()
+            .any(|c| c == "core.heartbeat.liveness.1");
+
+        if wants_heartbeat {
+            if let Some(transport) = s.transport.take() {
+                let (send_tx, recv_rx) = transport.into_channels();
+                let hb_tx_clone = (*hb_event_tx).clone();
+                let hb = HeartbeatManager::with_defaults(peer_id, hb_tx_clone);
+                let handle = hb.spawn(send_tx, recv_rx);
+                self.heartbeat_handles.lock().await.insert(peer_id, handle);
+                tracing::info!("engine: heartbeat started for {}", short(peer_id));
+            }
+        }
+
+        // 2. Resolve WG address for capability notifications
+        let wg_ip = match self.resolve_peer_addr(peer_id).await {
+            Some(addr) => addr.ip(),
+            None => {
+                tracing::debug!("engine: can't resolve WG IP for notifier ({})", short(peer_id));
+                return;
+            }
+        };
+
+        // 3. Notify all registered capabilities that this peer is now active
+        self.notifier
+            .notify_peer_active(
+                peer_id,
+                wg_ip,
+                &s.active_set,
+                &s.accepted_params,
+                unix_now(),
+            )
+            .await;
+    }
+
+    // ── Heartbeat timeout event loop ──────────────────────────────────────────
+
+    async fn heartbeat_event_loop(
+        self: Arc<Self>,
+        mut hb_rx: mpsc::Receiver<HeartbeatEvent>,
+    ) {
+        while let Some(event) = hb_rx.recv().await {
+            match event {
+                HeartbeatEvent::Pong { peer_id, rtt_ms } => {
+                    tracing::debug!("engine: PONG {} rtt={}ms", short(peer_id), rtt_ms);
+                    // Update last_activity on the session
+                    let mut sessions = self.sessions.write().await;
+                    if let Some(s) = sessions.get_mut(&peer_id) {
+                        s.last_activity = unix_now();
+                    }
+                }
+                HeartbeatEvent::Timeout { peer_id } => {
+                    tracing::warn!("engine: heartbeat TIMEOUT {}", short(peer_id));
+                    self.on_peer_unreachable(peer_id, CloseReason::Timeout).await;
+                }
+            }
+        }
     }
 
     // ── Peer cache ────────────────────────────────────────────────────────────
