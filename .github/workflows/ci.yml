@@ -90,10 +90,10 @@ jobs:
       - name: Upload binary artifact
         uses: actions/upload-artifact@v4
         with:
-          name: daemon-${{ matrix.target }}
+          name: howm-${{ matrix.target }}
           path: |
-            node/target/${{ matrix.target }}/release/daemon
-            node/target/${{ matrix.target }}/release/daemon.exe
+            node/target/${{ matrix.target }}/release/howm
+            node/target/${{ matrix.target }}/release/howm.exe
           if-no-files-found: error
           retention-days: 7
 
