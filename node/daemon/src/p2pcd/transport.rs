@@ -3,7 +3,8 @@
 // Length-prefixed CBOR message framing over TCP inside the WireGuard tunnel.
 // Wire format: 4-byte big-endian length header | CBOR payload
 //
-// The transport is bound to the WireGuard interface address on port 7654.
+// Note: ProtocolMessage::encode() already prepends the 4-byte length prefix,
+// so we write the full encoded bytes directly and read using read_exact.
 
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -23,7 +24,8 @@ const DEFAULT_IO_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// A framed connection to one remote peer.
 ///
-/// Messages are encoded as 4-byte big-endian length + CBOR payload.
+/// Messages are encoded as 4-byte big-endian length + CBOR payload
+/// (via `ProtocolMessage::encode()`).
 pub struct P2pcdTransport {
     stream: TcpStream,
     io_timeout: Duration,
@@ -46,13 +48,11 @@ impl P2pcdTransport {
     }
 
     /// Send a `ProtocolMessage` — encodes to length-prefixed CBOR and flushes.
+    /// `ProtocolMessage::encode()` already includes the 4-byte length prefix.
     pub async fn send(&mut self, msg: &ProtocolMessage) -> Result<()> {
-        let encoded = msg.encode();
-        let len = encoded.len() as u32;
-        let header = len.to_be_bytes();
+        let encoded = msg.encode(); // 4-byte len prefix + CBOR payload
 
         timeout(self.io_timeout, async {
-            self.stream.write_all(&header).await?;
             self.stream.write_all(&encoded).await?;
             self.stream.flush().await?;
             Ok::<(), anyhow::Error>(())
@@ -87,7 +87,11 @@ impl P2pcdTransport {
                 .await
                 .context("read CBOR payload")?;
 
-            ProtocolMessage::decode(&mut buf.as_slice()).context("decode CBOR")
+            // Reconstruct the length-prefixed buffer and decode via ProtocolMessage::decode
+            let mut full = Vec::with_capacity(4 + len);
+            full.extend_from_slice(&header);
+            full.extend_from_slice(&buf);
+            ProtocolMessage::decode(&mut full.as_slice()).context("decode CBOR")
         })
         .await
         .context("recv timeout")?
@@ -100,7 +104,7 @@ impl P2pcdTransport {
 }
 
 /// Accept loop: bind to `addr`, accept connections, and dispatch each to the
-/// provided handler closure. Runs until the `shutdown` token is cancelled.
+/// provided handler closure.
 pub struct P2pcdListener {
     pub local_addr: SocketAddr,
     listener: TcpListener,
@@ -138,58 +142,60 @@ pub async fn connect(addr: SocketAddr) -> Result<P2pcdTransport> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use p2pcd_types::{CloseReason, DiscoveryManifest};
+    use p2pcd_types::{
+        CloseReason, DiscoveryManifest, ProtocolMessage, PROTOCOL_VERSION,
+    };
+    use std::collections::BTreeMap;
+
+    fn make_manifest(id: u8) -> DiscoveryManifest {
+        DiscoveryManifest {
+            protocol_version: PROTOCOL_VERSION,
+            peer_id: [id; 32],
+            sequence_num: id as u64,
+            capabilities: vec![],
+            personal_hash: vec![0u8; 32],
+            hash_algorithm: "sha-256".to_string(),
+        }
+    }
 
     /// Spawn a listener on loopback, connect to it, exchange one message, verify round-trip.
     #[tokio::test]
-    async fn send_recv_round_trip() {
+    async fn send_recv_offer_round_trip() {
         let listener = P2pcdListener::bind("127.0.0.1:0".parse().unwrap())
             .await
             .unwrap();
         let addr = listener.local_addr;
 
-        // Acceptor side
         let accept_task = tokio::spawn(async move {
             let (mut server, _) = listener.accept().await.unwrap();
             let msg = server.recv().await.unwrap();
-            // Echo back
-            server.send(&msg).await.unwrap();
+            server.send(&msg).await.unwrap(); // echo back
             msg
         });
 
-        // Connector side
         let mut client = connect(addr).await.unwrap();
-        let manifest = DiscoveryManifest {
-            peer_id: [1u8; 32],
-            sequence_num: 42,
-            display_name: "test-node".to_string(),
-            capabilities: vec![],
-        };
-        let outgoing = ProtocolMessage::Offer(manifest.clone());
+        let manifest = make_manifest(1);
+        let outgoing = ProtocolMessage::Offer { manifest: manifest.clone() };
         client.send(&outgoing).await.unwrap();
 
         let echoed = client.recv().await.unwrap();
-
-        // Verify the message round-tripped correctly
-        match echoed {
-            ProtocolMessage::Offer(m) => {
+        match &echoed {
+            ProtocolMessage::Offer { manifest: m } => {
                 assert_eq!(m.peer_id, manifest.peer_id);
                 assert_eq!(m.sequence_num, manifest.sequence_num);
-                assert_eq!(m.display_name, manifest.display_name);
             }
             other => panic!("unexpected message: {:?}", other),
         }
 
-        // Also verify what the server received
         let server_received = accept_task.await.unwrap();
         match server_received {
-            ProtocolMessage::Offer(m) => assert_eq!(m.sequence_num, 42),
+            ProtocolMessage::Offer { manifest: m } => assert_eq!(m.sequence_num, 1),
             other => panic!("server got wrong message: {:?}", other),
         }
     }
 
     #[tokio::test]
-    async fn send_recv_close_message() {
+    async fn send_recv_confirm() {
         let listener = P2pcdListener::bind("127.0.0.1:0".parse().unwrap())
             .await
             .unwrap();
@@ -201,12 +207,44 @@ mod tests {
         });
 
         let mut client = connect(addr).await.unwrap();
-        let close_msg = ProtocolMessage::Close(CloseReason::Normal);
-        client.send(&close_msg).await.unwrap();
+        let msg = ProtocolMessage::Confirm {
+            personal_hash: vec![1u8; 32],
+            active_set: vec!["p2pcd.social.post.1".to_string()],
+            accepted_params: None,
+        };
+        client.send(&msg).await.unwrap();
+
+        let received = accept_task.await.unwrap();
+        match received {
+            ProtocolMessage::Confirm { active_set, .. } => {
+                assert_eq!(active_set, vec!["p2pcd.social.post.1"]);
+            }
+            other => panic!("expected Confirm, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn send_recv_close() {
+        let listener = P2pcdListener::bind("127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
+        let addr = listener.local_addr;
+
+        let accept_task = tokio::spawn(async move {
+            let (mut server, _) = listener.accept().await.unwrap();
+            server.recv().await.unwrap()
+        });
+
+        let mut client = connect(addr).await.unwrap();
+        let msg = ProtocolMessage::Close {
+            personal_hash: vec![0u8; 32],
+            reason: CloseReason::Normal,
+        };
+        client.send(&msg).await.unwrap();
 
         let received = accept_task.await.unwrap();
         assert!(
-            matches!(received, ProtocolMessage::Close(CloseReason::Normal)),
+            matches!(received, ProtocolMessage::Close { reason: CloseReason::Normal, .. }),
             "expected Close(Normal), got {:?}", received
         );
     }
@@ -221,16 +259,15 @@ mod tests {
         let accept_task = tokio::spawn(async move {
             let (mut server, _) = listener.accept().await.unwrap();
             let msg = server.recv().await.unwrap();
-            // Respond with Pong
-            if matches!(msg, ProtocolMessage::Ping(_)) {
-                server.send(&ProtocolMessage::Pong(999)).await.unwrap();
+            if let ProtocolMessage::Ping { timestamp } = msg {
+                server.send(&ProtocolMessage::Pong { timestamp }).await.unwrap();
             }
         });
 
         let mut client = connect(addr).await.unwrap();
-        client.send(&ProtocolMessage::Ping(999)).await.unwrap();
+        client.send(&ProtocolMessage::Ping { timestamp: 12345 }).await.unwrap();
         let pong = client.recv().await.unwrap();
-        assert!(matches!(pong, ProtocolMessage::Pong(999)));
+        assert!(matches!(pong, ProtocolMessage::Pong { timestamp: 12345 }));
 
         accept_task.await.unwrap();
     }
@@ -252,5 +289,44 @@ mod tests {
         let mut client = P2pcdTransport::with_timeout(stream, Duration::from_millis(50));
         let result = client.recv().await;
         assert!(result.is_err(), "expected timeout error");
+    }
+
+    #[tokio::test]
+    async fn confirm_with_accepted_params() {
+        use p2pcd_types::ScopeParams;
+
+        let listener = P2pcdListener::bind("127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
+        let addr = listener.local_addr;
+
+        let accept_task = tokio::spawn(async move {
+            let (mut server, _) = listener.accept().await.unwrap();
+            server.recv().await.unwrap()
+        });
+
+        let mut params = BTreeMap::new();
+        params.insert(
+            "p2pcd.social.post.1".to_string(),
+            ScopeParams { rate_limit: 10, ttl: 3600 },
+        );
+
+        let mut client = connect(addr).await.unwrap();
+        let msg = ProtocolMessage::Confirm {
+            personal_hash: vec![2u8; 32],
+            active_set: vec!["p2pcd.social.post.1".to_string()],
+            accepted_params: Some(params),
+        };
+        client.send(&msg).await.unwrap();
+
+        let received = accept_task.await.unwrap();
+        match received {
+            ProtocolMessage::Confirm { accepted_params: Some(p), .. } => {
+                let scope = p.get("p2pcd.social.post.1").unwrap();
+                assert_eq!(scope.rate_limit, 10);
+                assert_eq!(scope.ttl, 3600);
+            }
+            other => panic!("unexpected: {:?}", other),
+        }
     }
 }
