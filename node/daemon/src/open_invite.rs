@@ -39,6 +39,14 @@ pub fn create(
         .or(identity.wg_endpoint.clone())
         .unwrap_or_else(|| "0.0.0.0:51820".to_string());
 
+    // Refuse to create open invites with an unroutable endpoint.
+    if ep.starts_with("0.0.0.0") {
+        anyhow::bail!(
+            "Cannot create open invite: WireGuard endpoint not configured. \
+             Restart with --wg-endpoint <public-ip:port> or set HOWM_WG_ENDPOINT."
+        );
+    }
+
     let node_id = &identity.node_id;
 
     // Read WG private key for HMAC signing

@@ -395,12 +395,9 @@ impl ProtocolEngine {
                     .and_then(|c| c.params.clone());
                 drop(cfg);
                 let hb = match hb_params {
-                    Some(p) => HeartbeatManager::new(
-                        peer_id,
-                        p.interval_ms,
-                        p.timeout_ms,
-                        hb_tx_clone,
-                    ),
+                    Some(p) => {
+                        HeartbeatManager::new(peer_id, p.interval_ms, p.timeout_ms, hb_tx_clone)
+                    }
                     None => HeartbeatManager::with_defaults(peer_id, hb_tx_clone),
                 };
                 let handle = hb.spawn(send_tx, recv_rx);

@@ -21,6 +21,15 @@ pub fn load_or_create_token(data_dir: &Path) -> anyhow::Result<String> {
     let token = hex::encode(bytes);
 
     std::fs::write(&token_path, &token)?;
+    tracing::warn!(
+        "╔══════════════════════════════════════════════════════════╗\n\
+         ║  NEW API TOKEN GENERATED — paste this into the Dashboard  ║\n\
+         ║  {}  ║\n\
+         ║  Saved to: {}  ║\n\
+         ╚══════════════════════════════════════════════════════════╝",
+        token,
+        token_path.display(),
+    );
 
     // Restrict permissions
     #[cfg(unix)]

@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, Navigate, NavLink } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, NavLink, useNavigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { useEffect, useState, useCallback } from 'react';
 import { Dashboard } from './pages/Dashboard';
@@ -134,6 +134,7 @@ const brandStyle: React.CSSProperties = {
 function Shell() {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const token = getApiToken();
+  const navigate = useNavigate();
 
   const addToast = useCallback((level: NotifyLevel, message: string) => {
     const id = ++_toastId;
@@ -147,10 +148,13 @@ function Shell() {
 
   useEffect(() => {
     return listenFromCapabilities(
-      { onNotify: (level, message) => addToast(level, message) },
+      {
+        onNotify: (level, message) => addToast(level, message),
+        onNavigate: (path) => navigate(path),
+      },
       token,
     );
-  }, [token, addToast]);
+  }, [token, addToast, navigate]);
 
   return (
     <>

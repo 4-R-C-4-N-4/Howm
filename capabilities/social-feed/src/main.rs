@@ -65,7 +65,7 @@ async fn main() -> anyhow::Result<()> {
         // Embedded capability UI — served at /ui/*
         .fallback(serve_ui);
 
-    let addr: SocketAddr = format!("0.0.0.0:{}", config.port).parse()?;
+    let addr: SocketAddr = format!("127.0.0.1:{}", config.port).parse()?;
     info!("Social feed capability starting on {}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;

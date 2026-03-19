@@ -12,6 +12,7 @@ mod error;
 mod executor;
 mod identity;
 mod invite;
+mod net_detect;
 mod open_invite;
 mod p2pcd;
 mod peers;
@@ -196,16 +197,7 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    // Background: graceful shutdown handler (SIGTERM / SIGINT / Ctrl-C)
-    let shutdown_app_state = state.clone();
-    tokio::spawn(async move {
-        wait_for_shutdown_signal().await;
-        info!("Shutdown signal received — cleaning up...");
-        do_shutdown(&shutdown_app_state).await;
-        std::process::exit(0);
-    });
-
-    // Start HTTP server
+    // Start HTTP server with graceful shutdown
     let addr: SocketAddr = format!("0.0.0.0:{}", config.port).parse()?;
     info!("Starting Howm daemon on {}", addr);
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -213,7 +205,12 @@ async fn main() -> anyhow::Result<()> {
         listener,
         router.into_make_service_with_connect_info::<SocketAddr>(),
     )
+    .with_graceful_shutdown(wait_for_shutdown_signal())
     .await?;
+
+    // Server has stopped accepting connections — clean up
+    info!("Shutdown signal received — cleaning up...");
+    do_shutdown(&state).await;
 
     Ok(())
 }

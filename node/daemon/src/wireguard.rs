@@ -89,7 +89,27 @@ pub async fn init(config: &WgConfig) -> anyhow::Result<WgState> {
     };
     info!("WG address: {}", address);
 
-    let endpoint = config.endpoint.clone();
+    // Use the configured endpoint, or attempt to auto-detect the public IP.
+    let endpoint = if let Some(ref ep) = config.endpoint {
+        info!("WG endpoint configured: {}", ep);
+        config.endpoint.clone()
+    } else {
+        info!("WG endpoint not configured — attempting public IP auto-detection...");
+        match crate::net_detect::detect_public_ip().await {
+            Some(ip) => {
+                let ep = format!("{}:{}", ip, config.port);
+                info!("Auto-detected public IP → WG endpoint: {}", ep);
+                Some(ep)
+            }
+            None => {
+                warn!(
+                    "Public IP detection failed — invites will be refused. \
+                     Pass --wg-endpoint <ip:port> to set manually."
+                );
+                None
+            }
+        }
+    };
 
     // Try to create the WireGuard interface
     match setup_wg_interface(&private_key, &address, config.port, &wg_dir).await {

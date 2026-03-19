@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { getNodeInfo, getWgStatus } from '../api/nodes';
 import { getApiToken, setApiToken, clearApiToken } from '../api/client';
 import { PeerList } from '../components/PeerList';
@@ -7,6 +7,7 @@ import { OpenInviteSection } from '../components/OpenInviteSection';
 import { useState } from 'react';
 
 export function Dashboard() {
+  const queryClient = useQueryClient();
   const { data: nodeInfo, isLoading: nodeLoading } = useQuery({
     queryKey: ['node-info'],
     queryFn: getNodeInfo,
@@ -20,37 +21,43 @@ export function Dashboard() {
   const [tokenInput, setTokenInput] = useState('');
   const hasToken = !!getApiToken();
 
+  // Task 5: invalidate queries instead of reloading the page
   const handleSetToken = () => {
     if (tokenInput.trim()) {
       setApiToken(tokenInput.trim());
       setTokenInput('');
-      window.location.reload();
+      queryClient.invalidateQueries();
     }
   };
+  const handleClearToken = () => {
+    clearApiToken();
+    queryClient.invalidateQueries();
+  };
+
+  const endpointMissing = wgStatus && !wgStatus.endpoint;
 
   return (
-    <div style={{ maxWidth: '800px', margin: '0 auto', padding: '24px' }}>
-      <h1 style={{ marginBottom: '24px' }}>Dashboard</h1>
+    <div style={pageStyle}>
+      <h1 style={h1Style}>Dashboard</h1>
 
       {/* API Token */}
-      <div style={cardStyle}>
-        <h2 style={{ marginTop: 0, marginBottom: '12px' }}>API Token</h2>
+      <section style={cardStyle}>
+        <h2 style={h2Style}>API Token</h2>
         {hasToken ? (
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-            <span style={{ color: '#22c55e', fontWeight: 600 }}>● Connected</span>
-            <span style={{ color: '#888', fontSize: '0.85em' }}>Token is set</span>
-            <button onClick={() => { clearApiToken(); window.location.reload(); }}
-              style={{ marginLeft: 'auto', padding: '4px 12px', background: '#fee2e2', border: 'none', borderRadius: '6px', cursor: 'pointer' }}>
+            <span style={{ color: 'var(--howm-success, #4ade80)', fontWeight: 600 }}>● Connected</span>
+            <span style={mutedStyle}>Token is set</span>
+            <button onClick={handleClearToken} style={{ ...btnStyle, marginLeft: 'auto', background: 'rgba(248,113,113,0.15)', color: 'var(--howm-error, #f87171)', border: '1px solid var(--howm-error, #f87171)' }}>
               Clear Token
             </button>
           </div>
         ) : (
           <div>
-            <p style={{ color: '#f59e0b', marginTop: 0 }}>
+            <p style={{ color: 'var(--howm-warning, #fbbf24)', margin: '0 0 8px' }}>
               ⚠ No API token set — mutations (invites, peer removal, posting) will be rejected.
             </p>
-            <p style={{ color: '#888', fontSize: '0.85em', margin: '8px 0' }}>
-              Paste the token printed by the daemon on first run.
+            <p style={{ ...mutedStyle, fontSize: '0.85em', margin: '0 0 12px' }}>
+              Copy the token printed by the daemon on first run (or from the howm.sh startup box).
             </p>
             <div style={{ display: 'flex', gap: '8px' }}>
               <input
@@ -59,98 +66,139 @@ export function Dashboard() {
                 value={tokenInput}
                 onChange={e => setTokenInput(e.target.value)}
                 onKeyDown={e => e.key === 'Enter' && handleSetToken()}
-                style={{ padding: '6px 10px', border: '1px solid #ddd', borderRadius: '6px', fontSize: '0.9em', flex: 1, fontFamily: 'monospace' }}
+                style={inputStyle}
               />
-              <button onClick={handleSetToken} disabled={!tokenInput.trim()}
-                style={{ padding: '6px 14px', background: '#4f46e5', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer' }}>
+              <button onClick={handleSetToken} disabled={!tokenInput.trim()} style={accentBtnStyle}>
                 Set Token
               </button>
             </div>
           </div>
         )}
-      </div>
+      </section>
 
-      {/* Node Info Card */}
-      <div style={cardStyle}>
-        <h2 style={{ marginTop: 0, marginBottom: '16px' }}>Node Info</h2>
-        {nodeLoading ? <p>Loading...</p> : nodeInfo && (
-          <dl style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '6px 16px', margin: 0 }}>
-            <dt style={dtStyle}>Node ID</dt>
-            <dd style={ddStyle}>{nodeInfo.node_id}</dd>
-            <dt style={dtStyle}>Name</dt>
-            <dd style={ddStyle}>{nodeInfo.name}</dd>
+      {/* Node Info */}
+      <section style={cardStyle}>
+        <h2 style={h2Style}>Node Info</h2>
+        {nodeLoading ? <p style={mutedStyle}>Loading…</p> : nodeInfo && (
+          <dl style={dlStyle}>
+            <Row label="Node ID" value={nodeInfo.node_id} mono />
+            <Row label="Name"    value={nodeInfo.name} />
           </dl>
         )}
-      </div>
+      </section>
 
-      {/* WireGuard Status Card */}
-      <div style={cardStyle}>
-        <h2 style={{ marginTop: 0, marginBottom: '16px' }}>WireGuard</h2>
+      {/* WireGuard */}
+      <section style={cardStyle}>
+        <h2 style={h2Style}>WireGuard</h2>
+        {/* Task 6: endpoint warning */}
+        {endpointMissing && (
+          <div style={warnBannerStyle}>
+            ⚠ WireGuard endpoint not set — invites will not work for remote peers.
+            Restart with <code style={codeStyle}>--wg-endpoint &lt;public-ip:51820&gt;</code> or set <code style={codeStyle}>HOWM_WG_ENDPOINT</code>.
+          </div>
+        )}
         {wgStatus ? (
-          <dl style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '6px 16px', margin: 0 }}>
+          <dl style={dlStyle}>
             <dt style={dtStyle}>Status</dt>
             <dd style={ddStyle}>
-              <span style={{ color: wgStatus.status === 'connected' ? '#22c55e' : '#f59e0b' }}>
+              <span style={{ color: wgStatus.status === 'connected' ? 'var(--howm-success, #4ade80)' : 'var(--howm-warning, #fbbf24)' }}>
                 {wgStatus.status}
               </span>
             </dd>
-            {wgStatus.public_key && (
-              <>
-                <dt style={dtStyle}>Public Key</dt>
-                <dd style={{ ...ddStyle, wordBreak: 'break-all' }}>{wgStatus.public_key}</dd>
-              </>
-            )}
-            {wgStatus.address && (
-              <>
-                <dt style={dtStyle}>WG Address</dt>
-                <dd style={ddStyle}>{wgStatus.address}</dd>
-              </>
-            )}
-            {wgStatus.endpoint && (
-              <>
-                <dt style={dtStyle}>Endpoint</dt>
-                <dd style={ddStyle}>{wgStatus.endpoint}</dd>
-              </>
-            )}
-            {wgStatus.listen_port && (
-              <>
-                <dt style={dtStyle}>Listen Port</dt>
-                <dd style={ddStyle}>{wgStatus.listen_port}</dd>
-              </>
-            )}
-            {wgStatus.active_tunnels != null && (
-              <>
-                <dt style={dtStyle}>Active Tunnels</dt>
-                <dd style={ddStyle}>{wgStatus.active_tunnels}</dd>
-              </>
-            )}
+            {wgStatus.public_key && <Row label="Public Key" value={wgStatus.public_key} mono />}
+            {wgStatus.address    && <Row label="WG Address" value={wgStatus.address} mono />}
+            {wgStatus.endpoint   && <Row label="Endpoint"   value={wgStatus.endpoint} mono />}
+            {wgStatus.listen_port != null && <Row label="Listen Port" value={String(wgStatus.listen_port)} mono />}
+            {wgStatus.active_tunnels != null && <Row label="Active Tunnels" value={String(wgStatus.active_tunnels)} />}
           </dl>
         ) : (
-          <p style={{ color: '#888' }}>Loading WireGuard status...</p>
+          <p style={mutedStyle}>Loading WireGuard status…</p>
         )}
-      </div>
+      </section>
 
       {/* Open Invite */}
-      <div style={cardStyle}>
+      <section style={cardStyle}>
         <OpenInviteSection />
-      </div>
+      </section>
 
-      {/* Peer List */}
-      <div style={cardStyle}>
+      {/* Peers */}
+      <section style={cardStyle}>
         <PeerList />
-      </div>
+      </section>
 
-      {/* Capability List */}
-      <div style={cardStyle}>
+      {/* Capabilities */}
+      <section style={cardStyle}>
         <CapabilityList />
-      </div>
+      </section>
     </div>
   );
 }
 
+function Row({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+  return (
+    <>
+      <dt style={dtStyle}>{label}</dt>
+      <dd style={{ ...ddStyle, fontFamily: mono ? 'var(--howm-font-mono, monospace)' : 'inherit', wordBreak: 'break-all' }}>
+        {value}
+      </dd>
+    </>
+  );
+}
+
+const pageStyle: React.CSSProperties = { maxWidth: '800px', margin: '0 auto', padding: '24px' };
+const h1Style: React.CSSProperties = { fontSize: 'var(--howm-font-size-2xl, 1.5rem)', marginBottom: '24px', fontWeight: 600 };
+const h2Style: React.CSSProperties = { fontSize: 'var(--howm-font-size-xl, 1.25rem)', fontWeight: 600, marginTop: 0, marginBottom: '16px' };
 const cardStyle: React.CSSProperties = {
-  background: '#fff', border: '1px solid #e5e7eb', borderRadius: '12px',
-  padding: '20px', marginBottom: '20px', boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
+  background: 'var(--howm-bg-surface, #232733)',
+  border: '1px solid var(--howm-border, #2e3341)',
+  borderRadius: 'var(--howm-radius-lg, 12px)',
+  padding: '20px',
+  marginBottom: '20px',
 };
-const dtStyle: React.CSSProperties = { fontWeight: 600, color: '#6b7280', fontSize: '0.9em' };
-const ddStyle: React.CSSProperties = { margin: 0, fontFamily: 'monospace', fontSize: '0.9em' };
+const dlStyle: React.CSSProperties = { display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '6px 16px', margin: 0 };
+const dtStyle: React.CSSProperties = { fontWeight: 600, color: 'var(--howm-text-secondary, #8b91a0)', fontSize: '0.875rem', alignSelf: 'start', paddingTop: '1px' };
+const ddStyle: React.CSSProperties = { margin: 0, fontSize: '0.9rem' };
+const mutedStyle: React.CSSProperties = { color: 'var(--howm-text-muted, #5c6170)', margin: 0, fontSize: '0.9rem' };
+const inputStyle: React.CSSProperties = {
+  flex: 1, padding: '6px 10px',
+  background: 'var(--howm-bg-secondary, #1a1d27)',
+  border: '1px solid var(--howm-border, #2e3341)',
+  borderRadius: 'var(--howm-radius-sm, 4px)',
+  color: 'var(--howm-text-primary, #e1e4eb)',
+  fontSize: '0.9em', fontFamily: 'var(--howm-font-mono, monospace)',
+};
+const btnStyle: React.CSSProperties = {
+  padding: '6px 14px',
+  background: 'var(--howm-bg-elevated, #2a2e3d)',
+  border: '1px solid var(--howm-border, #2e3341)',
+  borderRadius: 'var(--howm-radius-sm, 4px)',
+  color: 'var(--howm-text-primary, #e1e4eb)',
+  cursor: 'pointer', fontSize: '0.9em',
+};
+const accentBtnStyle: React.CSSProperties = {
+  padding: '6px 14px',
+  background: 'var(--howm-accent, #6c8cff)',
+  border: 'none',
+  borderRadius: 'var(--howm-radius-sm, 4px)',
+  color: '#fff', cursor: 'pointer', fontSize: '0.9em',
+};
+const warnBannerStyle: React.CSSProperties = {
+  background: 'rgba(251,191,36,0.1)',
+  border: '1px solid var(--howm-warning, #fbbf24)',
+  borderRadius: 'var(--howm-radius-sm, 4px)',
+  padding: '10px 14px',
+  marginBottom: '16px',
+  fontSize: '0.875rem',
+  color: 'var(--howm-warning, #fbbf24)',
+  lineHeight: 1.5,
+};
+const codeStyle: React.CSSProperties = {
+  fontFamily: 'var(--howm-font-mono, monospace)',
+  fontSize: '0.875em',
+  background: 'rgba(255,255,255,0.08)',
+  padding: '1px 5px',
+  borderRadius: '3px',
+};
+
+// re-export for Dashboard internal use only
+export { btnStyle, accentBtnStyle, inputStyle };

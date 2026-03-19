@@ -67,14 +67,30 @@ pub async fn install_capability(
         manifest.name, manifest.version, req.path
     );
 
-    // 2. Resolve binary path
-    let binary_path = cap_dir.join(&manifest.binary);
-    if !binary_path.exists() {
-        return Err(AppError::BadRequest(format!(
-            "binary not found: {}",
-            binary_path.display()
-        )));
-    }
+    // 2. Resolve binary path — check manifest location first, then common cargo output dirs
+    let binary_name = std::path::Path::new(&manifest.binary)
+        .file_name()
+        .map(|f| f.to_string_lossy().to_string())
+        .unwrap_or_else(|| manifest.binary.clone());
+    let binary_candidates = [
+        cap_dir.join(&manifest.binary),
+        cap_dir.join("target/release").join(&binary_name),
+        cap_dir.join("target/debug").join(&binary_name),
+    ];
+    let binary_path = binary_candidates
+        .iter()
+        .find(|p| p.exists())
+        .ok_or_else(|| {
+            AppError::BadRequest(format!(
+                "binary not found — checked: {}",
+                binary_candidates
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ))
+        })?
+        .clone();
     let binary_path_str = binary_path
         .canonicalize()
         .map_err(|e| AppError::Internal(format!("Failed to resolve binary path: {}", e)))?

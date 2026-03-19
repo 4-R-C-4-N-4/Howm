@@ -53,11 +53,15 @@ export function CapabilityPage() {
     );
   }
 
-  // Build the iframe src — append token as query param so the page can use it
-  // immediately without waiting for the postMessage round-trip.
+  // Build the iframe src — route through the daemon proxy at /cap/{prefix}/...
+  // Capability name "social.feed" → proxy prefix "social" (first segment before '.')
+  const proxyPrefix = cap.name.split('.')[0];
+  const entry = cap.ui.entry.startsWith('/')
+    ? `/cap/${proxyPrefix}${cap.ui.entry}`
+    : `/cap/${proxyPrefix}/${cap.ui.entry}`;
   const src = token
-    ? `${cap.ui.entry}?token=${encodeURIComponent(token)}`
-    : cap.ui.entry;
+    ? `${entry}?token=${encodeURIComponent(token)}`
+    : entry;
 
   return (
     <iframe

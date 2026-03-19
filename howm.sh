@@ -10,7 +10,6 @@
 #   --name NAME             Node name (default: hostname)
 #   --wg-port PORT          WireGuard listen port (default: 51820)
 #   --wg-endpoint HOST:PORT Public WireGuard endpoint for peers
-#   --no-wg                 Disable WireGuard (LAN-only mode)
 #   --no-ui                 Skip the web UI
 #   --dev                   Pass --dev flag to daemon (enables CORS for Vite proxy)
 #   --debug                 Show daemon logs in the foreground
@@ -21,7 +20,6 @@
 #   ./howm.sh                                          # start a standalone node
 #   ./howm.sh --wg-endpoint myhost.com:51820           # node reachable at myhost.com
 #   ./howm.sh --port 7010 --name node-b --data-dir /tmp/howm-b
-#   ./howm.sh --no-wg                                  # LAN-only, no WireGuard
 #   ./howm.sh --no-ui                                  # daemon-only, no web UI
 
 set -euo pipefail
@@ -34,7 +32,6 @@ DATA_DIR=""
 NODE_NAME=""
 WG_PORT=51820
 WG_ENDPOINT=""
-NO_WG=0
 NO_UI=0
 DEV_FLAG=""
 DEBUG_FLAG=""
@@ -48,7 +45,6 @@ while [[ $# -gt 0 ]]; do
         --name)              NODE_NAME="$2";      shift 2 ;;
         --wg-port)           WG_PORT="$2";        shift 2 ;;
         --wg-endpoint)       WG_ENDPOINT="$2";    shift 2 ;;
-        --no-wg)             NO_WG=1;             shift   ;;
         --no-ui)             NO_UI=1;             shift   ;;
         --dev)               DEV_FLAG="--dev";    shift   ;;
         --debug)             DEBUG_FLAG="--debug"; shift  ;;
@@ -87,14 +83,7 @@ check_cmd() {
 }
 
 check_cmd cargo "Install Rust from https://rustup.rs"
-
-if [[ $NO_WG -eq 0 ]]; then
-    if ! command -v wg &>/dev/null; then
-        warn "wireguard-tools not found — WireGuard interface cannot be created."
-        warn "Install wireguard-tools, or use --no-wg for LAN-only mode."
-        NO_WG=1
-    fi
-fi
+check_cmd wg "Install wireguard-tools (e.g. pacman -S wireguard-tools)"
 
 if [[ $NO_UI -eq 0 ]]; then
     if ! command -v npm &>/dev/null; then
@@ -124,20 +113,19 @@ if [[ $NO_UI -eq 0 ]]; then
 fi
 
 # ── Build daemon ─────────────────────────────────────────────────────────────
+BUILD_EXIT=0
 if [[ $RELEASE_MODE -eq 1 ]]; then
     info "Building howm (release)..."
-    BUILD_OUT=$(cd "$ROOT_DIR/node" && cargo build --release 2>&1)
-    BUILD_EXIT=$?
+    BUILD_OUT=$(cd "$ROOT_DIR/node" && cargo build --release 2>&1) || BUILD_EXIT=$?
     HOWM_BIN="$ROOT_DIR/node/target/release/howm"
 else
     info "Building howm (debug)..."
-    BUILD_OUT=$(cd "$ROOT_DIR/node" && cargo build 2>&1)
-    BUILD_EXIT=$?
+    BUILD_OUT=$(cd "$ROOT_DIR/node" && cargo build 2>&1) || BUILD_EXIT=$?
     HOWM_BIN="$ROOT_DIR/node/target/debug/howm"
 fi
 
 if [[ $BUILD_EXIT -ne 0 ]]; then
-    error "Build failed:"
+    error "Build failed (exit $BUILD_EXIT):"
     echo "$BUILD_OUT"
     exit 1
 fi
@@ -155,11 +143,18 @@ DAEMON_ARGS=(--port "$PORT")
 [[ -n "$DEBUG_FLAG" ]]    && DAEMON_ARGS+=("$DEBUG_FLAG")
 
 # WireGuard flags
-if [[ $NO_WG -eq 1 ]]; then
-    DAEMON_ARGS+=(--no-wg)
-else
-    DAEMON_ARGS+=(--wg-port "$WG_PORT")
-    [[ -n "$WG_ENDPOINT" ]] && DAEMON_ARGS+=(--wg-endpoint "$WG_ENDPOINT")
+DAEMON_ARGS+=(--wg-port "$WG_PORT")
+[[ -n "$WG_ENDPOINT" ]] && DAEMON_ARGS+=(--wg-endpoint "$WG_ENDPOINT")
+
+# Kill any stale howm process on this port
+STALE_PID=$(lsof -ti "tcp:$PORT" 2>/dev/null || true)
+if [[ -n "$STALE_PID" ]]; then
+    warn "Port $PORT already in use (PID $STALE_PID) — killing stale process"
+    kill "$STALE_PID" 2>/dev/null || true
+    sleep 1
+    # Force-kill if still alive
+    kill -9 "$STALE_PID" 2>/dev/null || true
+    sleep 0.5
 fi
 
 info "Starting howm on port $PORT..."
@@ -191,6 +186,45 @@ fi
 
 success "Howm is ready at http://localhost:$PORT"
 
+# ── Build & install capabilities ──────────────────────────────────────────────
+CAP_DIR="$ROOT_DIR/capabilities"
+if [[ -d "$CAP_DIR" ]] && [[ -n "$API_TOKEN" ]]; then
+    for cap in "$CAP_DIR"/*/manifest.json; do
+        [[ -f "$cap" ]] || continue
+        cap_root="$(dirname "$cap")"
+        cap_name="$(basename "$cap_root")"
+
+        # Build the capability (Cargo project)
+        if [[ -f "$cap_root/Cargo.toml" ]]; then
+            CAP_BUILD_EXIT=0
+            if [[ $RELEASE_MODE -eq 1 ]]; then
+                info "Building capability '$cap_name' (release)..."
+                (cd "$cap_root" && cargo build --release 2>&1) || CAP_BUILD_EXIT=$?
+            else
+                info "Building capability '$cap_name' (debug)..."
+                (cd "$cap_root" && cargo build 2>&1) || CAP_BUILD_EXIT=$?
+            fi
+            if [[ $CAP_BUILD_EXIT -ne 0 ]]; then
+                warn "Capability '$cap_name' build failed (exit $CAP_BUILD_EXIT) — skipping"
+                continue
+            fi
+        fi
+
+        # Install via the daemon API (idempotent — will 400 if already installed)
+        INSTALL_RESP=$(curl -sf -X POST "http://localhost:$PORT/capabilities/install" \
+            -H "Authorization: Bearer $API_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{\"path\": \"$cap_root\"}" 2>&1) || true
+        if echo "$INSTALL_RESP" | grep -q '"capability"'; then
+            success "Capability '$cap_name' installed"
+        elif echo "$INSTALL_RESP" | grep -q 'already installed'; then
+            info "Capability '$cap_name' already registered"
+        else
+            warn "Capability '$cap_name' install: $INSTALL_RESP"
+        fi
+    done
+fi
+
 # ── Summary ──────────────────────────────────────────────────────────────────
 echo ""
 echo -e "${GREEN}┌─────────────────────────────────────────────────┐${NC}"
@@ -207,13 +241,9 @@ if [[ $NO_UI -eq 0 ]]; then
     printf "${GREEN}│${NC}  Web UI:      http://localhost:%-17s${GREEN}│${NC}\n" "$PORT"
   fi
 fi
-if [[ $NO_WG -eq 0 ]]; then
-  WG_INFO="WG port $WG_PORT"
-  [[ -n "$WG_ENDPOINT" ]] && WG_INFO="$WG_ENDPOINT"
-  printf "${GREEN}│${NC}  WireGuard:   %-33s${GREEN}│${NC}\n" "$WG_INFO"
-else
-  echo -e "${GREEN}│${NC}  WireGuard:   disabled (LAN-only)                ${GREEN}│${NC}"
-fi
+WG_INFO="WG port $WG_PORT"
+[[ -n "$WG_ENDPOINT" ]] && WG_INFO="$WG_ENDPOINT"
+printf "${GREEN}│${NC}  WireGuard:   %-33s${GREEN}│${NC}\n" "$WG_INFO"
 echo -e "${GREEN}│                                                 │${NC}"
 echo -e "${GREEN}│${NC}  Press Ctrl+C to stop                            ${GREEN}│${NC}"
 echo -e "${GREEN}└─────────────────────────────────────────────────┘${NC}"
@@ -223,7 +253,15 @@ echo ""
 cleanup() {
     echo ""
     info "Shutting down..."
+    # Send SIGTERM to daemon (triggers graceful shutdown internally)
     kill "$DAEMON_PID" 2>/dev/null || true
+    # Wait briefly for graceful shutdown
+    for _ in $(seq 1 10); do
+        kill -0 "$DAEMON_PID" 2>/dev/null || break
+        sleep 0.5
+    done
+    # Force-kill if still alive
+    kill -9 "$DAEMON_PID" 2>/dev/null || true
     [[ -n "${UI_PID:-}" ]] && kill "$UI_PID" 2>/dev/null || true
     info "Done."
 }
