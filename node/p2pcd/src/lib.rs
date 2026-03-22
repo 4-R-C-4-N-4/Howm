@@ -15,6 +15,8 @@ pub mod blob_store;
 #[cfg(feature = "bridge-client")]
 pub mod bridge_client;
 pub mod capabilities;
+#[cfg(feature = "bridge-client")]
+pub mod capability_sdk;
 pub mod cbor_helpers;
 pub mod heartbeat;
 pub mod mux;

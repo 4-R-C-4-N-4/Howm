@@ -4,11 +4,13 @@ use axum::{
     Json,
 };
 use p2pcd::bridge_client::BridgeClient;
+use p2pcd::capability_sdk::{
+    ActivePeer, CapabilityRuntime, InboundMessage, PeerActivePayload, PeerInactivePayload,
+    PeerTracker,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::PathBuf;
-use std::sync::Arc;
-use tokio::sync::RwLock;
 use tracing::info;
 
 use crate::posts;
@@ -21,33 +23,29 @@ pub const MSG_TYPE_POST_BROADCAST: u64 = 100;
 
 // ── State ─────────────────────────────────────────────────────────────────────
 
-/// Peer record maintained by the social-feed capability.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ActiveSocialPeer {
-    /// Base64-encoded WireGuard public key.
-    pub peer_id: String,
-    /// WireGuard IP address — used to fetch this peer's feed directly.
-    pub wg_address: String,
-    /// Unix timestamp when this peer became active.
-    pub active_since: u64,
-}
-
 #[derive(Clone)]
 pub struct FeedState {
     pub data_dir: PathBuf,
-    /// Bridge client for P2P-CD daemon communication.
-    pub bridge: BridgeClient,
-    /// Active social peers discovered via P2P-CD.
-    pub social_peers: Arc<RwLock<Vec<ActiveSocialPeer>>>,
+    /// Capability runtime: bridge client + peer tracker.
+    pub runtime: CapabilityRuntime,
 }
 
 impl FeedState {
     pub fn new(data_dir: PathBuf, daemon_port: u16) -> Self {
         Self {
             data_dir,
-            bridge: BridgeClient::new(daemon_port),
-            social_peers: Arc::new(RwLock::new(Vec::new())),
+            runtime: CapabilityRuntime::new(SOCIAL_CAP, daemon_port),
         }
+    }
+
+    /// Bridge client shortcut.
+    pub fn bridge(&self) -> &BridgeClient {
+        self.runtime.bridge()
+    }
+
+    /// Peer tracker shortcut.
+    pub fn peers(&self) -> &PeerTracker {
+        self.runtime.peers()
     }
 }
 
@@ -148,14 +146,11 @@ pub async fn create_post(
             info!("Created post: {}", post.id);
 
             // Broadcast the new post to all social peers via the bridge
-            let bridge = state.bridge.clone();
+            let runtime = state.runtime.clone();
             let post_id = post.id.clone();
             let post_json = serde_json::to_vec(&post).unwrap_or_default();
             tokio::spawn(async move {
-                match bridge
-                    .broadcast_event(SOCIAL_CAP, MSG_TYPE_POST_BROADCAST, &post_json)
-                    .await
-                {
+                match runtime.broadcast(MSG_TYPE_POST_BROADCAST, &post_json).await {
                     Ok(n) => {
                         if n > 0 {
                             info!("Broadcast post {} to {} peers", post_id, n);
@@ -216,50 +211,21 @@ pub async fn health() -> Json<Value> {
     Json(json!({ "status": "ok" }))
 }
 
-// ── P2P-CD peer notification handlers (Task 7.3) ─────────────────────────────
-
-/// Payload from daemon: `POST /p2pcd/peer-active`
-#[derive(Debug, Clone, Deserialize)]
-pub struct PeerActivePayload {
-    pub peer_id: String,
-    pub wg_address: String,
-    pub capability: String,
-    pub active_since: u64,
-}
-
-/// Payload from daemon: `POST /p2pcd/peer-inactive`
-#[derive(Debug, Clone, Deserialize)]
-pub struct PeerInactivePayload {
-    pub peer_id: String,
-    pub capability: String,
-    pub reason: String,
-}
+// ── P2P-CD peer notification handlers ───────────────────────────────────────
+//
+// These use the SDK's PeerTracker for lifecycle management.
+// The daemon POSTs to these when peers come and go.
 
 /// Called by the daemon when a peer negotiates our social capability.
 pub async fn p2pcd_peer_active(
     State(state): State<FeedState>,
     Json(body): Json<PeerActivePayload>,
 ) -> StatusCode {
-    if body.capability != SOCIAL_CAP {
-        return StatusCode::OK; // not for us
+    let peer_id_short = body.peer_id[..8.min(body.peer_id.len())].to_string();
+    let was_new = state.peers().on_peer_active(body).await;
+    if was_new {
+        info!("p2pcd: new social peer {}", peer_id_short);
     }
-    info!(
-        "p2pcd: peer {} active for {}",
-        &body.peer_id[..8.min(body.peer_id.len())],
-        SOCIAL_CAP
-    );
-
-    let peer = ActiveSocialPeer {
-        peer_id: body.peer_id.clone(),
-        wg_address: body.wg_address.clone(),
-        active_since: body.active_since,
-    };
-
-    let mut peers = state.social_peers.write().await;
-    // Upsert: remove old entry if same peer_id, then add new
-    peers.retain(|p| p.peer_id != body.peer_id);
-    peers.push(peer);
-
     StatusCode::OK
 }
 
@@ -272,29 +238,15 @@ pub async fn p2pcd_peer_inactive(
         return StatusCode::OK;
     }
     info!(
-        "p2pcd: peer {} inactive ({}) for {}",
+        "p2pcd: peer {} inactive ({})",
         &body.peer_id[..8.min(body.peer_id.len())],
         body.reason,
-        SOCIAL_CAP
     );
-
-    let mut peers = state.social_peers.write().await;
-    peers.retain(|p| p.peer_id != body.peer_id);
-
+    state.peers().on_peer_inactive(&body.peer_id).await;
     StatusCode::OK
 }
 
 // ── Inbound capability message handler ───────────────────────────────────────
-
-/// Payload forwarded by the daemon when a peer sends us a capability message
-/// that has no in-process handler (i.e. app-level message types like post broadcasts).
-#[derive(Debug, Clone, Deserialize)]
-pub struct InboundMessage {
-    pub peer_id: String,
-    pub message_type: u64,
-    pub payload: String, // base64-encoded
-    pub capability: String,
-}
 
 /// Called by the daemon when it forwards an inbound capability message to us.
 /// POST /p2pcd/inbound
@@ -302,22 +254,19 @@ pub async fn p2pcd_inbound(
     State(state): State<FeedState>,
     Json(body): Json<InboundMessage>,
 ) -> Result<StatusCode, (StatusCode, Json<Value>)> {
-    if body.capability != SOCIAL_CAP {
+    if !state.peers().is_for_us(&body) {
         return Ok(StatusCode::OK); // not for us
     }
 
     match body.message_type {
         MSG_TYPE_POST_BROADCAST => {
-            // Decode the base64 payload
-            use base64::Engine;
-            let payload_bytes = base64::engine::general_purpose::STANDARD
-                .decode(&body.payload)
-                .map_err(|e| {
-                    (
-                        StatusCode::BAD_REQUEST,
-                        Json(json!({ "error": format!("bad base64: {e}") })),
-                    )
-                })?;
+            // Decode the base64 payload using SDK helper
+            let payload_bytes = PeerTracker::decode_payload(&body).map_err(|e| {
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": format!("bad base64: {e}") })),
+                )
+            })?;
 
             // Deserialize the Post from JSON payload
             let post: posts::Post = serde_json::from_slice(&payload_bytes).map_err(|e| {
@@ -358,32 +307,14 @@ pub async fn p2pcd_inbound(
 
 /// List current active social peers (read by the feed UI / aggregation logic).
 pub async fn list_social_peers(State(state): State<FeedState>) -> Json<Value> {
-    let peers = state.social_peers.read().await;
-    Json(json!({ "peers": *peers }))
+    let peers: Vec<ActivePeer> = state.peers().peers().await;
+    Json(json!({ "peers": peers }))
 }
 
-// ── Startup: query daemon for already-active peers (Task 7.3) ─────────────────
+// ── Startup: restore active peers from daemon ────────────────────────────────
 
 /// On startup, ask the daemon for peers that are already active for our capability.
 /// This rebuilds the peer list after a capability restart.
 pub async fn init_peers_from_daemon(state: FeedState) {
-    match state.bridge.list_peers(Some(SOCIAL_CAP)).await {
-        Ok(bridge_peers) => {
-            let mut peers = state.social_peers.write().await;
-            for bp in &bridge_peers {
-                peers.push(ActiveSocialPeer {
-                    peer_id: bp.peer_id.clone(),
-                    wg_address: String::new(), // filled on peer-active callback
-                    active_since: 0,
-                });
-            }
-            if !peers.is_empty() {
-                info!("Restored {} active social peers from daemon", peers.len());
-            }
-        }
-        Err(e) => {
-            // Daemon may not be running yet — not a fatal error
-            tracing::debug!("daemon not reachable at startup ({e}), peer list empty");
-        }
-    }
+    state.runtime.init_from_daemon().await;
 }
