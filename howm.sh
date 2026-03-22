@@ -230,7 +230,6 @@ echo ""
 echo -e "${GREEN}┌─────────────────────────────────────────────────┐${NC}"
 echo -e "${GREEN}│  Howm is running                                │${NC}"
 echo -e "${GREEN}├─────────────────────────────────────────────────┤${NC}"
-printf "${GREEN}│${NC}  Daemon API:  http://localhost:%-17s${GREEN}│${NC}\n" "$PORT"
 if [[ -n "$API_TOKEN" ]]; then
 printf "${GREEN}│${NC}  API Token:   %-33s${GREEN}│${NC}\n" "$API_TOKEN"
 fi
@@ -243,9 +242,9 @@ if [[ $NO_UI -eq 0 ]]; then
 fi
 WG_INFO="WG port $WG_PORT"
 [[ -n "$WG_ENDPOINT" ]] && WG_INFO="$WG_ENDPOINT"
-printf "${GREEN}│${NC}  WireGuard:   %-33s${GREEN}│${NC}\n" "$WG_INFO"
+printf "${GREEN}│${NC}  WireGuard:    %-33s${GREEN}│${NC}\n" "$WG_INFO"
 echo -e "${GREEN}│                                                 │${NC}"
-echo -e "${GREEN}│${NC}  Press Ctrl+C to stop                            ${GREEN}│${NC}"
+echo -e "${GREEN}│${NC}  Press Ctrl+C to stop                           ${GREEN}│${NC}"
 echo -e "${GREEN}└─────────────────────────────────────────────────┘${NC}"
 echo ""
 
