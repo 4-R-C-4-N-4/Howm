@@ -135,7 +135,9 @@ pub fn build_router(state: AppState, ui_dir: Option<PathBuf>) -> Router {
     // ── 3. Peer ceremony routes (public internet, no bearer, no IP check) ─
     let peer_ceremony = Router::new()
         .route("/node/complete-invite", post(node_routes::complete_invite))
-        .route("/node/open-join", post(node_routes::open_join));
+        .route("/node/open-join", post(node_routes::open_join))
+        .route("/node/generate-accept", post(node_routes::generate_accept))
+        .route("/node/redeem-accept", post(node_routes::redeem_accept));
 
     let mut router = Router::new()
         .merge(authenticated)

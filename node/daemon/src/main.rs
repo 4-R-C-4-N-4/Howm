@@ -4,6 +4,7 @@ use std::sync::Arc;
 use tracing::info;
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
+mod accept;
 mod api;
 mod capabilities;
 mod config;
@@ -17,6 +18,7 @@ mod open_invite;
 mod p2pcd;
 mod peers;
 mod proxy;
+mod punch;
 mod state;
 mod stun;
 mod wireguard;
