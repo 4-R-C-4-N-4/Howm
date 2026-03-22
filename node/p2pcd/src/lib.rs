@@ -15,6 +15,7 @@ pub mod blob_store;
 pub mod capabilities;
 pub mod cbor_helpers;
 pub mod heartbeat;
+pub mod mux;
 pub mod session;
 pub mod transport;
 

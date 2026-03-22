@@ -474,6 +474,10 @@ impl RelayHandler {
 }
 
 impl CapabilityHandler for RelayHandler {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn capability_name(&self) -> &str {
         "core.network.relay.1"
     }

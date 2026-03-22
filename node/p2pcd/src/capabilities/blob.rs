@@ -557,6 +557,10 @@ impl BlobHandler {
 }
 
 impl CapabilityHandler for BlobHandler {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn capability_name(&self) -> &str {
         "core.data.blob.1"
     }

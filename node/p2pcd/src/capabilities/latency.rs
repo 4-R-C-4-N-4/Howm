@@ -80,6 +80,10 @@ fn now_ms() -> u64 {
 }
 
 impl CapabilityHandler for LatencyHandler {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn capability_name(&self) -> &str {
         "core.session.latency.1"
     }

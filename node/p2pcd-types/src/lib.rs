@@ -513,6 +513,9 @@ pub trait CapabilityHandler: Send + Sync {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + '_>> {
         Box::pin(async { Ok(()) })
     }
+
+    /// Downcast support for bridge RPC waiter registration.
+    fn as_any(&self) -> &dyn std::any::Any;
 }
 
 // ─── Trust gate (application-level) ───────────────────────────────────────────
@@ -1063,6 +1066,9 @@ mod tests {
         // Verify the default on_activated and on_deactivated compile and return Ok
         struct TestHandler;
         impl CapabilityHandler for TestHandler {
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
             fn capability_name(&self) -> &str {
                 "test.cap.1"
             }
@@ -1090,6 +1096,9 @@ mod tests {
         // Verify the default on_activated/on_deactivated return Ok via poll
         struct NoopHandler;
         impl CapabilityHandler for NoopHandler {
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
             fn capability_name(&self) -> &str {
                 "noop.1"
             }

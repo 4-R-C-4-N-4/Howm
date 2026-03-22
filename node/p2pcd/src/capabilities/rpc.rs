@@ -37,6 +37,9 @@ pub trait RpcMethodHandler: Send + Sync {
 pub struct RpcHandler {
     methods: Arc<RwLock<HashMap<String, Box<dyn RpcMethodHandler>>>>,
     send_tx: RwLock<Option<tokio::sync::mpsc::Sender<ProtocolMessage>>>,
+    /// Pending RPC waiters: request_id → oneshot sender for the response payload.
+    /// Used by the bridge to await RPC responses from peers.
+    rpc_waiters: Arc<RwLock<HashMap<u64, tokio::sync::oneshot::Sender<Vec<u8>>>>>,
 }
 
 impl Default for RpcHandler {
@@ -50,6 +53,7 @@ impl RpcHandler {
         Self {
             methods: Arc::new(RwLock::new(HashMap::new())),
             send_tx: RwLock::new(None),
+            rpc_waiters: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -60,9 +64,22 @@ impl RpcHandler {
     pub async fn register_method(&self, name: String, handler: Box<dyn RpcMethodHandler>) {
         self.methods.write().await.insert(name, handler);
     }
+
+    /// Register a one-shot waiter for an RPC response. Used by the bridge.
+    pub async fn register_waiter(
+        &self,
+        request_id: u64,
+        tx: tokio::sync::oneshot::Sender<Vec<u8>>,
+    ) {
+        self.rpc_waiters.write().await.insert(request_id, tx);
+    }
 }
 
 impl CapabilityHandler for RpcHandler {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn capability_name(&self) -> &str {
         "core.data.rpc.1"
     }
@@ -135,6 +152,11 @@ impl CapabilityHandler for RpcHandler {
                         tracing::warn!("rpc: RESP id={} error={}", req_id, err);
                     } else {
                         tracing::debug!("rpc: RESP id={} ok", req_id);
+                    }
+                    // Deliver to bridge waiter if one is registered
+                    if let Some(waiter) = self.rpc_waiters.write().await.remove(&req_id) {
+                        let resp_payload = cbor_get_bytes(&map, keys::PAYLOAD).unwrap_or_default();
+                        let _ = waiter.send(resp_payload);
                     }
                 }
                 _ => {}

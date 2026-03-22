@@ -58,6 +58,10 @@ impl EventHandler {
 }
 
 impl CapabilityHandler for EventHandler {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn capability_name(&self) -> &str {
         "core.data.event.1"
     }

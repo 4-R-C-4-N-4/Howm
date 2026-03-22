@@ -42,6 +42,10 @@ impl EndpointHandler {
 }
 
 impl CapabilityHandler for EndpointHandler {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn capability_name(&self) -> &str {
         "core.network.endpoint.1"
     }

@@ -60,6 +60,10 @@ fn now_ms() -> u64 {
 }
 
 impl CapabilityHandler for TimesyncHandler {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn capability_name(&self) -> &str {
         "core.session.timesync.1"
     }

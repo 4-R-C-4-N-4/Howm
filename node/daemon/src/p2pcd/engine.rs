@@ -22,6 +22,7 @@ use super::cap_notify::CapabilityNotifier;
 use crate::wireguard::{WgPeerEvent, WgPeerMonitor};
 use p2pcd::capabilities::CapabilityRouter;
 use p2pcd::heartbeat::{HeartbeatEvent, HeartbeatManager};
+use p2pcd::mux::{self, SharedSender};
 use p2pcd::session::{self, Session, SessionState};
 use p2pcd::transport::{self, P2pcdListener};
 
@@ -91,6 +92,11 @@ pub struct ProtocolEngine {
     last_seen_sequence: Arc<Mutex<HashMap<PeerId, u64>>>,
     /// Routes capability messages (types 4+) to registered handlers.
     cap_router: Arc<CapabilityRouter>,
+    /// Per-peer shared outbound senders (from mux). Used by the bridge to send
+    /// capability messages to specific peers.
+    peer_senders: Arc<Mutex<HashMap<PeerId, SharedSender>>>,
+    /// Mux task handles per peer — aborted on session teardown.
+    mux_handles: Arc<Mutex<HashMap<PeerId, tokio::task::JoinHandle<()>>>>,
 }
 
 impl ProtocolEngine {
@@ -119,6 +125,8 @@ impl ProtocolEngine {
             peer_addr_overrides: Arc::new(RwLock::new(HashMap::new())),
             last_seen_sequence: Arc::new(Mutex::new(HashMap::new())),
             cap_router: Arc::new(CapabilityRouter::with_core_handlers()),
+            peer_senders: Arc::new(Mutex::new(HashMap::new())),
+            mux_handles: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -275,6 +283,11 @@ impl ProtocolEngine {
 
         // Abort heartbeat task for this peer
         if let Some(handle) = self.heartbeat_handles.lock().await.remove(&peer_id) {
+            handle.abort();
+        }
+        // Clean up mux resources
+        self.peer_senders.lock().await.remove(&peer_id);
+        if let Some(handle) = self.mux_handles.lock().await.remove(&peer_id) {
             handle.abort();
         }
 
@@ -495,11 +508,25 @@ impl ProtocolEngine {
         // 1. Start heartbeat if core.session.heartbeat.1 is in the active_set
         let wants_heartbeat = s.active_set.iter().any(|c| c == "core.session.heartbeat.1");
 
-        if wants_heartbeat {
-            if let Some(transport) = s.transport.take() {
-                let (send_tx, recv_rx) = transport.into_channels();
+        if let Some(transport) = s.transport.take() {
+            let (transport_send_tx, transport_recv_rx) = transport.into_channels();
+            let session_mux = mux::build_session_mux(transport_send_tx, transport_recv_rx);
+
+            // Store the shared sender so the bridge can send cap messages to this peer
+            self.peer_senders
+                .lock()
+                .await
+                .insert(peer_id, session_mux.send_tx.clone());
+
+            // Store the mux handle for cleanup on session teardown
+            self.mux_handles
+                .lock()
+                .await
+                .insert(peer_id, session_mux.mux_handle);
+
+            // Start heartbeat if core.session.heartbeat.1 is in the active set
+            if wants_heartbeat {
                 let hb_tx_clone = (*hb_event_tx).clone();
-                // Read heartbeat timing from local capability config; fall back to defaults.
                 let cfg = self.config.read().await;
                 let hb_params = cfg
                     .capabilities
@@ -513,10 +540,27 @@ impl ProtocolEngine {
                     }
                     None => HeartbeatManager::with_defaults(peer_id, hb_tx_clone),
                 };
-                let handle = hb.spawn(send_tx, recv_rx);
+                let handle = hb.spawn(session_mux.send_tx, session_mux.heartbeat_rx);
                 self.heartbeat_handles.lock().await.insert(peer_id, handle);
                 tracing::info!("engine: heartbeat started for {}", short(peer_id));
             }
+
+            // Spawn capability message dispatch loop (routes inbound cap msgs to handlers)
+            let cap_router = Arc::clone(&self.cap_router);
+            let accepted_params = s.accepted_params.clone();
+            let active_set = s.active_set.clone();
+            let notifier = Arc::clone(&self.notifier);
+            tokio::spawn(async move {
+                Self::capability_dispatch_loop(
+                    peer_id,
+                    session_mux.capability_rx,
+                    cap_router,
+                    accepted_params,
+                    active_set,
+                    notifier,
+                )
+                .await;
+            });
         }
 
         // 2. Resolve WG address for capability notifications
@@ -541,6 +585,82 @@ impl ProtocolEngine {
                 unix_now(),
             )
             .await;
+    }
+
+    // ── Capability dispatch loop ─────────────────────────────────────────────
+
+    /// Runs for the lifetime of a session. Receives inbound CapabilityMsg from the
+    /// mux and routes them to the appropriate handler via cap_router.
+    async fn capability_dispatch_loop(
+        peer_id: PeerId,
+        mut cap_rx: mpsc::Receiver<p2pcd_types::ProtocolMessage>,
+        cap_router: Arc<CapabilityRouter>,
+        accepted_params: std::collections::BTreeMap<String, p2pcd_types::ScopeParams>,
+        active_set: Vec<String>,
+        _notifier: Arc<CapabilityNotifier>,
+    ) {
+        while let Some(msg) = cap_rx.recv().await {
+            if let p2pcd_types::ProtocolMessage::CapabilityMsg {
+                message_type,
+                payload,
+            } = msg
+            {
+                // Find the matching capability name for this message type
+                let cap_name = active_set
+                    .iter()
+                    .find(|name| {
+                        cap_router
+                            .handler_by_name(name)
+                            .map(|h| h.handled_message_types().contains(&message_type))
+                            .unwrap_or(false)
+                    })
+                    .cloned()
+                    .unwrap_or_default();
+
+                let params = accepted_params.get(&cap_name).cloned().unwrap_or_default();
+                if let Err(e) = cap_router
+                    .dispatch(message_type, &payload, peer_id, &params, &cap_name)
+                    .await
+                {
+                    tracing::warn!(
+                        "engine: cap dispatch error for type {} from {}: {}",
+                        message_type,
+                        short(peer_id),
+                        e
+                    );
+                }
+            }
+        }
+        tracing::debug!(
+            "engine: capability dispatch loop ended for {}",
+            short(peer_id)
+        );
+    }
+
+    // ── Bridge API: send capability messages to peers ──────────────────────────
+
+    /// Send a capability message to a specific peer. Used by the daemon bridge
+    /// to relay messages from out-of-process capabilities through the p2pcd wire.
+    ///
+    /// Returns Ok(()) if the message was queued, Err if the peer has no active session.
+    pub async fn send_to_peer(
+        &self,
+        peer_id: &PeerId,
+        msg: p2pcd_types::ProtocolMessage,
+    ) -> Result<()> {
+        let senders = self.peer_senders.lock().await;
+        match senders.get(peer_id) {
+            Some(tx) => tx
+                .send(msg)
+                .await
+                .map_err(|_| anyhow::anyhow!("peer transport closed")),
+            None => anyhow::bail!("no active session for peer"),
+        }
+    }
+
+    /// Get the capability router (used by the bridge to access RPC/event handlers).
+    pub fn cap_router(&self) -> &Arc<CapabilityRouter> {
+        &self.cap_router
     }
 
     // ── Heartbeat timeout event loop ──────────────────────────────────────────

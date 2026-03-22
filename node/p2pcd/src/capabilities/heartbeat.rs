@@ -48,6 +48,10 @@ impl HeartbeatHandler {
 }
 
 impl CapabilityHandler for HeartbeatHandler {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn capability_name(&self) -> &str {
         "core.session.heartbeat.1"
     }

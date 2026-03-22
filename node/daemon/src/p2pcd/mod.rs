@@ -5,5 +5,6 @@
 //   engine       — ProtocolEngine (ties sessions to WgPeerMonitor + notifier)
 //   cap_notify   — HTTP capability notification interface
 
+pub mod bridge;
 pub mod cap_notify;
 pub mod engine;

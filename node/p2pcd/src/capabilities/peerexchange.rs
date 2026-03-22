@@ -53,6 +53,10 @@ impl PeerExchangeHandler {
 }
 
 impl CapabilityHandler for PeerExchangeHandler {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn capability_name(&self) -> &str {
         "core.network.peerexchange.1"
     }
