@@ -515,7 +515,7 @@ impl ProtocolMessage {
             .ok_or_else(|| anyhow!("protocol message: missing message_type"))?;
 
         // Types 6+ are capability messages — extract payload and route to handlers
-        if let None = MessageType::from_u64(msg_type_u64) {
+        if MessageType::from_u64(msg_type_u64).is_none() {
             // Build payload: re-encode the map without the message_type key
             let filtered: Vec<(Value, Value)> = map
                 .iter()

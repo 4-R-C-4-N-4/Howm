@@ -86,6 +86,8 @@ pub struct ProtocolEngine {
     hb_event_tx: mpsc::Sender<HeartbeatEvent>,
     /// Test-only peer addr overrides: bypasses `wg show` lookup.
     peer_addr_overrides: Arc<RwLock<HashMap<PeerId, SocketAddr>>>,
+    /// §4.1 replay detection: last seen sequence_num per peer_id.
+    last_seen_sequence: Arc<Mutex<HashMap<PeerId, u64>>>,
 }
 
 impl ProtocolEngine {
@@ -112,6 +114,7 @@ impl ProtocolEngine {
             heartbeat_handles: Arc::new(Mutex::new(HashMap::new())),
             hb_event_tx,
             peer_addr_overrides: Arc::new(RwLock::new(HashMap::new())),
+            last_seen_sequence: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -201,10 +204,28 @@ impl ProtocolEngine {
             let sessions = self.sessions.read().await;
             if let Some(s) = sessions.get(&peer_id) {
                 match s.state {
-                    SessionState::Active
-                    | SessionState::Handshake
-                    | SessionState::CapabilityExchange => {
-                        tracing::debug!("engine: {} already {:?}, skip", short(peer_id), s.state);
+                    SessionState::Active => {
+                        tracing::debug!("engine: {} already Active, skip", short(peer_id));
+                        return;
+                    }
+                    SessionState::Handshake | SessionState::CapabilityExchange => {
+                        // §7.1.3 Glare: both peers initiated simultaneously.
+                        // The peer with the lexicographically lower peer_id continues
+                        // as initiator; the higher peer_id yields.
+                        if self.local_peer_id > peer_id {
+                            // We have the higher ID — yield, let the inbound win.
+                            tracing::info!(
+                                "engine: glare with {}, we yield (higher peer_id)",
+                                short(peer_id)
+                            );
+                            return;
+                        }
+                        // We have the lower ID — we are the rightful initiator.
+                        // Let the existing outbound continue; the remote should yield.
+                        tracing::info!(
+                            "engine: glare with {}, we continue (lower peer_id)",
+                            short(peer_id)
+                        );
                         return;
                     }
                     _ => {}
@@ -327,6 +348,20 @@ impl ProtocolEngine {
         s.transport = Some(transport);
         session::run_initiator_exchange(&mut s, &policies).await?;
 
+        // §4.1 replay detection: reject stale sequence_num
+        if let Some(remote) = &s.remote_manifest {
+            let mut seen = self.last_seen_sequence.lock().await;
+            let last = seen.get(&peer_id).copied().unwrap_or(0);
+            if remote.sequence_num <= last && remote.sequence_num > 0 {
+                tracing::warn!(
+                    "engine: replay detected for {} (seq {} <= {}), dropping",
+                    short(peer_id), remote.sequence_num, last
+                );
+                return Ok(());
+            }
+            seen.insert(peer_id, remote.sequence_num);
+        }
+
         self.post_session_setup(&mut s, hb_event_tx).await;
         self.record_session_outcome(&s).await;
         self.sessions.write().await.insert(peer_id, s);
@@ -350,12 +385,49 @@ impl ProtocolEngine {
             }
         };
 
+        // §7.1.3 Glare: if we already have an outbound session in progress,
+        // the lower peer_id keeps its initiator role.
+        {
+            let sessions = self.sessions.read().await;
+            if let Some(s) = sessions.get(&peer_id) {
+                if matches!(s.state, SessionState::Handshake | SessionState::CapabilityExchange) {
+                    if self.local_peer_id < peer_id {
+                        // We're the lower ID — our outbound wins, reject inbound.
+                        tracing::info!(
+                            "engine: glare with {}, rejecting inbound (we're initiator)",
+                            short(peer_id)
+                        );
+                        return Ok(());
+                    }
+                    // We're the higher ID — accept inbound, the old outbound will fail.
+                    tracing::info!(
+                        "engine: glare with {}, accepting inbound (we yield initiator)",
+                        short(peer_id)
+                    );
+                }
+            }
+        }
+
         let manifest = self.local_manifest.read().await.clone();
         let policies = self.trust_policies.read().await.clone();
 
         let mut s = Session::new(peer_id, manifest);
         s.transport = Some(transport);
         session::run_responder_exchange(&mut s, &policies).await?;
+
+        // §4.1 replay detection: reject stale sequence_num
+        if let Some(remote) = &s.remote_manifest {
+            let mut seen = self.last_seen_sequence.lock().await;
+            let last = seen.get(&peer_id).copied().unwrap_or(0);
+            if remote.sequence_num <= last && remote.sequence_num > 0 {
+                tracing::warn!(
+                    "engine: replay detected for {} (seq {} <= {}), dropping",
+                    short(peer_id), remote.sequence_num, last
+                );
+                return Ok(());
+            }
+            seen.insert(peer_id, remote.sequence_num);
+        }
 
         self.post_session_setup(&mut s, hb_event_tx).await;
         self.record_session_outcome(&s).await;
@@ -375,6 +447,16 @@ impl ProtocolEngine {
         }
 
         let peer_id = s.remote_peer_id;
+
+        // §7.7 Post-CONFIRM activation exchange.
+        // Capabilities that define an activation protocol (e.g. core.session.attest.1)
+        // run here before the session is fully announced. Phase 2 will add per-capability
+        // activation via CapabilityHandler::on_activated().
+        tracing::debug!(
+            "engine: post-CONFIRM activation for {} ({} caps)",
+            short(peer_id),
+            s.active_set.len()
+        );
 
         // 1. Start heartbeat if core.session.heartbeat.1 is in the active_set
         let wants_heartbeat = s
@@ -558,26 +640,54 @@ impl ProtocolEngine {
         let policies = self.trust_policies.read().await.clone();
 
         for peer_id in active_peers {
-            // Re-run the initiator exchange in-place on the existing session
-            let mut sessions = self.sessions.write().await;
-            if let Some(s) = sessions.get_mut(&peer_id) {
-                // Reset to CapabilityExchange state so exchange can run again
-                // We use a direct transition reset trick: move transport out,
-                // create a new Session, move transport back in.
-                // The peer stays connected on the same TCP connection.
-                let transport = s.transport.take();
-                let mut new_s = Session::new(peer_id, manifest.clone());
-                new_s.transport = transport;
-                // Manually set state to PeerVisible so the transition is legal
-                new_s.state = SessionState::PeerVisible;
-                drop(sessions); // release lock before await
-
-                if let Err(e) = session::run_initiator_exchange(&mut new_s, &policies).await {
-                    tracing::warn!("engine: rebroadcast to {} failed: {:?}", short(peer_id), e);
+            // §8.4 Active-set continuity: keep old active set alive during re-exchange.
+            // Only capabilities removed from the new set are deactivated.
+            let (transport, old_active_set) = {
+                let mut sessions = self.sessions.write().await;
+                if let Some(s) = sessions.get_mut(&peer_id) {
+                    (s.transport.take(), s.active_set.clone())
+                } else {
+                    continue;
                 }
-                self.record_session_outcome(&new_s).await;
-                self.sessions.write().await.insert(peer_id, new_s);
+            };
+
+            let mut new_s = Session::new(peer_id, manifest.clone());
+            new_s.transport = transport;
+            new_s.state = SessionState::PeerVisible;
+
+            if let Err(e) = session::run_initiator_exchange(&mut new_s, &policies).await {
+                tracing::warn!("engine: rebroadcast to {} failed: {:?}", short(peer_id), e);
+                // On failure, restore the old session's transport and keep active set
+                self.sessions.write().await.entry(peer_id).and_modify(|s| {
+                    s.transport = new_s.transport.take();
+                });
+                continue;
             }
+
+            self.record_session_outcome(&new_s).await;
+
+            // Compute removed capabilities: old_set - new_set
+            let new_set: std::collections::HashSet<&String> =
+                new_s.active_set.iter().collect();
+            let removed: Vec<String> = old_active_set
+                .iter()
+                .filter(|c| !new_set.contains(c))
+                .cloned()
+                .collect();
+
+            if !removed.is_empty() {
+                tracing::info!(
+                    "engine: rebroadcast {} — deactivating {} caps: {:?}",
+                    short(peer_id),
+                    removed.len(),
+                    removed
+                );
+                self.notifier
+                    .notify_peer_inactive(peer_id, &removed, "re-exchange")
+                    .await;
+            }
+
+            self.sessions.write().await.insert(peer_id, new_s);
         }
     }
 
