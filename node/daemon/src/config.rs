@@ -30,7 +30,7 @@ pub struct Config {
     pub name: Option<String>,
 
     // WireGuard networking
-    #[arg(long, default_value = "51820", env = "HOWM_WG_PORT")]
+    #[arg(long, default_value = "41641", env = "HOWM_WG_PORT")]
     pub wg_port: u16,
 
     #[arg(long, env = "HOWM_WG_ENDPOINT")]

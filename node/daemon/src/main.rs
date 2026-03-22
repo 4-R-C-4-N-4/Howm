@@ -55,10 +55,16 @@ async fn main() -> anyhow::Result<()> {
     let mut identity = identity::load_or_create(&config.data_dir, config.name.clone())?;
     info!("Node identity: {} ({})", identity.name, identity.node_id);
 
+    // Detect IPv6 GUAs before WG init (informs endpoint selection)
+    let ipv6_guas = net_detect::detect_ipv6_guas();
+
+    // Find available WG port (falls back through range if preferred is busy)
+    let actual_wg_port = net_detect::find_available_wg_port(config.wg_port);
+
     // Init WireGuard
     let wg_config = wireguard::WgConfig {
         enabled: config.wg_enabled(),
-        port: config.wg_port,
+        port: actual_wg_port,
         endpoint: config.wg_endpoint.clone(),
         address: config.wg_address.clone(),
         data_dir: config.data_dir.clone(),
@@ -71,11 +77,17 @@ async fn main() -> anyhow::Result<()> {
         identity.wg_pubkey = Some(pubkey.clone());
         identity.wg_address = wg_state.address.clone();
         identity.wg_endpoint = wg_state.endpoint.clone();
+        identity.ipv6_guas = ipv6_guas.iter().map(|a| a.to_string()).collect();
+        identity.wg_listen_port = Some(actual_wg_port);
         identity::write_identity(&config.data_dir, &identity)?;
         info!(
-            "WG address: {}",
-            wg_state.address.as_deref().unwrap_or("none")
+            "WG address: {}, listen port: {}",
+            wg_state.address.as_deref().unwrap_or("none"),
+            actual_wg_port,
         );
+        if !ipv6_guas.is_empty() {
+            info!("IPv6 GUAs available: {}", ipv6_guas.len());
+        }
     }
 
     // Load persisted state

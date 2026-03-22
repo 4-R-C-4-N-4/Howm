@@ -14,6 +14,10 @@ pub struct NodeIdentity {
     pub wg_address: Option<String>, // 10.47.x.y
     #[serde(default)]
     pub wg_endpoint: Option<String>, // public addr:port for peers to reach us
+    #[serde(default)]
+    pub ipv6_guas: Vec<String>, // globally routable IPv6 addresses
+    #[serde(default)]
+    pub wg_listen_port: Option<u16>, // actual WG listen port (after fallback)
 }
 
 pub fn load_or_create(data_dir: &Path, name: Option<String>) -> anyhow::Result<NodeIdentity> {
@@ -36,6 +40,8 @@ pub fn load_or_create(data_dir: &Path, name: Option<String>) -> anyhow::Result<N
         wg_pubkey: None,
         wg_address: None,
         wg_endpoint: None,
+        ipv6_guas: vec![],
+        wg_listen_port: None,
     };
     write_identity(data_dir, &identity)?;
     Ok(identity)

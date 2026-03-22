@@ -652,6 +652,7 @@ dependencies = [
  "hmac",
  "hostname",
  "include_dir",
+ "libc",
  "nix",
  "p2pcd",
  "p2pcd-types",

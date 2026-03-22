@@ -96,12 +96,27 @@ pub async fn create_invite(
 ) -> Result<Json<Value>, AppError> {
     let endpoint_override = body.and_then(|b| b.0.endpoint);
 
+    // Parse stored IPv6 GUAs for the invite token
+    let ipv6_guas: Vec<std::net::Ipv6Addr> = state
+        .identity
+        .ipv6_guas
+        .iter()
+        .filter_map(|s| s.parse().ok())
+        .collect();
+
+    let wg_port = state
+        .identity
+        .wg_listen_port
+        .unwrap_or(state.config.wg_port);
+
     let invite_code = invite::generate(
         &state.config.data_dir,
         &state.identity,
         endpoint_override.or(state.identity.wg_endpoint.clone()),
         state.config.port,
         state.config.invite_ttl_s,
+        &ipv6_guas,
+        wg_port,
     )
     .map_err(|e| AppError::Internal(e.to_string()))?;
 
@@ -142,9 +157,16 @@ pub async fn redeem_invite(
         return Err(AppError::Internal("WireGuard not initialized".to_string()));
     }
 
+    // Build connection candidates — IPv6 first, then IPv4
+    let candidates = invite::connection_candidates(&decoded);
+    let best_endpoint = candidates
+        .first()
+        .cloned()
+        .unwrap_or_else(|| decoded.their_endpoint.clone());
+
     let wg_peer = wireguard::WgPeerConfig {
         pubkey: decoded.their_pubkey.clone(),
-        endpoint: decoded.their_endpoint.clone(),
+        endpoint: best_endpoint.clone(),
         psk: Some(decoded.psk.clone()),
         allowed_ip: decoded.their_wg_address.clone(),
         name: "pending".to_string(),
@@ -156,14 +178,13 @@ pub async fn redeem_invite(
         .map_err(|e| AppError::Internal(format!("failed to add WG peer: {}", e)))?;
 
     // Call their daemon to complete the invite (mutual peer add)
-    // The endpoint in the invite is the WG endpoint (UDP), but we need the
-    // daemon HTTP port. Extract the host from the WG endpoint and use their
-    // daemon port from the invite.
-    let their_host = decoded
-        .their_endpoint
+    // Try each candidate endpoint (IPv6 first) to reach their daemon HTTP port.
+    let their_host = best_endpoint
         .rsplit_once(':')
         .map(|(h, _)| h)
-        .unwrap_or(&decoded.their_endpoint);
+        .unwrap_or(&best_endpoint);
+    // Strip brackets from IPv6 addresses for HTTP URLs
+    let their_host = their_host.trim_start_matches('[').trim_end_matches(']');
 
     let our_pubkey = state.identity.wg_pubkey.as_deref().unwrap_or("");
     let our_endpoint = state.identity.wg_endpoint.as_deref().unwrap_or("");
