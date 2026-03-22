@@ -1,5 +1,5 @@
 use axum::{
-    extract::State,
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     Json,
 };
@@ -51,11 +51,62 @@ impl FeedState {
     }
 }
 
-// ── Existing feed endpoints ───────────────────────────────────────────────────
+// ── Pagination ────────────────────────────────────────────────────────────────
 
-pub async fn get_feed(State(state): State<FeedState>) -> Json<Value> {
+/// Query params for paginated feed endpoints (infinite scroll).
+/// Defaults: limit=50, offset=0. Posts are always sorted newest-first.
+#[derive(Debug, Deserialize)]
+pub struct FeedQuery {
+    #[serde(default = "default_limit")]
+    pub limit: usize,
+    #[serde(default)]
+    pub offset: usize,
+}
+
+fn default_limit() -> usize {
+    50
+}
+
+/// Apply pagination to a sorted vec of posts. Returns the page + total count.
+fn paginate(posts: Vec<posts::Post>, q: &FeedQuery) -> Value {
+    let total = posts.len();
+    let page: Vec<_> = posts.into_iter().skip(q.offset).take(q.limit).collect();
+    let has_more = q.offset + page.len() < total;
+    json!({
+        "posts": page,
+        "total": total,
+        "offset": q.offset,
+        "limit": q.limit,
+        "has_more": has_more,
+    })
+}
+
+// ── Feed endpoints ───────────────────────────────────────────────────────────
+
+/// GET /feed — all posts (local + peer), paginated, newest first.
+pub async fn get_feed(State(state): State<FeedState>, Query(q): Query<FeedQuery>) -> Json<Value> {
     let posts = posts::load_all(&state.data_dir).unwrap_or_default();
-    Json(json!({ "posts": posts }))
+    Json(paginate(posts, &q))
+}
+
+/// GET /feed/mine — only your own posts, paginated, newest first.
+pub async fn get_my_feed(
+    State(state): State<FeedState>,
+    Query(q): Query<FeedQuery>,
+) -> Json<Value> {
+    let posts = posts::load_mine(&state.data_dir).unwrap_or_default();
+    Json(paginate(posts, &q))
+}
+
+/// GET /feed/peer/:peer_id — posts from a specific peer, paginated.
+/// peer_id is the base64-encoded WireGuard public key.
+pub async fn get_peer_feed(
+    State(state): State<FeedState>,
+    Path(peer_id): Path<String>,
+    Query(q): Query<FeedQuery>,
+) -> Json<Value> {
+    let posts = posts::load_peer_feed(&state.data_dir, &peer_id).unwrap_or_default();
+    Json(paginate(posts, &q))
 }
 
 #[derive(Deserialize)]
@@ -118,6 +169,44 @@ pub async fn create_post(
         }
         Err(e) => Err((
             StatusCode::BAD_REQUEST,
+            Json(json!({ "error": e.to_string() })),
+        )),
+    }
+}
+
+/// DELETE /post/:id — delete a post by ID.
+/// Checks local posts first, then peer posts.
+pub async fn delete_post(
+    State(state): State<FeedState>,
+    Path(post_id): Path<String>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    // Try local first
+    match posts::delete(&state.data_dir, &post_id) {
+        Ok(true) => {
+            info!("Deleted local post: {}", post_id);
+            return Ok(Json(json!({ "deleted": true, "id": post_id })));
+        }
+        Ok(false) => {} // not in local, try peer
+        Err(e) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": e.to_string() })),
+            ))
+        }
+    }
+
+    // Try peer posts
+    match posts::delete_peer_post(&state.data_dir, &post_id) {
+        Ok(true) => {
+            info!("Deleted peer post: {}", post_id);
+            Ok(Json(json!({ "deleted": true, "id": post_id })))
+        }
+        Ok(false) => Err((
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "post not found" })),
+        )),
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": e.to_string() })),
         )),
     }

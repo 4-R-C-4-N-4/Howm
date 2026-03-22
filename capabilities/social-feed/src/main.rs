@@ -2,7 +2,7 @@ use axum::{
     body::Body,
     http::{header, Request, StatusCode},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{delete, get, post},
     Router,
 };
 use clap::Parser;
@@ -52,11 +52,15 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let app = Router::new()
-        // Existing feed endpoints
+        // Feed endpoints (all paginated via ?limit=N&offset=N)
         .route("/feed", get(api::get_feed))
+        .route("/feed/mine", get(api::get_my_feed))
+        .route("/feed/peer/:peer_id", get(api::get_peer_feed))
+        // Post CRUD
         .route("/post", post(api::create_post))
+        .route("/post/:id", delete(api::delete_post))
+        // Utility
         .route("/health", get(api::health))
-        // Active peer list (for debugging / UI)
         .route("/peers", get(api::list_social_peers))
         // P2P-CD daemon callbacks
         .route("/p2pcd/peer-active", post(api::p2pcd_peer_active))

@@ -101,6 +101,53 @@ pub fn ingest_peer_post(
     Ok(true)
 }
 
+// ── Deletion ────────────────────────────────────────────────────────────────
+
+/// Delete a local post by ID. Returns true if found and removed.
+/// Only local posts can be deleted (you can't delete someone else's post).
+pub fn delete(data_dir: &Path, post_id: &str) -> anyhow::Result<bool> {
+    let mut posts = load(data_dir)?;
+    let before = posts.len();
+    posts.retain(|p| p.id != post_id);
+    if posts.len() == before {
+        return Ok(false); // not found
+    }
+    save(data_dir, &posts)?;
+    Ok(true)
+}
+
+/// Delete a peer post by ID. Used for moderation/cleanup.
+pub fn delete_peer_post(data_dir: &Path, post_id: &str) -> anyhow::Result<bool> {
+    let mut posts = load_peer_posts(data_dir)?;
+    let before = posts.len();
+    posts.retain(|p| p.id != post_id);
+    if posts.len() == before {
+        return Ok(false);
+    }
+    save_peer_posts(data_dir, &posts)?;
+    Ok(true)
+}
+
+// ── Filtered loading ────────────────────────────────────────────────────────
+
+/// Load posts from a specific peer (by peer_id base64 string).
+pub fn load_peer_feed(data_dir: &Path, peer_id: &str) -> anyhow::Result<Vec<Post>> {
+    let origin_prefix = format!("peer:{}", peer_id);
+    let mut posts: Vec<Post> = load_peer_posts(data_dir)?
+        .into_iter()
+        .filter(|p| p.origin == origin_prefix)
+        .collect();
+    posts.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    Ok(posts)
+}
+
+/// Load only local posts (your own feed), sorted newest first.
+pub fn load_mine(data_dir: &Path) -> anyhow::Result<Vec<Post>> {
+    let mut posts = load(data_dir)?;
+    posts.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    Ok(posts)
+}
+
 // ── Merged feed ─────────────────────────────────────────────────────────────
 
 /// Load all posts (local + peer), deduplicated by id, sorted newest first.
@@ -237,6 +284,84 @@ mod tests {
             origin: "peer:X".into(),
         };
         assert!(ingest_peer_post(dir.path(), post, "X").is_err());
+    }
+
+    #[test]
+    fn delete_local_post() {
+        let dir = TempDir::new().unwrap();
+        let post = create(dir.path(), "deleteme".into(), "a".into(), "A".into()).unwrap();
+        assert!(delete(dir.path(), &post.id).unwrap());
+        assert!(!delete(dir.path(), &post.id).unwrap()); // already gone
+        assert!(load(dir.path()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn delete_peer_post_works() {
+        let dir = TempDir::new().unwrap();
+        let post = Post {
+            id: "peer-del-1".into(),
+            author_id: "bob".into(),
+            author_name: "Bob".into(),
+            content: "removable".into(),
+            timestamp: 1000,
+            origin: "peer:DDDD".into(),
+        };
+        ingest_peer_post(dir.path(), post, "DDDD").unwrap();
+        assert!(delete_peer_post(dir.path(), "peer-del-1").unwrap());
+        assert!(load_peer_posts(dir.path()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn load_mine_only_local() {
+        let dir = TempDir::new().unwrap();
+        create(dir.path(), "local1".into(), "me".into(), "Me".into()).unwrap();
+        let peer = Post {
+            id: "peer-mine-test".into(),
+            author_id: "bob".into(),
+            author_name: "Bob".into(),
+            content: "peer".into(),
+            timestamp: 9999,
+            origin: "peer:EEEE".into(),
+        };
+        ingest_peer_post(dir.path(), peer, "EEEE").unwrap();
+
+        let mine = load_mine(dir.path()).unwrap();
+        assert_eq!(mine.len(), 1);
+        assert_eq!(mine[0].origin, "local");
+    }
+
+    #[test]
+    fn load_peer_feed_filters() {
+        let dir = TempDir::new().unwrap();
+        let p1 = Post {
+            id: "pf-1".into(),
+            author_id: "a".into(),
+            author_name: "A".into(),
+            content: "from alice".into(),
+            timestamp: 100,
+            origin: "peer:ALICE".into(),
+        };
+        let p2 = Post {
+            id: "pf-2".into(),
+            author_id: "b".into(),
+            author_name: "B".into(),
+            content: "from bob".into(),
+            timestamp: 200,
+            origin: "peer:BOB".into(),
+        };
+        ingest_peer_post(dir.path(), p1, "ALICE").unwrap();
+        ingest_peer_post(dir.path(), p2, "BOB").unwrap();
+
+        let alice = load_peer_feed(dir.path(), "ALICE").unwrap();
+        assert_eq!(alice.len(), 1);
+        assert_eq!(alice[0].id, "pf-1");
+
+        let bob = load_peer_feed(dir.path(), "BOB").unwrap();
+        assert_eq!(bob.len(), 1);
+        assert_eq!(bob[0].id, "pf-2");
+
+        let nobody = load_peer_feed(dir.path(), "NOBODY").unwrap();
+        assert!(nobody.is_empty());
     }
 
     #[test]
