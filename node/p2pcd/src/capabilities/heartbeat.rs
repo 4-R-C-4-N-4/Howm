@@ -29,6 +29,7 @@ use p2pcd_types::{
 /// 1. The capability is properly registered in the router
 /// 2. on_activated/on_deactivated lifecycle hooks fire
 /// 3. Future refactoring can route PING/PONG through the generic dispatch
+#[derive(Default)]
 pub struct HeartbeatHandler;
 
 impl HeartbeatHandler {
@@ -40,10 +41,10 @@ impl HeartbeatHandler {
     pub fn params_from_scope(scope: &ScopeParams) -> (u64, u64) {
         let interval = scope
             .get_ext_uint(scope_keys::HEARTBEAT_INTERVAL_MS)
-            .unwrap_or(crate::p2pcd::heartbeat::DEFAULT_INTERVAL_MS);
+            .unwrap_or(crate::heartbeat::DEFAULT_INTERVAL_MS);
         let timeout = scope
             .get_ext_uint(scope_keys::HEARTBEAT_TIMEOUT_MS)
-            .unwrap_or(crate::p2pcd::heartbeat::DEFAULT_TIMEOUT_MS);
+            .unwrap_or(crate::heartbeat::DEFAULT_TIMEOUT_MS);
         (interval, timeout)
     }
 }

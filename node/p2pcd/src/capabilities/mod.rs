@@ -43,6 +43,7 @@ use p2pcd_types::message_types;
 /// and feeds inbound messages to the router. The router dispatches by message_type
 /// to the appropriate CapabilityHandler.
 #[allow(dead_code)]
+#[derive(Default)]
 pub struct CapabilityRouter {
     /// Message type → handler.
     handlers: HashMap<u64, Arc<dyn CapabilityHandler>>,

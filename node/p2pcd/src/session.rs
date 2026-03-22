@@ -18,7 +18,7 @@ use p2pcd_types::{
     TrustPolicy,
 };
 
-use super::transport::P2pcdTransport;
+use crate::transport::P2pcdTransport;
 
 // ── State enum ───────────────────────────────────────────────────────────────
 
@@ -443,7 +443,7 @@ pub fn peer_short(id: &PeerId) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::p2pcd::transport::{connect, P2pcdListener};
+    use crate::transport::{connect, P2pcdListener};
     use p2pcd_types::{
         CapabilityDeclaration, CloseReason, DiscoveryManifest, Role, ScopeParams, PROTOCOL_VERSION,
     };

@@ -9,7 +9,7 @@ use p2pcd_types::{
     message_types, CapabilityContext, CapabilityHandler,
 };
 
-#[allow(dead_code)]
+#[derive(Default)]
 pub struct RelayHandler;
 
 impl RelayHandler {

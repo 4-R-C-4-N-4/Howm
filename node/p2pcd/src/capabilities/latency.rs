@@ -28,6 +28,12 @@ pub struct LatencyHandler {
     send_tx: RwLock<Option<tokio::sync::mpsc::Sender<ProtocolMessage>>>,
 }
 
+impl Default for LatencyHandler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LatencyHandler {
     pub fn new() -> Self {
         Self {

@@ -31,6 +31,7 @@ anyhow = "1"
 hmac = "0.12"
 sha2 = "0.10"
 x25519-dalek = { version = "2", features = ["static_secrets"] }
+p2pcd = { path = "../p2pcd" }
 p2pcd-types = { path = "../p2pcd-types" }
 ciborium = "0.2"
 include_dir = "0.7"

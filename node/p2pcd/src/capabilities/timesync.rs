@@ -1,9 +1,13 @@
-// core.network.peerexchange.1 — Peer exchange (msg types 16-17)
+// core.session.timesync.1 — Clock synchronization (msg types 7-8)
 //
-// Allows peers to share their known peer lists for mesh discovery.
+// After activation, initiator sends TIME_REQ with local timestamp.
+// Responder replies with TIME_RESP containing their local timestamp.
+// Both sides compute approximate clock offset.
 
+use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use tokio::sync::RwLock;
 
@@ -11,22 +15,29 @@ use p2pcd_types::{
     message_types, CapabilityContext, CapabilityHandler, PeerId, ProtocolMessage,
 };
 
-/// CBOR payload keys for PEX_REQ/PEX_RESP
+/// CBOR payload keys for TIME_REQ/TIME_RESP
 mod keys {
-    pub const PEERS: u64 = 1;
-    pub const MAX_PEERS: u64 = 2;
+    pub const LOCAL_TIMESTAMP_MS: u64 = 1;
+    pub const REMOTE_TIMESTAMP_MS: u64 = 2;
 }
 
 #[allow(dead_code)]
-pub struct PeerExchangeHandler {
-    known_peers: Arc<RwLock<Vec<PeerId>>>,
+pub struct TimesyncHandler {
+    /// Clock offset per peer in milliseconds (positive = peer is ahead).
+    offsets: Arc<RwLock<HashMap<PeerId, i64>>>,
     send_tx: RwLock<Option<tokio::sync::mpsc::Sender<ProtocolMessage>>>,
 }
 
-impl PeerExchangeHandler {
+impl Default for TimesyncHandler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl TimesyncHandler {
     pub fn new() -> Self {
         Self {
-            known_peers: Arc::new(RwLock::new(Vec::new())),
+            offsets: Arc::new(RwLock::new(HashMap::new())),
             send_tx: RwLock::new(None),
         }
     }
@@ -35,22 +46,44 @@ impl PeerExchangeHandler {
         *self.send_tx.write().await = Some(tx);
     }
 
-    pub async fn set_known_peers(&self, peers: Vec<PeerId>) {
-        *self.known_peers.write().await = peers;
-    }
-
-    pub async fn known_peers(&self) -> Vec<PeerId> {
-        self.known_peers.read().await.clone()
+    pub async fn get_offset(&self, peer_id: &PeerId) -> Option<i64> {
+        self.offsets.read().await.get(peer_id).copied()
     }
 }
 
-impl CapabilityHandler for PeerExchangeHandler {
+#[allow(dead_code)]
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+impl CapabilityHandler for TimesyncHandler {
     fn capability_name(&self) -> &str {
-        "core.network.peerexchange.1"
+        "core.session.timesync.1"
     }
 
     fn handled_message_types(&self) -> &[u64] {
-        &[message_types::PEX_REQ, message_types::PEX_RESP]
+        &[message_types::TIME_REQ, message_types::TIME_RESP]
+    }
+
+    fn on_activated(
+        &self,
+        _ctx: &CapabilityContext,
+    ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + '_>> {
+        Box::pin(async move {
+            let payload = cbor_encode_map(vec![
+                (keys::LOCAL_TIMESTAMP_MS, ciborium::value::Value::Integer(
+                    ciborium::value::Integer::from(now_ms()),
+                )),
+            ]);
+            let msg = make_capability_msg(message_types::TIME_REQ, payload);
+            if let Some(tx) = self.send_tx.read().await.as_ref() {
+                let _ = tx.send(msg).await;
+            }
+            Ok(())
+        })
     }
 
     fn on_message(
@@ -62,51 +95,38 @@ impl CapabilityHandler for PeerExchangeHandler {
         let payload = payload.to_vec();
         let peer_id = ctx.peer_id;
         Box::pin(async move {
+            let map = decode_payload(&payload)?;
+
             match msg_type {
-                message_types::PEX_REQ => {
-                    let map = decode_payload(&payload)?;
-                    let max = cbor_get_int(&map, keys::MAX_PEERS).unwrap_or(50) as usize;
-                    let peers = self.known_peers.read().await;
-                    let to_share: Vec<ciborium::value::Value> = peers
-                        .iter()
-                        .filter(|p| **p != peer_id) // don't send peer back to itself
-                        .take(max)
-                        .map(|p| ciborium::value::Value::Bytes(p.to_vec()))
-                        .collect();
-                    let resp = cbor_encode_map(vec![
-                        (keys::PEERS, ciborium::value::Value::Array(to_share)),
+                message_types::TIME_REQ => {
+                    // Respond with our local timestamp + their original timestamp
+                    let remote_ts = cbor_get_int(&map, keys::LOCAL_TIMESTAMP_MS).unwrap_or(0);
+                    let resp_payload = cbor_encode_map(vec![
+                        (keys::LOCAL_TIMESTAMP_MS, ciborium::value::Value::Integer(
+                            ciborium::value::Integer::from(now_ms()),
+                        )),
+                        (keys::REMOTE_TIMESTAMP_MS, ciborium::value::Value::Integer(
+                            ciborium::value::Integer::from(remote_ts),
+                        )),
                     ]);
-                    let msg = make_capability_msg(message_types::PEX_RESP, resp);
+                    let msg = make_capability_msg(message_types::TIME_RESP, resp_payload);
                     if let Some(tx) = self.send_tx.read().await.as_ref() {
                         let _ = tx.send(msg).await;
                     }
                 }
-                message_types::PEX_RESP => {
-                    let map = decode_payload(&payload)?;
-                    if let Some(arr) = cbor_get_array(&map, keys::PEERS) {
-                        let mut new_peers = Vec::new();
-                        for v in &arr {
-                            if let ciborium::value::Value::Bytes(b) = v {
-                                if b.len() == 32 {
-                                    let mut id = [0u8; 32];
-                                    id.copy_from_slice(b);
-                                    new_peers.push(id);
-                                }
-                            }
-                        }
-                        tracing::info!(
-                            "pex: received {} peers from {}",
-                            new_peers.len(),
-                            hex::encode(&peer_id[..4])
-                        );
-                        // Merge into known peers
-                        let mut known = self.known_peers.write().await;
-                        for p in new_peers {
-                            if !known.contains(&p) {
-                                known.push(p);
-                            }
-                        }
-                    }
+                message_types::TIME_RESP => {
+                    let remote_ts = cbor_get_int(&map, keys::LOCAL_TIMESTAMP_MS).unwrap_or(0);
+                    let our_original = cbor_get_int(&map, keys::REMOTE_TIMESTAMP_MS).unwrap_or(0);
+                    let now = now_ms();
+                    // Simple offset: remote_ts - midpoint(our_original, now)
+                    let midpoint = (our_original as i64 + now as i64) / 2;
+                    let offset = remote_ts as i64 - midpoint;
+                    tracing::debug!(
+                        "timesync: peer {} offset={}ms",
+                        hex::encode(&peer_id[..4]),
+                        offset
+                    );
+                    self.offsets.write().await.insert(peer_id, offset);
                 }
                 _ => {}
             }
@@ -213,21 +233,26 @@ mod tests {
 
     #[test]
     fn handler_metadata() {
-        let h = PeerExchangeHandler::new();
-        assert_eq!(h.capability_name(), "core.network.peerexchange.1");
-        assert_eq!(h.handled_message_types(), &[16, 17]);
+        let h = TimesyncHandler::new();
+        assert_eq!(h.capability_name(), "core.session.timesync.1");
+        assert_eq!(h.handled_message_types(), &[7, 8]);
     }
 
     #[test]
-    fn cbor_array_roundtrip() {
-        let peer_bytes = vec![1u8; 32];
+    fn now_ms_is_reasonable() {
+        let ts = now_ms();
+        // Should be after 2020-01-01 (1577836800000) and nonzero
+        assert!(ts > 1_577_836_800_000);
+    }
+
+    #[test]
+    fn cbor_int_roundtrip() {
         let encoded = cbor_encode_map(vec![
-            (keys::PEERS, ciborium::value::Value::Array(vec![
-                ciborium::value::Value::Bytes(peer_bytes.clone()),
-            ])),
+            (keys::LOCAL_TIMESTAMP_MS, ciborium::value::Value::Integer(
+                ciborium::value::Integer::from(123456u64),
+            )),
         ]);
         let map = decode_payload(&encoded).unwrap();
-        let arr = cbor_get_array(&map, keys::PEERS).unwrap();
-        assert_eq!(arr.len(), 1);
+        assert_eq!(cbor_get_int(&map, keys::LOCAL_TIMESTAMP_MS), Some(123456));
     }
 }

@@ -1,37 +1,37 @@
-// core.session.timesync.1 — Clock synchronization (msg types 7-8)
+// core.network.endpoint.1 — WHOAMI endpoint discovery (msg types 11-12)
 //
-// After activation, initiator sends TIME_REQ with local timestamp.
-// Responder replies with TIME_RESP containing their local timestamp.
-// Both sides compute approximate clock offset.
+// Allows a peer to discover its own externally-visible IP address
+// by asking another peer what address it sees.
 
-use std::collections::HashMap;
 use std::pin::Pin;
-use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use tokio::sync::RwLock;
 
 use p2pcd_types::{
-    message_types, CapabilityContext, CapabilityHandler, PeerId, ProtocolMessage,
+    message_types, CapabilityContext, CapabilityHandler, ProtocolMessage,
 };
 
-/// CBOR payload keys for TIME_REQ/TIME_RESP
+/// CBOR payload keys for WHOAMI_REQ/WHOAMI_RESP
 mod keys {
-    pub const LOCAL_TIMESTAMP_MS: u64 = 1;
-    pub const REMOTE_TIMESTAMP_MS: u64 = 2;
+    pub const OBSERVED_IP: u64 = 1;
+    #[allow(dead_code)]
+    pub const INCLUDE_GEO: u64 = 2;
 }
 
 #[allow(dead_code)]
-pub struct TimesyncHandler {
-    /// Clock offset per peer in milliseconds (positive = peer is ahead).
-    offsets: Arc<RwLock<HashMap<PeerId, i64>>>,
+pub struct EndpointHandler {
     send_tx: RwLock<Option<tokio::sync::mpsc::Sender<ProtocolMessage>>>,
 }
 
-impl TimesyncHandler {
+impl Default for EndpointHandler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl EndpointHandler {
     pub fn new() -> Self {
         Self {
-            offsets: Arc::new(RwLock::new(HashMap::new())),
             send_tx: RwLock::new(None),
         }
     }
@@ -39,45 +39,15 @@ impl TimesyncHandler {
     pub async fn set_sender(&self, tx: tokio::sync::mpsc::Sender<ProtocolMessage>) {
         *self.send_tx.write().await = Some(tx);
     }
-
-    pub async fn get_offset(&self, peer_id: &PeerId) -> Option<i64> {
-        self.offsets.read().await.get(peer_id).copied()
-    }
 }
 
-#[allow(dead_code)]
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
-}
-
-impl CapabilityHandler for TimesyncHandler {
+impl CapabilityHandler for EndpointHandler {
     fn capability_name(&self) -> &str {
-        "core.session.timesync.1"
+        "core.network.endpoint.1"
     }
 
     fn handled_message_types(&self) -> &[u64] {
-        &[message_types::TIME_REQ, message_types::TIME_RESP]
-    }
-
-    fn on_activated(
-        &self,
-        _ctx: &CapabilityContext,
-    ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + '_>> {
-        Box::pin(async move {
-            let payload = cbor_encode_map(vec![
-                (keys::LOCAL_TIMESTAMP_MS, ciborium::value::Value::Integer(
-                    ciborium::value::Integer::from(now_ms()),
-                )),
-            ]);
-            let msg = make_capability_msg(message_types::TIME_REQ, payload);
-            if let Some(tx) = self.send_tx.read().await.as_ref() {
-                let _ = tx.send(msg).await;
-            }
-            Ok(())
-        })
+        &[message_types::WHOAMI_REQ, message_types::WHOAMI_RESP]
     }
 
     fn on_message(
@@ -89,38 +59,24 @@ impl CapabilityHandler for TimesyncHandler {
         let payload = payload.to_vec();
         let peer_id = ctx.peer_id;
         Box::pin(async move {
-            let map = decode_payload(&payload)?;
-
             match msg_type {
-                message_types::TIME_REQ => {
-                    // Respond with our local timestamp + their original timestamp
-                    let remote_ts = cbor_get_int(&map, keys::LOCAL_TIMESTAMP_MS).unwrap_or(0);
-                    let resp_payload = cbor_encode_map(vec![
-                        (keys::LOCAL_TIMESTAMP_MS, ciborium::value::Value::Integer(
-                            ciborium::value::Integer::from(now_ms()),
-                        )),
-                        (keys::REMOTE_TIMESTAMP_MS, ciborium::value::Value::Integer(
-                            ciborium::value::Integer::from(remote_ts),
-                        )),
+                message_types::WHOAMI_REQ => {
+                    // Respond with the peer's observed address
+                    // In WireGuard context, this is the peer's WG IP from our perspective.
+                    // The actual IP resolution happens at the engine level; we use peer_id as proxy.
+                    let observed = format!("peer:{}", hex::encode(&peer_id[..8]));
+                    let resp = cbor_encode_map(vec![
+                        (keys::OBSERVED_IP, ciborium::value::Value::Text(observed)),
                     ]);
-                    let msg = make_capability_msg(message_types::TIME_RESP, resp_payload);
+                    let msg = make_capability_msg(message_types::WHOAMI_RESP, resp);
                     if let Some(tx) = self.send_tx.read().await.as_ref() {
                         let _ = tx.send(msg).await;
                     }
                 }
-                message_types::TIME_RESP => {
-                    let remote_ts = cbor_get_int(&map, keys::LOCAL_TIMESTAMP_MS).unwrap_or(0);
-                    let our_original = cbor_get_int(&map, keys::REMOTE_TIMESTAMP_MS).unwrap_or(0);
-                    let now = now_ms();
-                    // Simple offset: remote_ts - midpoint(our_original, now)
-                    let midpoint = (our_original as i64 + now as i64) / 2;
-                    let offset = remote_ts as i64 - midpoint;
-                    tracing::debug!(
-                        "timesync: peer {} offset={}ms",
-                        hex::encode(&peer_id[..4]),
-                        offset
-                    );
-                    self.offsets.write().await.insert(peer_id, offset);
+                message_types::WHOAMI_RESP => {
+                    let map = decode_payload(&payload)?;
+                    let ip = cbor_get_text(&map, keys::OBSERVED_IP).unwrap_or_default();
+                    tracing::info!("endpoint: peer sees us as {}", ip);
                 }
                 _ => {}
             }
@@ -227,26 +183,17 @@ mod tests {
 
     #[test]
     fn handler_metadata() {
-        let h = TimesyncHandler::new();
-        assert_eq!(h.capability_name(), "core.session.timesync.1");
-        assert_eq!(h.handled_message_types(), &[7, 8]);
+        let h = EndpointHandler::new();
+        assert_eq!(h.capability_name(), "core.network.endpoint.1");
+        assert_eq!(h.handled_message_types(), &[11, 12]);
     }
 
     #[test]
-    fn now_ms_is_reasonable() {
-        let ts = now_ms();
-        // Should be after 2020-01-01 (1577836800000) and nonzero
-        assert!(ts > 1_577_836_800_000);
-    }
-
-    #[test]
-    fn cbor_int_roundtrip() {
+    fn cbor_text_roundtrip() {
         let encoded = cbor_encode_map(vec![
-            (keys::LOCAL_TIMESTAMP_MS, ciborium::value::Value::Integer(
-                ciborium::value::Integer::from(123456u64),
-            )),
+            (keys::OBSERVED_IP, ciborium::value::Value::Text("10.0.0.1".into())),
         ]);
         let map = decode_payload(&encoded).unwrap();
-        assert_eq!(cbor_get_int(&map, keys::LOCAL_TIMESTAMP_MS), Some(123456));
+        assert_eq!(cbor_get_text(&map, keys::OBSERVED_IP).unwrap(), "10.0.0.1");
     }
 }

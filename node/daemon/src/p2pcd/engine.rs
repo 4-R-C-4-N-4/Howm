@@ -19,10 +19,10 @@ use tokio::sync::{mpsc, Mutex, RwLock};
 use p2pcd_types::{config::PeerConfig, CloseReason, DiscoveryManifest, PeerId, TrustPolicy};
 
 use super::cap_notify::CapabilityNotifier;
-use super::capabilities::CapabilityRouter;
-use super::heartbeat::{HeartbeatEvent, HeartbeatManager};
-use super::session::{self, Session, SessionState};
-use super::transport::{self, P2pcdListener};
+use p2pcd::capabilities::CapabilityRouter;
+use p2pcd::heartbeat::{HeartbeatEvent, HeartbeatManager};
+use p2pcd::session::{self, Session, SessionState};
+use p2pcd::transport::{self, P2pcdListener};
 use crate::wireguard::{WgPeerEvent, WgPeerMonitor};
 
 /// Peer cache TTL: entries older than this are ignored (re-negotiate).
@@ -391,7 +391,7 @@ impl ProtocolEngine {
 
     async fn run_responder_session(
         self: Arc<Self>,
-        transport: super::transport::P2pcdTransport,
+        transport: p2pcd::transport::P2pcdTransport,
         remote_addr: SocketAddr,
         hb_event_tx: Arc<mpsc::Sender<HeartbeatEvent>>,
     ) -> Result<()> {
@@ -856,10 +856,8 @@ fn short(id: PeerId) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::p2pcd::{
-        session::{run_initiator_exchange, run_responder_exchange, Session},
-        transport::{connect, P2pcdListener},
-    };
+    use p2pcd::session::{run_initiator_exchange, run_responder_exchange, Session};
+    use p2pcd::transport::{connect, P2pcdListener};
     use p2pcd_types::{CapabilityDeclaration, Role, PROTOCOL_VERSION};
     use std::collections::HashMap;
 
