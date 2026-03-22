@@ -9,9 +9,7 @@ use std::sync::Arc;
 
 use tokio::sync::RwLock;
 
-use p2pcd_types::{
-    message_types, CapabilityContext, CapabilityHandler, ProtocolMessage,
-};
+use p2pcd_types::{message_types, CapabilityContext, CapabilityHandler, ProtocolMessage};
 
 /// CBOR payload keys for RPC_REQ/RPC_RESP
 mod keys {
@@ -102,15 +100,21 @@ impl CapabilityHandler for RpcHandler {
 
                     let resp = match result {
                         Ok(data) => cbor_encode_map(vec![
-                            (keys::REQUEST_ID, ciborium::value::Value::Integer(
-                                ciborium::value::Integer::from(req_id),
-                            )),
+                            (
+                                keys::REQUEST_ID,
+                                ciborium::value::Value::Integer(ciborium::value::Integer::from(
+                                    req_id,
+                                )),
+                            ),
                             (keys::PAYLOAD, ciborium::value::Value::Bytes(data)),
                         ]),
                         Err(e) => cbor_encode_map(vec![
-                            (keys::REQUEST_ID, ciborium::value::Value::Integer(
-                                ciborium::value::Integer::from(req_id),
-                            )),
+                            (
+                                keys::REQUEST_ID,
+                                ciborium::value::Value::Integer(ciborium::value::Integer::from(
+                                    req_id,
+                                )),
+                            ),
                             (keys::ERROR, ciborium::value::Value::Text(e.to_string())),
                         ]),
                     };
@@ -134,7 +138,6 @@ impl CapabilityHandler for RpcHandler {
         })
     }
 }
-
 
 #[allow(dead_code)]
 fn cbor_encode_map(pairs: Vec<(u64, ciborium::value::Value)>) -> Vec<u8> {
@@ -164,7 +167,10 @@ fn cbor_get_int(map: &[(ciborium::value::Value, ciborium::value::Value)], key: u
 }
 
 #[allow(dead_code)]
-fn cbor_get_text(map: &[(ciborium::value::Value, ciborium::value::Value)], key: u64) -> Option<String> {
+fn cbor_get_text(
+    map: &[(ciborium::value::Value, ciborium::value::Value)],
+    key: u64,
+) -> Option<String> {
     use ciborium::value::Value;
     for (k, v) in map {
         if let Value::Integer(ki) = k {
@@ -179,7 +185,10 @@ fn cbor_get_text(map: &[(ciborium::value::Value, ciborium::value::Value)], key: 
 }
 
 #[allow(dead_code)]
-fn cbor_get_bytes(map: &[(ciborium::value::Value, ciborium::value::Value)], key: u64) -> Option<Vec<u8>> {
+fn cbor_get_bytes(
+    map: &[(ciborium::value::Value, ciborium::value::Value)],
+    key: u64,
+) -> Option<Vec<u8>> {
     use ciborium::value::Value;
     for (k, v) in map {
         if let Value::Integer(ki) = k {
@@ -194,7 +203,10 @@ fn cbor_get_bytes(map: &[(ciborium::value::Value, ciborium::value::Value)], key:
 }
 
 #[allow(dead_code)]
-fn cbor_get_array(map: &[(ciborium::value::Value, ciborium::value::Value)], key: u64) -> Option<Vec<ciborium::value::Value>> {
+fn cbor_get_array(
+    map: &[(ciborium::value::Value, ciborium::value::Value)],
+    key: u64,
+) -> Option<Vec<ciborium::value::Value>> {
     use ciborium::value::Value;
     for (k, v) in map {
         if let Value::Integer(ki) = k {
@@ -209,9 +221,11 @@ fn cbor_get_array(map: &[(ciborium::value::Value, ciborium::value::Value)], key:
 }
 
 #[allow(dead_code)]
-fn decode_payload(payload: &[u8]) -> anyhow::Result<Vec<(ciborium::value::Value, ciborium::value::Value)>> {
-    let val: ciborium::value::Value = ciborium::de::from_reader(payload)
-        .map_err(|e| anyhow::anyhow!("CBOR decode: {e}"))?;
+fn decode_payload(
+    payload: &[u8],
+) -> anyhow::Result<Vec<(ciborium::value::Value, ciborium::value::Value)>> {
+    let val: ciborium::value::Value =
+        ciborium::de::from_reader(payload).map_err(|e| anyhow::anyhow!("CBOR decode: {e}"))?;
     match val {
         ciborium::value::Value::Map(m) => Ok(m),
         _ => anyhow::bail!("expected CBOR map payload"),
@@ -242,9 +256,10 @@ mod tests {
     fn cbor_rpc_payload_roundtrip() {
         let encoded = cbor_encode_map(vec![
             (keys::METHOD, ciborium::value::Value::Text("echo".into())),
-            (keys::REQUEST_ID, ciborium::value::Value::Integer(
-                ciborium::value::Integer::from(42u64),
-            )),
+            (
+                keys::REQUEST_ID,
+                ciborium::value::Value::Integer(ciborium::value::Integer::from(42u64)),
+            ),
             (keys::PAYLOAD, ciborium::value::Value::Bytes(vec![1, 2, 3])),
         ]);
         let map = decode_payload(&encoded).unwrap();

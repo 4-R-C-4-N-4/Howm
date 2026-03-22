@@ -7,9 +7,7 @@ use std::sync::Arc;
 
 use tokio::sync::RwLock;
 
-use p2pcd_types::{
-    message_types, CapabilityContext, CapabilityHandler, PeerId, ProtocolMessage,
-};
+use p2pcd_types::{message_types, CapabilityContext, CapabilityHandler, PeerId, ProtocolMessage};
 
 /// CBOR payload keys for PEX_REQ/PEX_RESP
 mod keys {
@@ -79,9 +77,10 @@ impl CapabilityHandler for PeerExchangeHandler {
                         .take(max)
                         .map(|p| ciborium::value::Value::Bytes(p.to_vec()))
                         .collect();
-                    let resp = cbor_encode_map(vec![
-                        (keys::PEERS, ciborium::value::Value::Array(to_share)),
-                    ]);
+                    let resp = cbor_encode_map(vec![(
+                        keys::PEERS,
+                        ciborium::value::Value::Array(to_share),
+                    )]);
                     let msg = make_capability_msg(message_types::PEX_RESP, resp);
                     if let Some(tx) = self.send_tx.read().await.as_ref() {
                         let _ = tx.send(msg).await;
@@ -121,7 +120,6 @@ impl CapabilityHandler for PeerExchangeHandler {
     }
 }
 
-
 #[allow(dead_code)]
 fn cbor_encode_map(pairs: Vec<(u64, ciborium::value::Value)>) -> Vec<u8> {
     use ciborium::value::{Integer, Value};
@@ -150,7 +148,10 @@ fn cbor_get_int(map: &[(ciborium::value::Value, ciborium::value::Value)], key: u
 }
 
 #[allow(dead_code)]
-fn cbor_get_text(map: &[(ciborium::value::Value, ciborium::value::Value)], key: u64) -> Option<String> {
+fn cbor_get_text(
+    map: &[(ciborium::value::Value, ciborium::value::Value)],
+    key: u64,
+) -> Option<String> {
     use ciborium::value::Value;
     for (k, v) in map {
         if let Value::Integer(ki) = k {
@@ -165,7 +166,10 @@ fn cbor_get_text(map: &[(ciborium::value::Value, ciborium::value::Value)], key: 
 }
 
 #[allow(dead_code)]
-fn cbor_get_bytes(map: &[(ciborium::value::Value, ciborium::value::Value)], key: u64) -> Option<Vec<u8>> {
+fn cbor_get_bytes(
+    map: &[(ciborium::value::Value, ciborium::value::Value)],
+    key: u64,
+) -> Option<Vec<u8>> {
     use ciborium::value::Value;
     for (k, v) in map {
         if let Value::Integer(ki) = k {
@@ -180,7 +184,10 @@ fn cbor_get_bytes(map: &[(ciborium::value::Value, ciborium::value::Value)], key:
 }
 
 #[allow(dead_code)]
-fn cbor_get_array(map: &[(ciborium::value::Value, ciborium::value::Value)], key: u64) -> Option<Vec<ciborium::value::Value>> {
+fn cbor_get_array(
+    map: &[(ciborium::value::Value, ciborium::value::Value)],
+    key: u64,
+) -> Option<Vec<ciborium::value::Value>> {
     use ciborium::value::Value;
     for (k, v) in map {
         if let Value::Integer(ki) = k {
@@ -195,9 +202,11 @@ fn cbor_get_array(map: &[(ciborium::value::Value, ciborium::value::Value)], key:
 }
 
 #[allow(dead_code)]
-fn decode_payload(payload: &[u8]) -> anyhow::Result<Vec<(ciborium::value::Value, ciborium::value::Value)>> {
-    let val: ciborium::value::Value = ciborium::de::from_reader(payload)
-        .map_err(|e| anyhow::anyhow!("CBOR decode: {e}"))?;
+fn decode_payload(
+    payload: &[u8],
+) -> anyhow::Result<Vec<(ciborium::value::Value, ciborium::value::Value)>> {
+    let val: ciborium::value::Value =
+        ciborium::de::from_reader(payload).map_err(|e| anyhow::anyhow!("CBOR decode: {e}"))?;
     match val {
         ciborium::value::Value::Map(m) => Ok(m),
         _ => anyhow::bail!("expected CBOR map payload"),
@@ -227,11 +236,10 @@ mod tests {
     #[test]
     fn cbor_array_roundtrip() {
         let peer_bytes = vec![1u8; 32];
-        let encoded = cbor_encode_map(vec![
-            (keys::PEERS, ciborium::value::Value::Array(vec![
-                ciborium::value::Value::Bytes(peer_bytes.clone()),
-            ])),
-        ]);
+        let encoded = cbor_encode_map(vec![(
+            keys::PEERS,
+            ciborium::value::Value::Array(vec![ciborium::value::Value::Bytes(peer_bytes.clone())]),
+        )]);
         let map = decode_payload(&encoded).unwrap();
         let arr = cbor_get_array(&map, keys::PEERS).unwrap();
         assert_eq!(arr.len(), 1);

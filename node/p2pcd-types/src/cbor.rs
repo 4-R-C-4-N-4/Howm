@@ -488,8 +488,7 @@ impl ProtocolMessage {
                 payload,
             } => {
                 // Re-wrap: decode payload back to CBOR value, add message_type key
-                let inner = decode_cbor(payload)
-                    .unwrap_or(Value::Map(vec![]));
+                let inner = decode_cbor(payload).unwrap_or(Value::Map(vec![]));
                 let mut pairs = vec![(
                     int_key(message_keys::MESSAGE_TYPE),
                     Value::Integer(ciborium::value::Integer::from(*message_type)),

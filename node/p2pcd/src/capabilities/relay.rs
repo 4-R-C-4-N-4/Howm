@@ -5,9 +5,7 @@
 
 use std::pin::Pin;
 
-use p2pcd_types::{
-    message_types, CapabilityContext, CapabilityHandler,
-};
+use p2pcd_types::{message_types, CapabilityContext, CapabilityHandler};
 
 #[derive(Default)]
 pub struct RelayHandler;

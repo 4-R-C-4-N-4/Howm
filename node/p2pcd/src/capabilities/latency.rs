@@ -10,9 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use tokio::sync::RwLock;
 
-use p2pcd_types::{
-    message_types, CapabilityContext, CapabilityHandler, PeerId, ProtocolMessage,
-};
+use p2pcd_types::{message_types, CapabilityContext, CapabilityHandler, PeerId, ProtocolMessage};
 
 /// CBOR payload keys for LAT_PING/LAT_PONG
 mod keys {
@@ -103,11 +101,10 @@ impl CapabilityHandler for LatencyHandler {
             match msg_type {
                 message_types::LAT_PING => {
                     // Echo back as LAT_PONG with same timestamp
-                    let resp = cbor_encode_map(vec![
-                        (keys::TIMESTAMP_MS, ciborium::value::Value::Integer(
-                            ciborium::value::Integer::from(ts),
-                        )),
-                    ]);
+                    let resp = cbor_encode_map(vec![(
+                        keys::TIMESTAMP_MS,
+                        ciborium::value::Value::Integer(ciborium::value::Integer::from(ts)),
+                    )]);
                     let msg = make_capability_msg(message_types::LAT_PONG, resp);
                     if let Some(tx) = self.send_tx.read().await.as_ref() {
                         let _ = tx.send(msg).await;
@@ -115,11 +112,7 @@ impl CapabilityHandler for LatencyHandler {
                 }
                 message_types::LAT_PONG => {
                     let rtt = now_ms().saturating_sub(ts);
-                    tracing::debug!(
-                        "latency: peer {} rtt={}ms",
-                        hex::encode(&peer_id[..4]),
-                        rtt
-                    );
+                    tracing::debug!("latency: peer {} rtt={}ms", hex::encode(&peer_id[..4]), rtt);
                     let mut samples = self.samples.write().await;
                     let deque = samples.entry(peer_id).or_insert_with(VecDeque::new);
                     deque.push_back(rtt);
@@ -133,7 +126,6 @@ impl CapabilityHandler for LatencyHandler {
         })
     }
 }
-
 
 #[allow(dead_code)]
 fn cbor_encode_map(pairs: Vec<(u64, ciborium::value::Value)>) -> Vec<u8> {
@@ -163,7 +155,10 @@ fn cbor_get_int(map: &[(ciborium::value::Value, ciborium::value::Value)], key: u
 }
 
 #[allow(dead_code)]
-fn cbor_get_text(map: &[(ciborium::value::Value, ciborium::value::Value)], key: u64) -> Option<String> {
+fn cbor_get_text(
+    map: &[(ciborium::value::Value, ciborium::value::Value)],
+    key: u64,
+) -> Option<String> {
     use ciborium::value::Value;
     for (k, v) in map {
         if let Value::Integer(ki) = k {
@@ -178,7 +173,10 @@ fn cbor_get_text(map: &[(ciborium::value::Value, ciborium::value::Value)], key: 
 }
 
 #[allow(dead_code)]
-fn cbor_get_bytes(map: &[(ciborium::value::Value, ciborium::value::Value)], key: u64) -> Option<Vec<u8>> {
+fn cbor_get_bytes(
+    map: &[(ciborium::value::Value, ciborium::value::Value)],
+    key: u64,
+) -> Option<Vec<u8>> {
     use ciborium::value::Value;
     for (k, v) in map {
         if let Value::Integer(ki) = k {
@@ -193,7 +191,10 @@ fn cbor_get_bytes(map: &[(ciborium::value::Value, ciborium::value::Value)], key:
 }
 
 #[allow(dead_code)]
-fn cbor_get_array(map: &[(ciborium::value::Value, ciborium::value::Value)], key: u64) -> Option<Vec<ciborium::value::Value>> {
+fn cbor_get_array(
+    map: &[(ciborium::value::Value, ciborium::value::Value)],
+    key: u64,
+) -> Option<Vec<ciborium::value::Value>> {
     use ciborium::value::Value;
     for (k, v) in map {
         if let Value::Integer(ki) = k {
@@ -208,9 +209,11 @@ fn cbor_get_array(map: &[(ciborium::value::Value, ciborium::value::Value)], key:
 }
 
 #[allow(dead_code)]
-fn decode_payload(payload: &[u8]) -> anyhow::Result<Vec<(ciborium::value::Value, ciborium::value::Value)>> {
-    let val: ciborium::value::Value = ciborium::de::from_reader(payload)
-        .map_err(|e| anyhow::anyhow!("CBOR decode: {e}"))?;
+fn decode_payload(
+    payload: &[u8],
+) -> anyhow::Result<Vec<(ciborium::value::Value, ciborium::value::Value)>> {
+    let val: ciborium::value::Value =
+        ciborium::de::from_reader(payload).map_err(|e| anyhow::anyhow!("CBOR decode: {e}"))?;
     match val {
         ciborium::value::Value::Map(m) => Ok(m),
         _ => anyhow::bail!("expected CBOR map payload"),

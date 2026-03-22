@@ -7,14 +7,12 @@
 // Message types: PING (4), PONG (5)
 // Scope keys: interval_ms (3), timeout_ms (4)
 
-use std::pin::Pin;
 use std::future::Future;
+use std::pin::Pin;
 
 use anyhow::Result;
 
-use p2pcd_types::{
-    message_types, scope_keys, CapabilityContext, CapabilityHandler, ScopeParams,
-};
+use p2pcd_types::{message_types, scope_keys, CapabilityContext, CapabilityHandler, ScopeParams};
 
 /// Handler for core.session.heartbeat.1.
 ///

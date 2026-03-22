@@ -33,9 +33,9 @@ use std::sync::Arc;
 
 use anyhow::Result;
 
-use p2pcd_types::{CapabilityContext, CapabilityHandler, PeerId, ScopeParams};
 #[cfg(test)]
 use p2pcd_types::message_types;
+use p2pcd_types::{CapabilityContext, CapabilityHandler, PeerId, ScopeParams};
 
 /// Routes incoming capability messages (types 4+) to registered handlers.
 ///
@@ -195,7 +195,9 @@ mod tests {
     #[test]
     fn router_registers_attest() {
         let router = CapabilityRouter::with_core_handlers();
-        assert!(router.handler_for_type(message_types::BUILD_ATTEST).is_some());
+        assert!(router
+            .handler_for_type(message_types::BUILD_ATTEST)
+            .is_some());
         assert!(router.handler_by_name("core.session.attest.1").is_some());
     }
 
@@ -219,7 +221,9 @@ mod tests {
     fn router_registers_endpoint() {
         let router = CapabilityRouter::with_core_handlers();
         assert!(router.handler_for_type(message_types::WHOAMI_REQ).is_some());
-        assert!(router.handler_for_type(message_types::WHOAMI_RESP).is_some());
+        assert!(router
+            .handler_for_type(message_types::WHOAMI_RESP)
+            .is_some());
         assert!(router.handler_by_name("core.network.endpoint.1").is_some());
     }
 
@@ -228,15 +232,23 @@ mod tests {
         let router = CapabilityRouter::with_core_handlers();
         assert!(router.handler_for_type(message_types::PEX_REQ).is_some());
         assert!(router.handler_for_type(message_types::PEX_RESP).is_some());
-        assert!(router.handler_by_name("core.network.peerexchange.1").is_some());
+        assert!(router
+            .handler_by_name("core.network.peerexchange.1")
+            .is_some());
     }
 
     #[test]
     fn router_registers_relay() {
         let router = CapabilityRouter::with_core_handlers();
-        assert!(router.handler_for_type(message_types::CIRCUIT_OPEN).is_some());
-        assert!(router.handler_for_type(message_types::CIRCUIT_DATA).is_some());
-        assert!(router.handler_for_type(message_types::CIRCUIT_CLOSE).is_some());
+        assert!(router
+            .handler_for_type(message_types::CIRCUIT_OPEN)
+            .is_some());
+        assert!(router
+            .handler_for_type(message_types::CIRCUIT_DATA)
+            .is_some());
+        assert!(router
+            .handler_for_type(message_types::CIRCUIT_CLOSE)
+            .is_some());
         assert!(router.handler_by_name("core.network.relay.1").is_some());
     }
 
@@ -262,7 +274,9 @@ mod tests {
     fn router_registers_event() {
         let router = CapabilityRouter::with_core_handlers();
         assert!(router.handler_for_type(message_types::EVENT_SUB).is_some());
-        assert!(router.handler_for_type(message_types::EVENT_UNSUB).is_some());
+        assert!(router
+            .handler_for_type(message_types::EVENT_UNSUB)
+            .is_some());
         assert!(router.handler_for_type(message_types::EVENT_MSG).is_some());
         assert!(router.handler_by_name("core.data.event.1").is_some());
     }

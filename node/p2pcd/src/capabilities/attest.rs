@@ -9,9 +9,7 @@ use std::sync::Arc;
 
 use tokio::sync::RwLock;
 
-use p2pcd_types::{
-    message_types, CapabilityContext, CapabilityHandler, PeerId, ProtocolMessage,
-};
+use p2pcd_types::{message_types, CapabilityContext, CapabilityHandler, PeerId, ProtocolMessage};
 
 /// CBOR payload keys for BUILD_ATTEST (message type 6)
 mod keys {
@@ -72,9 +70,18 @@ impl CapabilityHandler for AttestHandler {
     ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + '_>> {
         Box::pin(async move {
             let payload = cbor_encode_map(vec![
-                (keys::VERSION, ciborium::value::Value::Text(env!("CARGO_PKG_VERSION").to_string())),
-                (keys::PLATFORM, ciborium::value::Value::Text(std::env::consts::OS.to_string())),
-                (keys::BUILD_HASH, ciborium::value::Value::Text("dev".to_string())),
+                (
+                    keys::VERSION,
+                    ciborium::value::Value::Text(env!("CARGO_PKG_VERSION").to_string()),
+                ),
+                (
+                    keys::PLATFORM,
+                    ciborium::value::Value::Text(std::env::consts::OS.to_string()),
+                ),
+                (
+                    keys::BUILD_HASH,
+                    ciborium::value::Value::Text("dev".to_string()),
+                ),
             ]);
             let msg = make_capability_msg(message_types::BUILD_ATTEST, payload);
             if let Some(tx) = self.send_tx.read().await.as_ref() {
@@ -111,7 +118,6 @@ impl CapabilityHandler for AttestHandler {
     }
 }
 
-
 #[allow(dead_code)]
 fn cbor_encode_map(pairs: Vec<(u64, ciborium::value::Value)>) -> Vec<u8> {
     use ciborium::value::{Integer, Value};
@@ -140,7 +146,10 @@ fn cbor_get_int(map: &[(ciborium::value::Value, ciborium::value::Value)], key: u
 }
 
 #[allow(dead_code)]
-fn cbor_get_text(map: &[(ciborium::value::Value, ciborium::value::Value)], key: u64) -> Option<String> {
+fn cbor_get_text(
+    map: &[(ciborium::value::Value, ciborium::value::Value)],
+    key: u64,
+) -> Option<String> {
     use ciborium::value::Value;
     for (k, v) in map {
         if let Value::Integer(ki) = k {
@@ -155,7 +164,10 @@ fn cbor_get_text(map: &[(ciborium::value::Value, ciborium::value::Value)], key: 
 }
 
 #[allow(dead_code)]
-fn cbor_get_bytes(map: &[(ciborium::value::Value, ciborium::value::Value)], key: u64) -> Option<Vec<u8>> {
+fn cbor_get_bytes(
+    map: &[(ciborium::value::Value, ciborium::value::Value)],
+    key: u64,
+) -> Option<Vec<u8>> {
     use ciborium::value::Value;
     for (k, v) in map {
         if let Value::Integer(ki) = k {
@@ -170,7 +182,10 @@ fn cbor_get_bytes(map: &[(ciborium::value::Value, ciborium::value::Value)], key:
 }
 
 #[allow(dead_code)]
-fn cbor_get_array(map: &[(ciborium::value::Value, ciborium::value::Value)], key: u64) -> Option<Vec<ciborium::value::Value>> {
+fn cbor_get_array(
+    map: &[(ciborium::value::Value, ciborium::value::Value)],
+    key: u64,
+) -> Option<Vec<ciborium::value::Value>> {
     use ciborium::value::Value;
     for (k, v) in map {
         if let Value::Integer(ki) = k {
@@ -185,9 +200,11 @@ fn cbor_get_array(map: &[(ciborium::value::Value, ciborium::value::Value)], key:
 }
 
 #[allow(dead_code)]
-fn decode_payload(payload: &[u8]) -> anyhow::Result<Vec<(ciborium::value::Value, ciborium::value::Value)>> {
-    let val: ciborium::value::Value = ciborium::de::from_reader(payload)
-        .map_err(|e| anyhow::anyhow!("CBOR decode: {e}"))?;
+fn decode_payload(
+    payload: &[u8],
+) -> anyhow::Result<Vec<(ciborium::value::Value, ciborium::value::Value)>> {
+    let val: ciborium::value::Value =
+        ciborium::de::from_reader(payload).map_err(|e| anyhow::anyhow!("CBOR decode: {e}"))?;
     match val {
         ciborium::value::Value::Map(m) => Ok(m),
         _ => anyhow::bail!("expected CBOR map payload"),
@@ -219,7 +236,10 @@ mod tests {
         let encoded = cbor_encode_map(vec![
             (keys::VERSION, ciborium::value::Value::Text("1.0.0".into())),
             (keys::PLATFORM, ciborium::value::Value::Text("linux".into())),
-            (keys::BUILD_HASH, ciborium::value::Value::Text("abc123".into())),
+            (
+                keys::BUILD_HASH,
+                ciborium::value::Value::Text("abc123".into()),
+            ),
         ]);
         let map = decode_payload(&encoded).unwrap();
         assert_eq!(cbor_get_text(&map, keys::VERSION).unwrap(), "1.0.0");
@@ -229,9 +249,10 @@ mod tests {
 
     #[test]
     fn cbor_get_missing_key() {
-        let encoded = cbor_encode_map(vec![
-            (keys::VERSION, ciborium::value::Value::Text("1.0".into())),
-        ]);
+        let encoded = cbor_encode_map(vec![(
+            keys::VERSION,
+            ciborium::value::Value::Text("1.0".into()),
+        )]);
         let map = decode_payload(&encoded).unwrap();
         assert!(cbor_get_text(&map, keys::PLATFORM).is_none());
     }

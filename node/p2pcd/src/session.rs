@@ -619,7 +619,7 @@ mod tests {
     #[tokio::test]
     async fn lurker_lurker_no_social() {
         // Both have Role::Both but mutual=false for social → no match
-let lurker_cap = CapabilityDeclaration {
+        let lurker_cap = CapabilityDeclaration {
             name: "howm.social.feed.1".to_string(),
             role: Role::Consume,
             mutual: false,
@@ -681,7 +681,7 @@ let lurker_cap = CapabilityDeclaration {
     async fn no_match_yields_none() {
         let local_manifest = make_manifest(5, vec![social_cap(Role::Provide)]);
         // remote only has a different cap (no consumer for social, no heartbeat mutual)
-let other_cap = CapabilityDeclaration {
+        let other_cap = CapabilityDeclaration {
             name: "howm.social.feed.1".to_string(),
             role: Role::Provide,
             mutual: false,

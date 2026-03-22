@@ -897,7 +897,10 @@ mod tests {
         let mut b = ScopeParams::default();
         b.set_ext(scope_keys::HEARTBEAT_INTERVAL_MS, ScopeValue::Uint(3000));
         let r = a.reconcile(&b);
-        assert_eq!(r.get_ext_uint(scope_keys::HEARTBEAT_INTERVAL_MS), Some(3000));
+        assert_eq!(
+            r.get_ext_uint(scope_keys::HEARTBEAT_INTERVAL_MS),
+            Some(3000)
+        );
     }
 
     #[test]
@@ -909,7 +912,9 @@ mod tests {
         // Provider (a) wins for non-numeric
         let r = a.reconcile(&b);
         assert_eq!(
-            r.get_ext(scope_keys::ENDPOINT_INCLUDE_GEO).unwrap().as_bool(),
+            r.get_ext(scope_keys::ENDPOINT_INCLUDE_GEO)
+                .unwrap()
+                .as_bool(),
             Some(true)
         );
     }
@@ -931,7 +936,11 @@ mod tests {
         let mut b = ScopeParams::default();
         b.set_ext(scope_keys::RPC_METHODS, methods_b);
         let r = a.reconcile(&b);
-        let result = r.get_ext(scope_keys::RPC_METHODS).unwrap().as_text_array().unwrap();
+        let result = r
+            .get_ext(scope_keys::RPC_METHODS)
+            .unwrap()
+            .as_text_array()
+            .unwrap();
         assert_eq!(result, vec!["echo", "status"]);
     }
 
@@ -951,7 +960,10 @@ mod tests {
         let mut b = ScopeParams::default();
         b.set_ext(scope_keys::RELAY_MAX_BANDWIDTH_KBPS, ScopeValue::Uint(1000));
         let r = a.reconcile(&b);
-        assert_eq!(r.get_ext_uint(scope_keys::RELAY_MAX_BANDWIDTH_KBPS), Some(1000));
+        assert_eq!(
+            r.get_ext_uint(scope_keys::RELAY_MAX_BANDWIDTH_KBPS),
+            Some(1000)
+        );
     }
 
     // ── Phase 1 v4 conformance: scope key registry (keys 3-23) ────────────────
@@ -986,7 +998,11 @@ mod tests {
         assert_eq!(set.len(), keys.len(), "scope keys must be unique");
         // All in range 3..=23
         for k in &keys {
-            assert!(*k >= 3 && *k <= 23, "core scope key {} out of range 3-23", k);
+            assert!(
+                *k >= 3 && *k <= 23,
+                "core scope key {} out of range 3-23",
+                k
+            );
         }
     }
 
@@ -1035,14 +1051,19 @@ mod tests {
         // Verify the default on_activated and on_deactivated compile and return Ok
         struct TestHandler;
         impl CapabilityHandler for TestHandler {
-            fn capability_name(&self) -> &str { "test.cap.1" }
-            fn handled_message_types(&self) -> &[u64] { &[99] }
+            fn capability_name(&self) -> &str {
+                "test.cap.1"
+            }
+            fn handled_message_types(&self) -> &[u64] {
+                &[99]
+            }
             fn on_message(
                 &self,
                 _msg_type: u64,
                 _payload: &[u8],
                 _ctx: &CapabilityContext,
-            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + '_>> {
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + '_>>
+            {
                 Box::pin(async { Ok(()) })
             }
         }
@@ -1057,14 +1078,19 @@ mod tests {
         // Verify the default on_activated/on_deactivated return Ok via poll
         struct NoopHandler;
         impl CapabilityHandler for NoopHandler {
-            fn capability_name(&self) -> &str { "noop.1" }
-            fn handled_message_types(&self) -> &[u64] { &[] }
+            fn capability_name(&self) -> &str {
+                "noop.1"
+            }
+            fn handled_message_types(&self) -> &[u64] {
+                &[]
+            }
             fn on_message(
                 &self,
                 _: u64,
                 _: &[u8],
                 _: &CapabilityContext,
-            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + '_>> {
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + '_>>
+            {
                 Box::pin(async { Ok(()) })
             }
         }
@@ -1078,7 +1104,9 @@ mod tests {
         // The default impl returns a ready future — poll it synchronously
         use std::task::{Context as TaskContext, Poll, Wake, Waker};
         struct NoopWaker;
-        impl Wake for NoopWaker { fn wake(self: std::sync::Arc<Self>) {} }
+        impl Wake for NoopWaker {
+            fn wake(self: std::sync::Arc<Self>) {}
+        }
         let waker = Waker::from(std::sync::Arc::new(NoopWaker));
         let mut cx = TaskContext::from_waker(&waker);
 
@@ -1146,7 +1174,11 @@ mod tests {
             message_types::EVENT_MSG,
         ];
         for t in &cap_types {
-            assert!(*t >= 6 && *t <= 26, "capability msg type {} out of range", t);
+            assert!(
+                *t >= 6 && *t <= 26,
+                "capability msg type {} out of range",
+                t
+            );
         }
         // All unique
         let set: HashSet<u64> = cap_types.iter().copied().collect();

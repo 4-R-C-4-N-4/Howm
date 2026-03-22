@@ -19,11 +19,11 @@ use tokio::sync::{mpsc, Mutex, RwLock};
 use p2pcd_types::{config::PeerConfig, CloseReason, DiscoveryManifest, PeerId, TrustPolicy};
 
 use super::cap_notify::CapabilityNotifier;
+use crate::wireguard::{WgPeerEvent, WgPeerMonitor};
 use p2pcd::capabilities::CapabilityRouter;
 use p2pcd::heartbeat::{HeartbeatEvent, HeartbeatManager};
 use p2pcd::session::{self, Session, SessionState};
 use p2pcd::transport::{self, P2pcdListener};
-use crate::wireguard::{WgPeerEvent, WgPeerMonitor};
 
 /// Peer cache TTL: entries older than this are ignored (re-negotiate).
 const CACHE_TTL_SECS: u64 = 3600;
@@ -294,11 +294,7 @@ impl ProtocolEngine {
             // Deactivate capability handlers for removed caps
             if let Err(e) = self
                 .cap_router
-                .deactivate_capabilities(
-                    peer_id,
-                    &active_set,
-                    &std::collections::BTreeMap::new(),
-                )
+                .deactivate_capabilities(peer_id, &active_set, &std::collections::BTreeMap::new())
                 .await
             {
                 tracing::warn!(
@@ -376,7 +372,9 @@ impl ProtocolEngine {
             if remote.sequence_num <= last && remote.sequence_num > 0 {
                 tracing::warn!(
                     "engine: replay detected for {} (seq {} <= {}), dropping",
-                    short(peer_id), remote.sequence_num, last
+                    short(peer_id),
+                    remote.sequence_num,
+                    last
                 );
                 return Ok(());
             }
@@ -411,7 +409,10 @@ impl ProtocolEngine {
         {
             let sessions = self.sessions.read().await;
             if let Some(s) = sessions.get(&peer_id) {
-                if matches!(s.state, SessionState::Handshake | SessionState::CapabilityExchange) {
+                if matches!(
+                    s.state,
+                    SessionState::Handshake | SessionState::CapabilityExchange
+                ) {
                     if self.local_peer_id < peer_id {
                         // We're the lower ID — our outbound wins, reject inbound.
                         tracing::info!(
@@ -443,7 +444,9 @@ impl ProtocolEngine {
             if remote.sequence_num <= last && remote.sequence_num > 0 {
                 tracing::warn!(
                     "engine: replay detected for {} (seq {} <= {}), dropping",
-                    short(peer_id), remote.sequence_num, last
+                    short(peer_id),
+                    remote.sequence_num,
+                    last
                 );
                 return Ok(());
             }
@@ -490,10 +493,7 @@ impl ProtocolEngine {
         }
 
         // 1. Start heartbeat if core.session.heartbeat.1 is in the active_set
-        let wants_heartbeat = s
-            .active_set
-            .iter()
-            .any(|c| c == "core.session.heartbeat.1");
+        let wants_heartbeat = s.active_set.iter().any(|c| c == "core.session.heartbeat.1");
 
         if wants_heartbeat {
             if let Some(transport) = s.transport.take() {
@@ -698,8 +698,7 @@ impl ProtocolEngine {
             self.record_session_outcome(&new_s).await;
 
             // Compute removed capabilities: old_set - new_set
-            let new_set: std::collections::HashSet<&String> =
-                new_s.active_set.iter().collect();
+            let new_set: std::collections::HashSet<&String> = new_s.active_set.iter().collect();
             let removed: Vec<String> = old_active_set
                 .iter()
                 .filter(|c| !new_set.contains(c))
@@ -866,13 +865,13 @@ mod tests {
             protocol_version: PROTOCOL_VERSION,
             peer_id: [id; 32],
             sequence_num: 1,
-capabilities: vec![CapabilityDeclaration {
-                    name: "core.session.heartbeat.1".to_string(),
-                    role: Role::Both,
-                    mutual: true,
-                    scope: None,
-                    applicable_scope_keys: None,
-                }],
+            capabilities: vec![CapabilityDeclaration {
+                name: "core.session.heartbeat.1".to_string(),
+                role: Role::Both,
+                mutual: true,
+                scope: None,
+                applicable_scope_keys: None,
+            }],
             personal_hash: vec![id; 32],
             hash_algorithm: "sha-256".to_string(),
         }
@@ -1397,7 +1396,8 @@ capabilities: vec![CapabilityDeclaration {
                     a.iter().any(|s| s.state == SessionState::Active)
                         || b.iter().any(|s| s.state == SessionState::Active),
                     "Glare: at least one side should reach Active.\nAlice: {:?}\nBob: {:?}",
-                    a, b
+                    a,
+                    b
                 );
                 break;
             }

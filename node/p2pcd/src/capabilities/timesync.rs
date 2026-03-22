@@ -11,9 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use tokio::sync::RwLock;
 
-use p2pcd_types::{
-    message_types, CapabilityContext, CapabilityHandler, PeerId, ProtocolMessage,
-};
+use p2pcd_types::{message_types, CapabilityContext, CapabilityHandler, PeerId, ProtocolMessage};
 
 /// CBOR payload keys for TIME_REQ/TIME_RESP
 mod keys {
@@ -73,11 +71,10 @@ impl CapabilityHandler for TimesyncHandler {
         _ctx: &CapabilityContext,
     ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + '_>> {
         Box::pin(async move {
-            let payload = cbor_encode_map(vec![
-                (keys::LOCAL_TIMESTAMP_MS, ciborium::value::Value::Integer(
-                    ciborium::value::Integer::from(now_ms()),
-                )),
-            ]);
+            let payload = cbor_encode_map(vec![(
+                keys::LOCAL_TIMESTAMP_MS,
+                ciborium::value::Value::Integer(ciborium::value::Integer::from(now_ms())),
+            )]);
             let msg = make_capability_msg(message_types::TIME_REQ, payload);
             if let Some(tx) = self.send_tx.read().await.as_ref() {
                 let _ = tx.send(msg).await;
@@ -102,12 +99,18 @@ impl CapabilityHandler for TimesyncHandler {
                     // Respond with our local timestamp + their original timestamp
                     let remote_ts = cbor_get_int(&map, keys::LOCAL_TIMESTAMP_MS).unwrap_or(0);
                     let resp_payload = cbor_encode_map(vec![
-                        (keys::LOCAL_TIMESTAMP_MS, ciborium::value::Value::Integer(
-                            ciborium::value::Integer::from(now_ms()),
-                        )),
-                        (keys::REMOTE_TIMESTAMP_MS, ciborium::value::Value::Integer(
-                            ciborium::value::Integer::from(remote_ts),
-                        )),
+                        (
+                            keys::LOCAL_TIMESTAMP_MS,
+                            ciborium::value::Value::Integer(ciborium::value::Integer::from(
+                                now_ms(),
+                            )),
+                        ),
+                        (
+                            keys::REMOTE_TIMESTAMP_MS,
+                            ciborium::value::Value::Integer(ciborium::value::Integer::from(
+                                remote_ts,
+                            )),
+                        ),
                     ]);
                     let msg = make_capability_msg(message_types::TIME_RESP, resp_payload);
                     if let Some(tx) = self.send_tx.read().await.as_ref() {
@@ -134,7 +137,6 @@ impl CapabilityHandler for TimesyncHandler {
         })
     }
 }
-
 
 #[allow(dead_code)]
 fn cbor_encode_map(pairs: Vec<(u64, ciborium::value::Value)>) -> Vec<u8> {
@@ -164,7 +166,10 @@ fn cbor_get_int(map: &[(ciborium::value::Value, ciborium::value::Value)], key: u
 }
 
 #[allow(dead_code)]
-fn cbor_get_text(map: &[(ciborium::value::Value, ciborium::value::Value)], key: u64) -> Option<String> {
+fn cbor_get_text(
+    map: &[(ciborium::value::Value, ciborium::value::Value)],
+    key: u64,
+) -> Option<String> {
     use ciborium::value::Value;
     for (k, v) in map {
         if let Value::Integer(ki) = k {
@@ -179,7 +184,10 @@ fn cbor_get_text(map: &[(ciborium::value::Value, ciborium::value::Value)], key: 
 }
 
 #[allow(dead_code)]
-fn cbor_get_bytes(map: &[(ciborium::value::Value, ciborium::value::Value)], key: u64) -> Option<Vec<u8>> {
+fn cbor_get_bytes(
+    map: &[(ciborium::value::Value, ciborium::value::Value)],
+    key: u64,
+) -> Option<Vec<u8>> {
     use ciborium::value::Value;
     for (k, v) in map {
         if let Value::Integer(ki) = k {
@@ -194,7 +202,10 @@ fn cbor_get_bytes(map: &[(ciborium::value::Value, ciborium::value::Value)], key:
 }
 
 #[allow(dead_code)]
-fn cbor_get_array(map: &[(ciborium::value::Value, ciborium::value::Value)], key: u64) -> Option<Vec<ciborium::value::Value>> {
+fn cbor_get_array(
+    map: &[(ciborium::value::Value, ciborium::value::Value)],
+    key: u64,
+) -> Option<Vec<ciborium::value::Value>> {
     use ciborium::value::Value;
     for (k, v) in map {
         if let Value::Integer(ki) = k {
@@ -209,9 +220,11 @@ fn cbor_get_array(map: &[(ciborium::value::Value, ciborium::value::Value)], key:
 }
 
 #[allow(dead_code)]
-fn decode_payload(payload: &[u8]) -> anyhow::Result<Vec<(ciborium::value::Value, ciborium::value::Value)>> {
-    let val: ciborium::value::Value = ciborium::de::from_reader(payload)
-        .map_err(|e| anyhow::anyhow!("CBOR decode: {e}"))?;
+fn decode_payload(
+    payload: &[u8],
+) -> anyhow::Result<Vec<(ciborium::value::Value, ciborium::value::Value)>> {
+    let val: ciborium::value::Value =
+        ciborium::de::from_reader(payload).map_err(|e| anyhow::anyhow!("CBOR decode: {e}"))?;
     match val {
         ciborium::value::Value::Map(m) => Ok(m),
         _ => anyhow::bail!("expected CBOR map payload"),
@@ -247,11 +260,10 @@ mod tests {
 
     #[test]
     fn cbor_int_roundtrip() {
-        let encoded = cbor_encode_map(vec![
-            (keys::LOCAL_TIMESTAMP_MS, ciborium::value::Value::Integer(
-                ciborium::value::Integer::from(123456u64),
-            )),
-        ]);
+        let encoded = cbor_encode_map(vec![(
+            keys::LOCAL_TIMESTAMP_MS,
+            ciborium::value::Value::Integer(ciborium::value::Integer::from(123456u64)),
+        )]);
         let map = decode_payload(&encoded).unwrap();
         assert_eq!(cbor_get_int(&map, keys::LOCAL_TIMESTAMP_MS), Some(123456));
     }
