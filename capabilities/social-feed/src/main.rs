@@ -53,14 +53,15 @@ async fn main() -> anyhow::Result<()> {
 
     let app = Router::new()
         // Existing feed endpoints
-        .route("/feed",   get(api::get_feed))
-        .route("/post",   post(api::create_post))
+        .route("/feed", get(api::get_feed))
+        .route("/post", post(api::create_post))
         .route("/health", get(api::health))
         // Active peer list (for debugging / UI)
-        .route("/peers",  get(api::list_social_peers))
-        // P2P-CD daemon callbacks (Task 7.3)
-        .route("/p2pcd/peer-active",   post(api::p2pcd_peer_active))
+        .route("/peers", get(api::list_social_peers))
+        // P2P-CD daemon callbacks
+        .route("/p2pcd/peer-active", post(api::p2pcd_peer_active))
         .route("/p2pcd/peer-inactive", post(api::p2pcd_peer_inactive))
+        .route("/p2pcd/inbound", post(api::p2pcd_inbound))
         .with_state(state)
         // Embedded capability UI — served at /ui/*
         .fallback(serve_ui);

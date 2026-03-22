@@ -25,7 +25,7 @@ pub const MSG_TYPE_POST_BROADCAST: u64 = 100;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActiveSocialPeer {
     /// Base64-encoded WireGuard public key.
-    pub peer_id:    String,
+    pub peer_id: String,
     /// WireGuard IP address — used to fetch this peer's feed directly.
     pub wg_address: String,
     /// Unix timestamp when this peer became active.
@@ -34,9 +34,9 @@ pub struct ActiveSocialPeer {
 
 #[derive(Clone)]
 pub struct FeedState {
-    pub data_dir:     PathBuf,
+    pub data_dir: PathBuf,
     /// Bridge client for P2P-CD daemon communication.
-    pub bridge:       BridgeClient,
+    pub bridge: BridgeClient,
     /// Active social peers discovered via P2P-CD.
     pub social_peers: Arc<RwLock<Vec<ActiveSocialPeer>>>,
 }
@@ -54,15 +54,14 @@ impl FeedState {
 // ── Existing feed endpoints ───────────────────────────────────────────────────
 
 pub async fn get_feed(State(state): State<FeedState>) -> Json<Value> {
-    let mut posts = posts::load(&state.data_dir).unwrap_or_default();
-    posts.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    let posts = posts::load_all(&state.data_dir).unwrap_or_default();
     Json(json!({ "posts": posts }))
 }
 
 #[derive(Deserialize)]
 pub struct CreatePostRequest {
-    pub content:     String,
-    pub author_id:   Option<String>,
+    pub content: String,
+    pub author_id: Option<String>,
     pub author_name: Option<String>,
 }
 
@@ -75,7 +74,10 @@ pub async fn create_post(
         .author_id
         .filter(|s| !s.is_empty())
         .or_else(|| {
-            headers.get("X-Node-Id").and_then(|v| v.to_str().ok()).map(|s| s.to_string())
+            headers
+                .get("X-Node-Id")
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string())
         })
         .unwrap_or_else(|| "anonymous".to_string());
 
@@ -83,7 +85,10 @@ pub async fn create_post(
         .author_name
         .filter(|s| !s.is_empty())
         .or_else(|| {
-            headers.get("X-Node-Name").and_then(|v| v.to_str().ok()).map(|s| s.to_string())
+            headers
+                .get("X-Node-Name")
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string())
         })
         .unwrap_or_else(|| "Anonymous".to_string());
 
@@ -111,7 +116,10 @@ pub async fn create_post(
 
             Ok((StatusCode::CREATED, Json(json!({ "post": post }))))
         }
-        Err(e) => Err((StatusCode::BAD_REQUEST, Json(json!({ "error": e.to_string() })))),
+        Err(e) => Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": e.to_string() })),
+        )),
     }
 }
 
@@ -124,18 +132,18 @@ pub async fn health() -> Json<Value> {
 /// Payload from daemon: `POST /p2pcd/peer-active`
 #[derive(Debug, Clone, Deserialize)]
 pub struct PeerActivePayload {
-    pub peer_id:      String,
-    pub wg_address:   String,
-    pub capability:   String,
+    pub peer_id: String,
+    pub wg_address: String,
+    pub capability: String,
     pub active_since: u64,
 }
 
 /// Payload from daemon: `POST /p2pcd/peer-inactive`
 #[derive(Debug, Clone, Deserialize)]
 pub struct PeerInactivePayload {
-    pub peer_id:    String,
+    pub peer_id: String,
     pub capability: String,
-    pub reason:     String,
+    pub reason: String,
 }
 
 /// Called by the daemon when a peer negotiates our social capability.
@@ -146,11 +154,15 @@ pub async fn p2pcd_peer_active(
     if body.capability != SOCIAL_CAP {
         return StatusCode::OK; // not for us
     }
-    info!("p2pcd: peer {} active for {}", &body.peer_id[..8.min(body.peer_id.len())], SOCIAL_CAP);
+    info!(
+        "p2pcd: peer {} active for {}",
+        &body.peer_id[..8.min(body.peer_id.len())],
+        SOCIAL_CAP
+    );
 
     let peer = ActiveSocialPeer {
-        peer_id:      body.peer_id.clone(),
-        wg_address:   body.wg_address.clone(),
+        peer_id: body.peer_id.clone(),
+        wg_address: body.wg_address.clone(),
         active_since: body.active_since,
     };
 
@@ -170,12 +182,89 @@ pub async fn p2pcd_peer_inactive(
     if body.capability != SOCIAL_CAP {
         return StatusCode::OK;
     }
-    info!("p2pcd: peer {} inactive ({}) for {}", &body.peer_id[..8.min(body.peer_id.len())], body.reason, SOCIAL_CAP);
+    info!(
+        "p2pcd: peer {} inactive ({}) for {}",
+        &body.peer_id[..8.min(body.peer_id.len())],
+        body.reason,
+        SOCIAL_CAP
+    );
 
     let mut peers = state.social_peers.write().await;
     peers.retain(|p| p.peer_id != body.peer_id);
 
     StatusCode::OK
+}
+
+// ── Inbound capability message handler ───────────────────────────────────────
+
+/// Payload forwarded by the daemon when a peer sends us a capability message
+/// that has no in-process handler (i.e. app-level message types like post broadcasts).
+#[derive(Debug, Clone, Deserialize)]
+pub struct InboundMessage {
+    pub peer_id: String,
+    pub message_type: u64,
+    pub payload: String, // base64-encoded
+    pub capability: String,
+}
+
+/// Called by the daemon when it forwards an inbound capability message to us.
+/// POST /p2pcd/inbound
+pub async fn p2pcd_inbound(
+    State(state): State<FeedState>,
+    Json(body): Json<InboundMessage>,
+) -> Result<StatusCode, (StatusCode, Json<Value>)> {
+    if body.capability != SOCIAL_CAP {
+        return Ok(StatusCode::OK); // not for us
+    }
+
+    match body.message_type {
+        MSG_TYPE_POST_BROADCAST => {
+            // Decode the base64 payload
+            use base64::Engine;
+            let payload_bytes = base64::engine::general_purpose::STANDARD
+                .decode(&body.payload)
+                .map_err(|e| {
+                    (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({ "error": format!("bad base64: {e}") })),
+                    )
+                })?;
+
+            // Deserialize the Post from JSON payload
+            let post: posts::Post = serde_json::from_slice(&payload_bytes).map_err(|e| {
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": format!("bad post JSON: {e}") })),
+                )
+            })?;
+
+            match posts::ingest_peer_post(&state.data_dir, post, &body.peer_id) {
+                Ok(true) => {
+                    info!(
+                        "Ingested post from peer {}",
+                        &body.peer_id[..8.min(body.peer_id.len())]
+                    );
+                    Ok(StatusCode::CREATED)
+                }
+                Ok(false) => {
+                    // Duplicate — already have this post
+                    Ok(StatusCode::OK)
+                }
+                Err(e) => Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": e.to_string() })),
+                )),
+            }
+        }
+        _ => {
+            tracing::debug!(
+                "inbound: unknown message type {} for {}",
+                body.message_type,
+                SOCIAL_CAP
+            );
+            Ok(StatusCode::OK)
+        }
+    }
 }
 
 /// List current active social peers (read by the feed UI / aggregation logic).
@@ -194,8 +283,8 @@ pub async fn init_peers_from_daemon(state: FeedState) {
             let mut peers = state.social_peers.write().await;
             for bp in &bridge_peers {
                 peers.push(ActiveSocialPeer {
-                    peer_id:      bp.peer_id.clone(),
-                    wg_address:   String::new(), // filled on peer-active callback
+                    peer_id: bp.peer_id.clone(),
+                    wg_address: String::new(), // filled on peer-active callback
                     active_since: 0,
                 });
             }

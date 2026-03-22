@@ -597,7 +597,7 @@ impl ProtocolEngine {
         cap_router: Arc<CapabilityRouter>,
         accepted_params: std::collections::BTreeMap<String, p2pcd_types::ScopeParams>,
         active_set: Vec<String>,
-        _notifier: Arc<CapabilityNotifier>,
+        notifier: Arc<CapabilityNotifier>,
     ) {
         while let Some(msg) = cap_rx.recv().await {
             if let p2pcd_types::ProtocolMessage::CapabilityMsg {
@@ -614,20 +614,27 @@ impl ProtocolEngine {
                             .map(|h| h.handled_message_types().contains(&message_type))
                             .unwrap_or(false)
                     })
-                    .cloned()
-                    .unwrap_or_default();
+                    .cloned();
 
-                let params = accepted_params.get(&cap_name).cloned().unwrap_or_default();
-                if let Err(e) = cap_router
-                    .dispatch(message_type, &payload, peer_id, &params, &cap_name)
-                    .await
-                {
-                    tracing::warn!(
-                        "engine: cap dispatch error for type {} from {}: {}",
-                        message_type,
-                        short(peer_id),
-                        e
-                    );
+                if let Some(cap_name) = cap_name {
+                    // In-process handler found — dispatch directly
+                    let params = accepted_params.get(&cap_name).cloned().unwrap_or_default();
+                    if let Err(e) = cap_router
+                        .dispatch(message_type, &payload, peer_id, &params, &cap_name)
+                        .await
+                    {
+                        tracing::warn!(
+                            "engine: cap dispatch error for type {} from {}: {}",
+                            message_type,
+                            short(peer_id),
+                            e
+                        );
+                    }
+                } else {
+                    // No in-process handler — forward to out-of-process capability
+                    notifier
+                        .forward_to_capability(peer_id, message_type, &payload, &active_set)
+                        .await;
                 }
             }
         }
