@@ -533,12 +533,12 @@ mod tests {
             .unwrap();
         finalize_session(
             &mut session,
-            vec!["p2pcd.social.post.1".to_string()],
+            vec!["howm.social.feed.1".to_string()],
             BTreeMap::new(),
         )
         .unwrap();
         assert_eq!(session.state, SessionState::Active);
-        assert_eq!(session.active_set, vec!["p2pcd.social.post.1"]);
+        assert_eq!(session.active_set, vec!["howm.social.feed.1"]);
     }
 
     #[test]
@@ -660,7 +660,7 @@ mod tests {
         assert!(
             !session
                 .active_set
-                .contains(&"p2pcd.social.post.1".to_string()),
+                .contains(&"howm.social.feed.1".to_string()),
             "lurker+lurker social should NOT match"
         );
         assert!(
@@ -672,7 +672,7 @@ mod tests {
         );
         assert_eq!(session.state, SessionState::Active);
 
-        assert!(!resp_set.contains(&"p2pcd.social.post.1".to_string()));
+        assert!(!resp_set.contains(&"howm.social.feed.1".to_string()));
         assert_eq!(resp_state, SessionState::Active);
     }
 

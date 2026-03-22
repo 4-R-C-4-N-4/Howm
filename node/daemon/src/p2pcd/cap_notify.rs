@@ -54,7 +54,7 @@ pub struct PeerInactivePayload {
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct CapabilityEndpoint {
-    /// Capability name (e.g. \"p2pcd.social.post.1\").
+    /// Capability name (e.g. \"howm.social.feed.1\").
     pub cap_name: String,
     /// Local port the capability is listening on.
     pub port: u16,

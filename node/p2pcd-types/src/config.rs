@@ -137,7 +137,7 @@ impl Default for DiscoveryConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CapabilityConfig {
-    /// Fully-qualified capability name (e.g. "p2pcd.social.post.1").
+    /// Fully-qualified capability name (e.g. "howm.social.feed.1").
     /// Must match the namespace grammar §4.4.
     pub name: String,
     /// Role: "provide" | "consume" | "both"
@@ -547,7 +547,7 @@ list = []
 
     #[test]
     fn validate_capability_names() {
-        assert!(validate_capability_name("p2pcd.social.post.1"));
+        assert!(validate_capability_name("howm.social.feed.1"));
         assert!(validate_capability_name("core.session.heartbeat.1"));
         assert!(validate_capability_name("org.example.cap.2"));
         assert!(!validate_capability_name("invalid"));
