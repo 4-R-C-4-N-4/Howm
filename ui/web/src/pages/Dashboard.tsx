@@ -200,5 +200,4 @@ const codeStyle: React.CSSProperties = {
   borderRadius: '3px',
 };
 
-// re-export for Dashboard internal use only
-export { btnStyle, accentBtnStyle, inputStyle };
+

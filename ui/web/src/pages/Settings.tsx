@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import {
   getNodeSettings,
   getIdentity,
@@ -17,9 +17,12 @@ export function Settings() {
   const [p2pcdDraft, setP2pcdDraft] = useState<string>('');
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'ok' | 'err'>('idle');
 
-  useEffect(() => {
-    if (p2pcd) setP2pcdDraft(JSON.stringify(p2pcd, null, 2));
-  }, [p2pcd]);
+  // Sync draft when server data changes (adjust-state-during-render pattern)
+  const [prevP2pcd, setPrevP2pcd] = useState(p2pcd);
+  if (p2pcd && p2pcd !== prevP2pcd) {
+    setPrevP2pcd(p2pcd);
+    setP2pcdDraft(JSON.stringify(p2pcd, null, 2));
+  }
 
   const mutation = useMutation({
     mutationFn: (patch: Partial<P2pcdConfig>) => updateP2pcdConfig(patch),
