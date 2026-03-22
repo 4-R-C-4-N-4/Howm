@@ -645,6 +645,7 @@ dependencies = [
  "axum",
  "base64",
  "chrono",
+ "ciborium",
  "clap",
  "dirs",
  "hex",
@@ -652,6 +653,7 @@ dependencies = [
  "hostname",
  "include_dir",
  "nix",
+ "p2pcd",
  "p2pcd-types",
  "rand 0.8.5",
  "reqwest",
@@ -1152,6 +1154,24 @@ name = "option-ext"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
+
+[[package]]
+name = "p2pcd"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64",
+ "ciborium",
+ "hex",
+ "p2pcd-types",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
 
 [[package]]
 name = "p2pcd-types"

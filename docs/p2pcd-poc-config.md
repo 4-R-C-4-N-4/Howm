@@ -24,7 +24,7 @@ WireGuard provides three of the protocol's requirements out of the box, which el
 | Capability discovery and negotiation | The core of P2P-CD — what each peer can do, role matching, trust gates |
 | Per-capability access control | Trust gates, classification tiers, CONFIRM reconciliation |
 | Session lifecycle management | State machine, rebroadcast, auto-deny |
-| Application-level liveness | Heartbeat (core.heartbeat.liveness.1) — WireGuard keepalive is transport-level only, it doesn't confirm the application is still functioning |
+| Application-level liveness | Heartbeat (core.session.heartbeat.1) — WireGuard keepalive is transport-level only, it doesn't confirm the application is still functioning |
 
 ---
 
@@ -195,7 +195,7 @@ default_tier = "public"                 # accept posts from anyone with a WG tun
 
 # ─── Capability: heartbeat (mandatory) ───
 [capabilities.heartbeat]
-name = "core.heartbeat.liveness.1"
+name = "core.session.heartbeat.1"
 role = "both"
 mutual = true
 
@@ -339,8 +339,8 @@ This is what the Normal User archetype looks like as a CBOR-encoded OFFER messag
          a7b8c9d0e1f2a3b4c5d6a1b2c3d4e5f6', / peer_id: 32-byte WG public key /
     3: 1,                               / sequence_num /
     4: [                                / capabilities (sorted by name) /
-      {                                 / core.heartbeat.liveness.1 /
-        1: "core.heartbeat.liveness.1",
+      {                                 / core.session.heartbeat.1 /
+        1: "core.session.heartbeat.1",
         2: 3,                           / role: both /
         3: true,                        / mutual: true /
       },
@@ -387,10 +387,10 @@ Intersection:
   Bob.social.post/PROVIDE    ↔  Alice.social.feed/CONSUME   → match (Bob serves Alice)
   heartbeat/BOTH             ↔  heartbeat/BOTH (mutual:true) → match
 
-Alice CONFIRM active_set: [core.heartbeat.liveness.1,
+Alice CONFIRM active_set: [core.session.heartbeat.1,
                            p2pcd.social.feed.1,
                            p2pcd.social.post.1]
-Bob   CONFIRM active_set: [core.heartbeat.liveness.1,
+Bob   CONFIRM active_set: [core.session.heartbeat.1,
                            p2pcd.social.feed.1,
                            p2pcd.social.post.1]
 
@@ -408,8 +408,8 @@ Intersection:
   Alice.social.feed/CONSUME  ↔  (nothing from Lurker)        → no match
   heartbeat/BOTH             ↔  heartbeat/BOTH               → match
 
-Alice CONFIRM: [core.heartbeat.liveness.1, p2pcd.social.post.1]
-Lurker CONFIRM: [core.heartbeat.liveness.1, p2pcd.social.post.1]
+Alice CONFIRM: [core.session.heartbeat.1, p2pcd.social.post.1]
+Lurker CONFIRM: [core.session.heartbeat.1, p2pcd.social.post.1]
 
 Result: ACTIVE with 2 capabilities. Lurker reads Alice's posts.
 ```
@@ -427,12 +427,12 @@ But Private's trust gate checks: is S... in friends list? → NO
   Private's trust gate for social.feed: S... ∉ friends → DENY
   Heartbeat has no trust gate (always ALLOW)
 
-Private CONFIRM: [core.heartbeat.liveness.1]
-Stranger CONFIRM: [core.heartbeat.liveness.1,
+Private CONFIRM: [core.session.heartbeat.1]
+Stranger CONFIRM: [core.session.heartbeat.1,
                    p2pcd.social.feed.1,
                    p2pcd.social.post.1]
 
-Reconciliation: intersection = [core.heartbeat.liveness.1]
+Reconciliation: intersection = [core.session.heartbeat.1]
 
 Result: ACTIVE with 1 capability (heartbeat only). No post exchange.
   WireGuard authenticated the peer, but the P2P-CD trust gate
@@ -447,9 +447,9 @@ Friend  (wg pubkey: F...): social.post/PROVIDE (PUBLIC) + social.feed/CONSUME (P
 
 Private's trust gate: F... ∈ friends → ALLOW for both capabilities
 
-Private CONFIRM: [core.heartbeat.liveness.1, p2pcd.social.feed.1,
+Private CONFIRM: [core.session.heartbeat.1, p2pcd.social.feed.1,
                   p2pcd.social.post.1]
-Friend CONFIRM:  [core.heartbeat.liveness.1, p2pcd.social.feed.1,
+Friend CONFIRM:  [core.session.heartbeat.1, p2pcd.social.feed.1,
                   p2pcd.social.post.1]
 
 Result: ACTIVE with 3 capabilities. Full bidirectional post exchange.
@@ -465,7 +465,7 @@ Intersection:
   social.feed/CONSUME ↔ social.feed/CONSUME → no match (CONSUME+CONSUME)
   heartbeat/BOTH ↔ heartbeat/BOTH → match
 
-Both CONFIRM: [core.heartbeat.liveness.1]
+Both CONFIRM: [core.session.heartbeat.1]
 
 Result: ACTIVE with 1 capability (heartbeat only).
   Two lurkers have nothing to offer each other. Implementation MAY close.

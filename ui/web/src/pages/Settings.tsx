@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import {
   getNodeSettings,
   getIdentity,
@@ -17,9 +17,12 @@ export function Settings() {
   const [p2pcdDraft, setP2pcdDraft] = useState<string>('');
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'ok' | 'err'>('idle');
 
-  useEffect(() => {
-    if (p2pcd) setP2pcdDraft(JSON.stringify(p2pcd, null, 2));
-  }, [p2pcd]);
+  // Sync draft when server data changes (adjust-state-during-render pattern)
+  const [prevP2pcd, setPrevP2pcd] = useState(p2pcd);
+  if (p2pcd && p2pcd !== prevP2pcd) {
+    setPrevP2pcd(p2pcd);
+    setP2pcdDraft(JSON.stringify(p2pcd, null, 2));
+  }
 
   const mutation = useMutation({
     mutationFn: (patch: Partial<P2pcdConfig>) => updateP2pcdConfig(patch),
@@ -81,9 +84,14 @@ export function Settings() {
       {/* P2P-CD config */}
       <section style={sectionStyle}>
         <h2 style={h2Style}>P2P-CD</h2>
-        <p style={{ ...mutedStyle, marginBottom: '12px' }}>
+        <p style={{ ...mutedStyle, marginBottom: '4px' }}>
           Edit as JSON. Changes take effect after daemon restart.
         </p>
+        {node?.data_dir && (
+          <p style={{ ...mutedStyle, marginBottom: '12px', fontSize: '0.8rem', fontFamily: 'var(--howm-font-mono, monospace)' }}>
+            {node.data_dir}/p2pcd-peer.toml
+          </p>
+        )}
         <textarea
           value={p2pcdDraft}
           onChange={e => setP2pcdDraft(e.target.value)}

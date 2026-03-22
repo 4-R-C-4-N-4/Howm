@@ -137,7 +137,7 @@ impl Default for DiscoveryConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CapabilityConfig {
-    /// Fully-qualified capability name (e.g. "p2pcd.social.post.1").
+    /// Fully-qualified capability name (e.g. "howm.social.feed.1").
     /// Must match the namespace grammar §4.4.
     pub name: String,
     /// Role: "provide" | "consume" | "both"
@@ -184,6 +184,7 @@ impl From<&ScopeConfig> for ScopeParams {
         ScopeParams {
             rate_limit: s.rate_limit,
             ttl: s.ttl,
+            extensions: Default::default(),
         }
     }
 }
@@ -340,7 +341,7 @@ impl PeerConfig {
                 m.insert(
                     "heartbeat".to_string(),
                     CapabilityConfig {
-                        name: "core.heartbeat.liveness.1".to_string(),
+                        name: "core.session.heartbeat.1".to_string(),
                         role: RoleConfig::Both,
                         mutual: true,
                         scope: None,
@@ -373,6 +374,7 @@ impl PeerConfig {
                 mutual: c.mutual,
                 // Scope from config
                 scope: c.scope.as_ref().map(ScopeParams::from),
+                applicable_scope_keys: None,
             })
             .collect();
         caps.sort_by(|a, b| a.name.cmp(&b.name));
@@ -483,7 +485,7 @@ ttl = 3600
 default_tier = "public"
 
 [capabilities.heartbeat]
-name = "core.heartbeat.liveness.1"
+name = "core.session.heartbeat.1"
 role = "both"
 mutual = true
 
@@ -540,13 +542,13 @@ list = []
         let policies = cfg.trust_policies();
         assert!(policies.contains_key("howm.social.feed.1"));
         // Heartbeat has no classification config → no policy
-        assert!(!policies.contains_key("core.heartbeat.liveness.1"));
+        assert!(!policies.contains_key("core.session.heartbeat.1"));
     }
 
     #[test]
     fn validate_capability_names() {
-        assert!(validate_capability_name("p2pcd.social.post.1"));
-        assert!(validate_capability_name("core.heartbeat.liveness.1"));
+        assert!(validate_capability_name("howm.social.feed.1"));
+        assert!(validate_capability_name("core.session.heartbeat.1"));
         assert!(validate_capability_name("org.example.cap.2"));
         assert!(!validate_capability_name("invalid"));
         assert!(!validate_capability_name("p2pcd.1"));

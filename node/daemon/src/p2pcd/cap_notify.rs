@@ -48,13 +48,27 @@ pub struct PeerInactivePayload {
     pub reason: String,
 }
 
+/// Payload forwarded to a capability when an inbound CapabilityMsg arrives
+/// that has no in-process handler (i.e. app-level message types).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InboundMessage {
+    /// Base64-encoded 32-byte peer ID of the sender.
+    pub peer_id: String,
+    /// Message type number.
+    pub message_type: u64,
+    /// Base64-encoded payload bytes.
+    pub payload: String,
+    /// Capability name this message belongs to.
+    pub capability: String,
+}
+
 // ── Capability registry ───────────────────────────────────────────────────────
 
 /// A registered capability endpoint that receives P2P-CD peer notifications.
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct CapabilityEndpoint {
-    /// Capability name (e.g. \"p2pcd.social.post.1\").
+    /// Capability name (e.g. \"howm.social.feed.1\").
     pub cap_name: String,
     /// Local port the capability is listening on.
     pub port: u16,
@@ -138,6 +152,46 @@ impl CapabilityNotifier {
         }
     }
 
+    /// Forward an inbound capability message to the appropriate out-of-process capability.
+    ///
+    /// Called by the dispatch loop when a message_type has no registered in-process handler.
+    /// Looks up the capability name in the active_set, finds its endpoint, and POSTs
+    /// the message to `POST /p2pcd/inbound` on that capability's HTTP server.
+    pub async fn forward_to_capability(
+        &self,
+        peer_id: PeerId,
+        message_type: u64,
+        payload: &[u8],
+        active_set: &[String],
+    ) -> bool {
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
+
+        let endpoints = self.endpoints.read().await;
+
+        // Find which app-level capability in the active_set has an endpoint registered.
+        // Core caps are handled in-process, so we only match app caps here.
+        for cap_name in active_set {
+            if let Some(ep) = endpoints.get(cap_name) {
+                let base = ep
+                    .url_override
+                    .clone()
+                    .unwrap_or_else(|| format!("http://127.0.0.1:{}", ep.port));
+                let url = format!("{}/p2pcd/inbound", base);
+
+                let body = InboundMessage {
+                    peer_id: STANDARD.encode(peer_id),
+                    message_type,
+                    payload: STANDARD.encode(payload),
+                    capability: cap_name.clone(),
+                };
+
+                tokio::spawn(post_inbound(url, body));
+                return true;
+            }
+        }
+        false
+    }
+
     /// Notify all capabilities that a peer is no longer available.
     pub async fn notify_peer_inactive(&self, peer_id: PeerId, active_set: &[String], reason: &str) {
         use base64::{engine::general_purpose::STANDARD, Engine as _};
@@ -178,6 +232,33 @@ async fn post_notification(url: String, payload: PeerActivePayload) {
         Err(e) => {
             tracing::debug!(
                 "cap_notify: POST {} failed (cap may not be running): {}",
+                url,
+                e
+            );
+        }
+    }
+}
+
+/// Fire-and-forget HTTP POST for inbound capability message forwarding.
+async fn post_inbound(url: String, body: InboundMessage) {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap_or_default();
+    match client.post(&url).json(&body).send().await {
+        Ok(resp) if resp.status().is_success() => {
+            tracing::debug!("cap_notify: inbound POST {} → {}", url, resp.status());
+        }
+        Ok(resp) => {
+            tracing::warn!(
+                "cap_notify: inbound POST {} returned {}",
+                url,
+                resp.status()
+            );
+        }
+        Err(e) => {
+            tracing::debug!(
+                "cap_notify: inbound POST {} failed (cap may not be running): {}",
                 url,
                 e
             );
@@ -231,12 +312,12 @@ mod tests {
 
         let notifier = CapabilityNotifier::new();
         notifier
-            .register("core.heartbeat.liveness.1".to_string(), port)
+            .register("core.session.heartbeat.1".to_string(), port)
             .await;
 
         let peer_id = [1u8; 32];
         let wg_addr: IpAddr = "100.222.0.2".parse().unwrap();
-        let active_set = vec!["core.heartbeat.liveness.1".to_string()];
+        let active_set = vec!["core.session.heartbeat.1".to_string()];
         let scope = BTreeMap::new();
 
         // Should not panic
@@ -275,7 +356,7 @@ mod tests {
         let p = PeerActivePayload {
             peer_id: "AAAA".to_string(),
             wg_address: "100.222.0.2".to_string(),
-            capability: "core.heartbeat.liveness.1".to_string(),
+            capability: "core.session.heartbeat.1".to_string(),
             scope: ScopeParams::default(),
             active_since: 0,
         };
@@ -283,6 +364,6 @@ mod tests {
         assert!(json.contains("peer_id"));
 
         let q: PeerActivePayload = serde_json::from_str(&json).unwrap();
-        assert_eq!(q.capability, "core.heartbeat.liveness.1");
+        assert_eq!(q.capability, "core.session.heartbeat.1");
     }
 }

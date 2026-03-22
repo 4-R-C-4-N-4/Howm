@@ -4,7 +4,7 @@
 
 use crate::{
     capability_keys, manifest_keys, message_keys, scope_keys, CapabilityDeclaration, CloseReason,
-    DiscoveryManifest, MessageType, ProtocolMessage, Role, ScopeParams, PEER_ID_LEN,
+    DiscoveryManifest, MessageType, ProtocolMessage, Role, ScopeParams, ScopeValue, PEER_ID_LEN,
 };
 use anyhow::{anyhow, bail, Context, Result};
 use ciborium::value::Value;
@@ -128,6 +128,10 @@ pub fn scope_to_cbor_value(scope: &ScopeParams) -> Value {
             Value::Integer(ciborium::value::Integer::from(scope.ttl)),
         ));
     }
+    // Extension keys (3+) — sorted by key for deterministic encoding
+    for (key, val) in &scope.extensions {
+        pairs.push((int_key(*key), scope_value_to_cbor(val)));
+    }
     Value::Map(pairs)
 }
 
@@ -136,10 +140,54 @@ pub fn scope_from_cbor_value(val: &Value) -> Result<ScopeParams> {
         Value::Map(m) => m,
         _ => bail!("scope_params: expected map"),
     };
+    let rate_limit = map_get_int(map, scope_keys::RATE_LIMIT).unwrap_or(0);
+    let ttl = map_get_int(map, scope_keys::TTL).unwrap_or(0);
+
+    // Collect extension keys (anything beyond 1 and 2)
+    let mut extensions = BTreeMap::new();
+    for (k, v) in map {
+        if let Value::Integer(ki) = k {
+            if let Ok(key) = u64::try_from(*ki) {
+                if key > scope_keys::TTL {
+                    if let Some(sv) = cbor_to_scope_value(v) {
+                        extensions.insert(key, sv);
+                    }
+                }
+            }
+        }
+    }
+
     Ok(ScopeParams {
-        rate_limit: map_get_int(map, scope_keys::RATE_LIMIT).unwrap_or(0),
-        ttl: map_get_int(map, scope_keys::TTL).unwrap_or(0),
+        rate_limit,
+        ttl,
+        extensions,
     })
+}
+
+/// Convert a ScopeValue to CBOR Value.
+fn scope_value_to_cbor(sv: &ScopeValue) -> Value {
+    match sv {
+        ScopeValue::Uint(v) => Value::Integer(ciborium::value::Integer::from(*v)),
+        ScopeValue::Text(s) => Value::Text(s.clone()),
+        ScopeValue::Bool(b) => Value::Bool(*b),
+        ScopeValue::Bytes(b) => Value::Bytes(b.clone()),
+        ScopeValue::Array(arr) => Value::Array(arr.iter().map(scope_value_to_cbor).collect()),
+    }
+}
+
+/// Convert a CBOR Value to ScopeValue.
+fn cbor_to_scope_value(val: &Value) -> Option<ScopeValue> {
+    match val {
+        Value::Integer(i) => u64::try_from(*i).ok().map(ScopeValue::Uint),
+        Value::Text(s) => Some(ScopeValue::Text(s.clone())),
+        Value::Bool(b) => Some(ScopeValue::Bool(*b)),
+        Value::Bytes(b) => Some(ScopeValue::Bytes(b.clone())),
+        Value::Array(arr) => {
+            let items: Vec<ScopeValue> = arr.iter().filter_map(cbor_to_scope_value).collect();
+            Some(ScopeValue::Array(items))
+        }
+        _ => None, // Map, Null, etc. — ignore unknown types
+    }
 }
 
 // ─── CapabilityDeclaration CBOR ───────────────────────────────────────────────
@@ -162,6 +210,16 @@ pub fn cap_to_cbor_value(cap: &CapabilityDeclaration) -> Value {
     if let Some(scope) = &cap.scope {
         pairs.push((int_key(capability_keys::SCOPE), scope_to_cbor_value(scope)));
     }
+    if let Some(keys) = &cap.applicable_scope_keys {
+        let arr = keys
+            .iter()
+            .map(|k| Value::Integer(ciborium::value::Integer::from(*k)))
+            .collect();
+        pairs.push((
+            int_key(capability_keys::APPLICABLE_SCOPE_KEYS),
+            Value::Array(arr),
+        ));
+    }
     Value::Map(pairs)
 }
 
@@ -180,12 +238,25 @@ pub fn cap_from_cbor_value(val: &Value) -> Result<CapabilityDeclaration> {
     let scope = map_get_map(map, capability_keys::SCOPE)
         .map(|m| scope_from_cbor_value(&Value::Map(m)))
         .transpose()?;
+    let applicable_scope_keys =
+        map_get_array(map, capability_keys::APPLICABLE_SCOPE_KEYS).map(|arr| {
+            arr.iter()
+                .filter_map(|v| {
+                    if let Value::Integer(i) = v {
+                        u64::try_from(*i).ok()
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        });
 
     Ok(CapabilityDeclaration {
         name,
         role,
         mutual,
         scope,
+        applicable_scope_keys,
     })
 }
 
@@ -411,6 +482,23 @@ impl ProtocolMessage {
                     Value::Integer(ciborium::value::Integer::from(*timestamp)),
                 ),
             ]),
+
+            ProtocolMessage::CapabilityMsg {
+                message_type,
+                payload,
+            } => {
+                // Re-wrap: decode payload back to CBOR value, add message_type key
+                let inner = decode_cbor(payload).unwrap_or(Value::Map(vec![]));
+                let mut pairs = vec![(
+                    int_key(message_keys::MESSAGE_TYPE),
+                    Value::Integer(ciborium::value::Integer::from(*message_type)),
+                )];
+                // Merge inner map entries (if it's a map)
+                if let Value::Map(m) = inner {
+                    pairs.extend(m);
+                }
+                Value::Map(pairs)
+            }
         };
         cbor_to_bytes(&val).expect("protocol message CBOR encode should not fail")
     }
@@ -424,8 +512,24 @@ impl ProtocolMessage {
 
         let msg_type_u64 = map_get_int(map, message_keys::MESSAGE_TYPE)
             .ok_or_else(|| anyhow!("protocol message: missing message_type"))?;
-        let msg_type = MessageType::from_u64(msg_type_u64)
-            .ok_or_else(|| anyhow!("protocol message: unknown message_type {msg_type_u64}"))?;
+
+        // Types 6+ are capability messages — extract payload and route to handlers
+        if MessageType::from_u64(msg_type_u64).is_none() {
+            // Build payload: re-encode the map without the message_type key
+            let filtered: Vec<(Value, Value)> = map
+                .iter()
+                .filter(|(k, _)| {
+                    !matches!(k, Value::Integer(ki) if u64::try_from(*ki).ok() == Some(message_keys::MESSAGE_TYPE))
+                })
+                .cloned()
+                .collect();
+            let payload = cbor_to_bytes(&Value::Map(filtered))?;
+            return Ok(ProtocolMessage::CapabilityMsg {
+                message_type: msg_type_u64,
+                payload,
+            });
+        }
+        let msg_type = MessageType::from_u64(msg_type_u64).unwrap();
 
         match msg_type {
             MessageType::Offer => {
@@ -509,19 +613,22 @@ mod tests {
         let peer_id = [0xA1u8; 32];
         let caps = vec![
             CapabilityDeclaration {
-                name: "core.heartbeat.liveness.1".to_string(),
+                name: "core.session.heartbeat.1".to_string(),
                 role: Role::Both,
                 mutual: true,
                 scope: None,
+                applicable_scope_keys: None,
             },
             CapabilityDeclaration {
                 name: "howm.social.feed.1".to_string(),
-                role: Role::Both,
-                mutual: true,
+                role: Role::Provide,
+                mutual: false,
                 scope: Some(ScopeParams {
                     rate_limit: 10,
                     ttl: 3600,
+                    ..Default::default()
                 }),
+                applicable_scope_keys: None,
             },
         ];
         let mut m = DiscoveryManifest {
@@ -583,7 +690,7 @@ mod tests {
             .collect();
         assert_eq!(
             names,
-            vec!["core.heartbeat.liveness.1", "howm.social.feed.1"]
+            vec!["core.session.heartbeat.1", "howm.social.feed.1"]
         );
     }
 
@@ -608,17 +715,18 @@ mod tests {
     fn confirm_round_trip() {
         let mut params = BTreeMap::new();
         params.insert(
-            "p2pcd.social.post.1".to_string(),
+            "howm.social.feed.1".to_string(),
             ScopeParams {
                 rate_limit: 5,
                 ttl: 3600,
+                ..Default::default()
             },
         );
         let msg = ProtocolMessage::Confirm {
             personal_hash: vec![0xDE, 0xAD],
             active_set: vec![
-                "core.heartbeat.liveness.1".to_string(),
-                "p2pcd.social.post.1".to_string(),
+                "core.session.heartbeat.1".to_string(),
+                "howm.social.feed.1".to_string(),
             ],
             accepted_params: Some(params.clone()),
         };
@@ -633,7 +741,7 @@ mod tests {
                 assert_eq!(personal_hash, vec![0xDE, 0xAD]);
                 assert_eq!(active_set.len(), 2);
                 let ap = accepted_params.unwrap();
-                assert_eq!(ap["p2pcd.social.post.1"].rate_limit, 5);
+                assert_eq!(ap["howm.social.feed.1"].rate_limit, 5);
             }
             _ => panic!("expected Confirm"),
         }

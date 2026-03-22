@@ -4,7 +4,7 @@ const api = axios.create({ baseURL: '/' });
 
 // Attach Bearer token to all requests (some GET routes like /node/open-invite require auth)
 api.interceptors.request.use((config) => {
-  const token = localStorage.getItem('howm_api_token');
+  const token = getApiToken();
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
   }

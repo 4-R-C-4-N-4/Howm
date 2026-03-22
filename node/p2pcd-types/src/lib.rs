@@ -38,12 +38,39 @@ pub mod capability_keys {
     pub const MUTUAL: u64 = 3;
     pub const CLASSIFICATION: u64 = 4; // omitted from wire per spec
     pub const SCOPE: u64 = 5;
+    pub const APPLICABLE_SCOPE_KEYS: u64 = 6;
 }
 
 /// CBOR integer map keys for scope_params (§5.3)
 pub mod scope_keys {
     pub const RATE_LIMIT: u64 = 1;
     pub const TTL: u64 = 2;
+    // Core capability-specific params (keys 3-23, reserved per v0.4 spec)
+    pub const HEARTBEAT_INTERVAL_MS: u64 = 3;
+    pub const HEARTBEAT_TIMEOUT_MS: u64 = 4;
+    pub const TIMESYNC_PRECISION_MS: u64 = 5;
+    pub const LATENCY_SAMPLE_INTERVAL_MS: u64 = 6;
+    pub const LATENCY_WINDOW_SIZE: u64 = 7;
+    pub const ENDPOINT_INCLUDE_GEO: u64 = 8;
+    pub const RELAY_MAX_CIRCUITS: u64 = 9;
+    pub const RELAY_MAX_BANDWIDTH_KBPS: u64 = 10;
+    pub const RELAY_TTL: u64 = 11;
+    pub const PEX_MAX_PEERS: u64 = 12;
+    pub const PEX_INCLUDE_CAPABILITIES: u64 = 13;
+    pub const STREAM_BITRATE_KBPS: u64 = 14;
+    pub const STREAM_CODEC: u64 = 15;
+    pub const BLOB_MAX_BYTES: u64 = 16;
+    pub const BLOB_CHUNK_SIZE: u64 = 17;
+    pub const BLOB_HASH_ALGORITHM: u64 = 18;
+    pub const RPC_MAX_REQUEST_BYTES: u64 = 19;
+    pub const RPC_MAX_RESPONSE_BYTES: u64 = 20;
+    pub const RPC_METHODS: u64 = 21;
+    pub const EVENT_TOPICS: u64 = 22;
+    pub const EVENT_MAX_PAYLOAD_BYTES: u64 = 23;
+    // core.data.stream.1 (keys 24-26)
+    pub const STREAM_MAX_CONCURRENT: u64 = 24;
+    pub const STREAM_MAX_FRAME_BYTES: u64 = 25;
+    pub const STREAM_TIMEOUT_SECS: u64 = 26;
 }
 
 /// CBOR integer map keys for protocol messages (outer envelope)
@@ -57,7 +84,55 @@ pub mod message_keys {
     pub const TIMESTAMP: u64 = 7; // for PING/PONG
 }
 
-// ─── Wire message types ───────────────────────────────────────────────────────
+// ─── Wire message types (§5.3.6 + Appendix B.12) ────────────────────────────
+
+/// Message type constants per spec §5.3.6 and Appendix B.12.
+pub mod message_types {
+    // Protocol core (1-3)
+    pub const OFFER: u64 = 1;
+    pub const CONFIRM: u64 = 2;
+    pub const CLOSE: u64 = 3;
+    // core.session.heartbeat.1 (4-5)
+    pub const PING: u64 = 4;
+    pub const PONG: u64 = 5;
+    // core.session.attest.1 (6)
+    pub const BUILD_ATTEST: u64 = 6;
+    // core.session.timesync.1 (7-8)
+    pub const TIME_REQ: u64 = 7;
+    pub const TIME_RESP: u64 = 8;
+    // core.session.latency.1 (9-10)
+    pub const LAT_PING: u64 = 9;
+    pub const LAT_PONG: u64 = 10;
+    // core.network.endpoint.1 (11-12)
+    pub const WHOAMI_REQ: u64 = 11;
+    pub const WHOAMI_RESP: u64 = 12;
+    // core.network.relay.1 (13-15)
+    pub const CIRCUIT_OPEN: u64 = 13;
+    pub const CIRCUIT_DATA: u64 = 14;
+    pub const CIRCUIT_CLOSE: u64 = 15;
+    // core.network.peerexchange.1 (16-17)
+    pub const PEX_REQ: u64 = 16;
+    pub const PEX_RESP: u64 = 17;
+    // core.data.blob.1 (18-21)
+    pub const BLOB_REQ: u64 = 18;
+    pub const BLOB_OFFER: u64 = 19;
+    pub const BLOB_CHUNK: u64 = 20;
+    pub const BLOB_ACK: u64 = 21;
+    // core.data.rpc.1 (22-23)
+    pub const RPC_REQ: u64 = 22;
+    pub const RPC_RESP: u64 = 23;
+    // core.data.event.1 (24-26)
+    pub const EVENT_SUB: u64 = 24;
+    pub const EVENT_UNSUB: u64 = 25;
+    pub const EVENT_MSG: u64 = 26;
+    // core.data.stream.1 (27-30)
+    pub const STREAM_OPEN: u64 = 27;
+    pub const STREAM_DATA: u64 = 28;
+    pub const STREAM_CLOSE: u64 = 29;
+    pub const STREAM_CONTROL: u64 = 30;
+    // 31-35: reserved for v2 core extensions
+    // 36+: application-defined
+}
 
 #[repr(u64)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -79,6 +154,12 @@ impl MessageType {
             5 => Some(MessageType::Pong),
             _ => None,
         }
+    }
+
+    /// Returns true if this message_type is a protocol-level message (1-5).
+    /// Capability messages (6+) are routed to handlers.
+    pub fn is_protocol(&self) -> bool {
+        (*self as u64) <= 5
     }
 }
 
@@ -156,31 +237,154 @@ pub enum ClassificationTier {
 
 // ─── Scope parameters ─────────────────────────────────────────────────────────
 
+/// A scope parameter value — covers all types the spec allows for extension keys.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ScopeValue {
+    Uint(u64),
+    Text(String),
+    Bool(bool),
+    Bytes(Vec<u8>),
+    Array(Vec<ScopeValue>),
+}
+
+impl ScopeValue {
+    /// Try to extract as u64.
+    pub fn as_uint(&self) -> Option<u64> {
+        match self {
+            ScopeValue::Uint(v) => Some(*v),
+            _ => None,
+        }
+    }
+
+    /// Try to extract as bool.
+    pub fn as_bool(&self) -> Option<bool> {
+        match self {
+            ScopeValue::Bool(v) => Some(*v),
+            _ => None,
+        }
+    }
+
+    /// Try to extract as text.
+    pub fn as_text(&self) -> Option<&str> {
+        match self {
+            ScopeValue::Text(s) => Some(s.as_str()),
+            _ => None,
+        }
+    }
+
+    /// Try to extract as string array (for methods/topics lists).
+    pub fn as_text_array(&self) -> Option<Vec<&str>> {
+        match self {
+            ScopeValue::Array(arr) => {
+                let mut out = Vec::with_capacity(arr.len());
+                for v in arr {
+                    out.push(v.as_text()?);
+                }
+                Some(out)
+            }
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ScopeParams {
-    /// Requests per second (0 = unlimited)
+    /// Requests per second (0 = unlimited) — scope key 1
     pub rate_limit: u64,
-    /// Session TTL in seconds (0 = no expiry)
+    /// Session TTL in seconds (0 = no expiry) — scope key 2
     pub ttl: u64,
+    /// Extension params (keys 3+), stored as integer→value pairs.
+    /// Keys 3-15: reserved for core spec. 16-127: registered extensions. 128+: app-defined.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub extensions: BTreeMap<u64, ScopeValue>,
 }
 
 impl ScopeParams {
-    /// Reconcile two scope params per §7.3: most-restrictive-wins.
-    /// For rate_limit: 0 means unlimited so we take the non-zero value;
+    /// Reconcile two scope params per §7.3: most-restrictive-wins for numeric,
+    /// provider-takes-precedence for non-numeric, intersection for arrays.
+    ///
+    /// `self` is the local (provider) side, `other` is the remote side.
+    /// For rate_limit/ttl: 0 means unlimited so we take the non-zero value;
     /// if both non-zero, take the minimum.
-    /// For ttl: 0 means no expiry so we take the non-zero value;
-    /// if both non-zero, take the minimum.
+    /// For extension keys: uint → most-restrictive-wins, bool/text → provider (self) wins,
+    /// array → intersection.
     pub fn reconcile(&self, other: &ScopeParams) -> ScopeParams {
-        ScopeParams {
-            rate_limit: match (self.rate_limit, other.rate_limit) {
-                (0, x) | (x, 0) => x,
-                (a, b) => a.min(b),
-            },
-            ttl: match (self.ttl, other.ttl) {
-                (0, x) | (x, 0) => x,
-                (a, b) => a.min(b),
-            },
+        let rate_limit = reconcile_uint_zero_unlimited(self.rate_limit, other.rate_limit);
+        let ttl = reconcile_uint_zero_unlimited(self.ttl, other.ttl);
+
+        // Merge extensions
+        let mut extensions = BTreeMap::new();
+        let all_keys: std::collections::BTreeSet<u64> = self
+            .extensions
+            .keys()
+            .chain(other.extensions.keys())
+            .copied()
+            .collect();
+
+        for key in all_keys {
+            match (self.extensions.get(&key), other.extensions.get(&key)) {
+                (Some(a), Some(b)) => {
+                    extensions.insert(key, reconcile_scope_value(a, b));
+                }
+                (Some(v), None) | (None, Some(v)) => {
+                    extensions.insert(key, v.clone());
+                }
+                (None, None) => unreachable!(),
+            }
         }
+
+        ScopeParams {
+            rate_limit,
+            ttl,
+            extensions,
+        }
+    }
+
+    /// Get an extension value by key.
+    pub fn get_ext(&self, key: u64) -> Option<&ScopeValue> {
+        self.extensions.get(&key)
+    }
+
+    /// Get an extension uint value by key.
+    pub fn get_ext_uint(&self, key: u64) -> Option<u64> {
+        self.extensions.get(&key).and_then(|v| v.as_uint())
+    }
+
+    /// Set an extension value.
+    pub fn set_ext(&mut self, key: u64, val: ScopeValue) {
+        self.extensions.insert(key, val);
+    }
+}
+
+/// Most-restrictive-wins for uint where 0 = unlimited.
+fn reconcile_uint_zero_unlimited(a: u64, b: u64) -> u64 {
+    match (a, b) {
+        (0, x) | (x, 0) => x,
+        (a, b) => a.min(b),
+    }
+}
+
+/// Reconcile a single ScopeValue pair:
+/// - Uint: most-restrictive-wins (min of non-zero)
+/// - Bool/Text/Bytes: first value wins (provider-takes-precedence)
+/// - Array of Text: intersection
+fn reconcile_scope_value(a: &ScopeValue, b: &ScopeValue) -> ScopeValue {
+    match (a, b) {
+        (ScopeValue::Uint(va), ScopeValue::Uint(vb)) => {
+            ScopeValue::Uint(reconcile_uint_zero_unlimited(*va, *vb))
+        }
+        // Array of texts → intersection (for methods, topics)
+        (ScopeValue::Array(va), ScopeValue::Array(vb)) => {
+            let result: Vec<ScopeValue> = va
+                .iter()
+                .filter(|item| vb.contains(item))
+                .cloned()
+                .collect();
+            ScopeValue::Array(result)
+        }
+        // Non-numeric: provider (first arg) takes precedence per §7.3
+        _ => a.clone(),
     }
 }
 
@@ -188,7 +392,7 @@ impl ScopeParams {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CapabilityDeclaration {
-    /// Fully qualified name per §4.4 namespace grammar (e.g. "p2pcd.social.post.1")
+    /// Fully qualified name per §4.4 namespace grammar (e.g. "core.session.heartbeat.1")
     pub name: String,
     pub role: Role,
     /// Required for Both+Both matching
@@ -196,6 +400,11 @@ pub struct CapabilityDeclaration {
     /// Scope constraints advertised to remote peers.
     /// Classification is local-only and MUST NOT appear on the wire.
     pub scope: Option<ScopeParams>,
+    /// Optional list of scope parameter keys meaningful for this capability (§4.2).
+    /// If present, receiver enforces only listed keys and ignores all others.
+    /// If absent, falls back to the capability's specification document.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub applicable_scope_keys: Option<Vec<u64>>,
 }
 
 // ─── Discovery manifest ────────────────────────────────────────────────────────
@@ -246,6 +455,67 @@ pub enum ProtocolMessage {
     Pong {
         timestamp: u64,
     },
+    /// Generic capability message (type 6+). Decoded by capability handlers.
+    CapabilityMsg {
+        /// Message type integer (6-30 for core, 36+ for app-defined).
+        message_type: u64,
+        /// Raw CBOR payload (the full message map minus the message_type key).
+        payload: Vec<u8>,
+    },
+}
+
+// ─── Capability handler trait ─────────────────────────────────────────────────
+
+/// Context passed to capability handlers when they are activated or receive messages.
+#[derive(Debug, Clone)]
+pub struct CapabilityContext {
+    /// Remote peer identity.
+    pub peer_id: PeerId,
+    /// Negotiated scope params for this capability.
+    pub params: ScopeParams,
+    /// Capability name.
+    pub capability_name: String,
+}
+
+/// Trait for capability message handlers.
+///
+/// Each capability (heartbeat, attest, timesync, etc.) implements this trait.
+/// The engine dispatches incoming messages by type to the appropriate handler.
+pub trait CapabilityHandler: Send + Sync {
+    /// Capability name this handler serves (e.g. "core.session.heartbeat.1").
+    fn capability_name(&self) -> &str;
+
+    /// Message type integers this handler accepts (e.g. [4, 5] for heartbeat).
+    fn handled_message_types(&self) -> &[u64];
+
+    /// Called when the capability enters the active set after CONFIRM reconciliation.
+    /// For capabilities with an activation exchange (e.g. attest), this is where
+    /// the initial message is sent.
+    fn on_activated(
+        &self,
+        _ctx: &CapabilityContext,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + '_>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    /// Called when a message of a handled type arrives.
+    fn on_message(
+        &self,
+        msg_type: u64,
+        payload: &[u8],
+        ctx: &CapabilityContext,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + '_>>;
+
+    /// Called when the capability is deactivated (session close or re-exchange removal).
+    fn on_deactivated(
+        &self,
+        _ctx: &CapabilityContext,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + '_>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    /// Downcast support for bridge RPC waiter registration.
+    fn as_any(&self) -> &dyn std::any::Any;
 }
 
 // ─── Trust gate (application-level) ───────────────────────────────────────────
@@ -391,10 +661,12 @@ mod tests {
         let a = ScopeParams {
             rate_limit: 10,
             ttl: 3600,
+            ..Default::default()
         };
         let b = ScopeParams {
             rate_limit: 5,
             ttl: 7200,
+            ..Default::default()
         };
         let r = a.reconcile(&b);
         assert_eq!(r.rate_limit, 5);
@@ -406,10 +678,12 @@ mod tests {
         let a = ScopeParams {
             rate_limit: 0,
             ttl: 0,
+            ..Default::default()
         };
         let b = ScopeParams {
             rate_limit: 10,
             ttl: 3600,
+            ..Default::default()
         };
         let r = a.reconcile(&b);
         // 0 = unlimited; take the other value
@@ -422,10 +696,12 @@ mod tests {
         let a = ScopeParams {
             rate_limit: 0,
             ttl: 0,
+            ..Default::default()
         };
         let b = ScopeParams {
             rate_limit: 0,
             ttl: 0,
+            ..Default::default()
         };
         let r = a.reconcile(&b);
         assert_eq!(r.rate_limit, 0);
@@ -498,6 +774,7 @@ mod tests {
             role,
             mutual,
             scope: None,
+            applicable_scope_keys: None,
         }
     }
 
@@ -517,7 +794,7 @@ mod tests {
         manifest(
             id,
             vec![
-                cap("core.heartbeat.liveness.1", Role::Both, true),
+                cap("core.session.heartbeat.1", Role::Both, true),
                 cap("howm.social.feed.1", Role::Both, true),
             ],
         )
@@ -525,7 +802,7 @@ mod tests {
 
     /// Peer without social participation (heartbeat only)
     fn no_social_peer(id: u8) -> DiscoveryManifest {
-        manifest(id, vec![cap("core.heartbeat.liveness.1", Role::Both, true)])
+        manifest(id, vec![cap("core.session.heartbeat.1", Role::Both, true)])
     }
 
     /// §9.1: Social ↔ Social → both caps active
@@ -537,7 +814,7 @@ mod tests {
         let active = compute_intersection(&alice, &bob, &policies);
         assert_eq!(
             active,
-            vec!["core.heartbeat.liveness.1", "howm.social.feed.1"]
+            vec!["core.session.heartbeat.1", "howm.social.feed.1"]
         );
     }
 
@@ -548,7 +825,7 @@ mod tests {
         let bob = no_social_peer(0xB0);
         let policies = HashMap::new();
         let active = compute_intersection(&alice, &bob, &policies);
-        assert_eq!(active, vec!["core.heartbeat.liveness.1"]);
+        assert_eq!(active, vec!["core.session.heartbeat.1"]);
     }
 
     /// §9.3: Private ↔ Stranger → heartbeat only (trust gate blocks social)
@@ -578,7 +855,7 @@ mod tests {
         );
 
         let active = compute_intersection(&private_user, &stranger, &policies);
-        assert_eq!(active, vec!["core.heartbeat.liveness.1"]);
+        assert_eq!(active, vec!["core.session.heartbeat.1"]);
     }
 
     /// §9.4: Private ↔ Friend → both caps active
@@ -609,7 +886,7 @@ mod tests {
         let active = compute_intersection(&private_user, &friend, &policies);
         assert_eq!(
             active,
-            vec!["core.heartbeat.liveness.1", "howm.social.feed.1"]
+            vec!["core.session.heartbeat.1", "howm.social.feed.1"]
         );
     }
 
@@ -620,6 +897,322 @@ mod tests {
         let b = no_social_peer(0xB0);
         let policies = HashMap::new();
         let active = compute_intersection(&a, &b, &policies);
-        assert_eq!(active, vec!["core.heartbeat.liveness.1"]);
+        assert_eq!(active, vec!["core.session.heartbeat.1"]);
+    }
+
+    // ── Phase 1 v4 conformance: extensible scope params ───────────────────────
+
+    #[test]
+    fn scope_extensions_uint_reconcile_min() {
+        let mut a = ScopeParams::default();
+        a.set_ext(scope_keys::HEARTBEAT_INTERVAL_MS, ScopeValue::Uint(5000));
+        let mut b = ScopeParams::default();
+        b.set_ext(scope_keys::HEARTBEAT_INTERVAL_MS, ScopeValue::Uint(3000));
+        let r = a.reconcile(&b);
+        assert_eq!(
+            r.get_ext_uint(scope_keys::HEARTBEAT_INTERVAL_MS),
+            Some(3000)
+        );
+    }
+
+    #[test]
+    fn scope_extensions_bool_provider_wins() {
+        let mut a = ScopeParams::default();
+        a.set_ext(scope_keys::ENDPOINT_INCLUDE_GEO, ScopeValue::Bool(true));
+        let mut b = ScopeParams::default();
+        b.set_ext(scope_keys::ENDPOINT_INCLUDE_GEO, ScopeValue::Bool(false));
+        // Provider (a) wins for non-numeric
+        let r = a.reconcile(&b);
+        assert_eq!(
+            r.get_ext(scope_keys::ENDPOINT_INCLUDE_GEO)
+                .unwrap()
+                .as_bool(),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn scope_extensions_text_array_intersection() {
+        let methods_a = ScopeValue::Array(vec![
+            ScopeValue::Text("ping".into()),
+            ScopeValue::Text("echo".into()),
+            ScopeValue::Text("status".into()),
+        ]);
+        let methods_b = ScopeValue::Array(vec![
+            ScopeValue::Text("echo".into()),
+            ScopeValue::Text("status".into()),
+            ScopeValue::Text("shutdown".into()),
+        ]);
+        let mut a = ScopeParams::default();
+        a.set_ext(scope_keys::RPC_METHODS, methods_a);
+        let mut b = ScopeParams::default();
+        b.set_ext(scope_keys::RPC_METHODS, methods_b);
+        let r = a.reconcile(&b);
+        let result = r
+            .get_ext(scope_keys::RPC_METHODS)
+            .unwrap()
+            .as_text_array()
+            .unwrap();
+        assert_eq!(result, vec!["echo", "status"]);
+    }
+
+    #[test]
+    fn scope_extensions_one_side_only() {
+        let mut a = ScopeParams::default();
+        a.set_ext(scope_keys::RELAY_MAX_CIRCUITS, ScopeValue::Uint(10));
+        let b = ScopeParams::default();
+        let r = a.reconcile(&b);
+        assert_eq!(r.get_ext_uint(scope_keys::RELAY_MAX_CIRCUITS), Some(10));
+    }
+
+    #[test]
+    fn scope_extensions_uint_zero_unlimited() {
+        let mut a = ScopeParams::default();
+        a.set_ext(scope_keys::RELAY_MAX_BANDWIDTH_KBPS, ScopeValue::Uint(0));
+        let mut b = ScopeParams::default();
+        b.set_ext(scope_keys::RELAY_MAX_BANDWIDTH_KBPS, ScopeValue::Uint(1000));
+        let r = a.reconcile(&b);
+        assert_eq!(
+            r.get_ext_uint(scope_keys::RELAY_MAX_BANDWIDTH_KBPS),
+            Some(1000)
+        );
+    }
+
+    // ── Phase 1 v4 conformance: scope key registry (keys 3-23) ────────────────
+
+    #[test]
+    fn scope_key_registry_core_keys_distinct() {
+        // Verify all core scope keys 3-26 are distinct
+        let keys = [
+            scope_keys::HEARTBEAT_INTERVAL_MS,
+            scope_keys::HEARTBEAT_TIMEOUT_MS,
+            scope_keys::TIMESYNC_PRECISION_MS,
+            scope_keys::LATENCY_SAMPLE_INTERVAL_MS,
+            scope_keys::LATENCY_WINDOW_SIZE,
+            scope_keys::ENDPOINT_INCLUDE_GEO,
+            scope_keys::RELAY_MAX_CIRCUITS,
+            scope_keys::RELAY_MAX_BANDWIDTH_KBPS,
+            scope_keys::RELAY_TTL,
+            scope_keys::PEX_MAX_PEERS,
+            scope_keys::PEX_INCLUDE_CAPABILITIES,
+            scope_keys::STREAM_BITRATE_KBPS,
+            scope_keys::STREAM_CODEC,
+            scope_keys::BLOB_MAX_BYTES,
+            scope_keys::BLOB_CHUNK_SIZE,
+            scope_keys::BLOB_HASH_ALGORITHM,
+            scope_keys::RPC_MAX_REQUEST_BYTES,
+            scope_keys::RPC_MAX_RESPONSE_BYTES,
+            scope_keys::RPC_METHODS,
+            scope_keys::EVENT_TOPICS,
+            scope_keys::EVENT_MAX_PAYLOAD_BYTES,
+            scope_keys::STREAM_MAX_CONCURRENT,
+            scope_keys::STREAM_MAX_FRAME_BYTES,
+            scope_keys::STREAM_TIMEOUT_SECS,
+        ];
+        let set: HashSet<u64> = keys.iter().copied().collect();
+        assert_eq!(set.len(), keys.len(), "scope keys must be unique");
+        // All in range 3..=26
+        for k in &keys {
+            assert!(
+                *k >= 3 && *k <= 26,
+                "core scope key {} out of range 3-26",
+                k
+            );
+        }
+    }
+
+    #[test]
+    fn scope_key_registry_rate_limit_ttl_are_1_2() {
+        assert_eq!(scope_keys::RATE_LIMIT, 1);
+        assert_eq!(scope_keys::TTL, 2);
+    }
+
+    // ── Phase 1 v4 conformance: applicable_scope_keys ─────────────────────────
+
+    #[test]
+    fn applicable_scope_keys_declared() {
+        let cap = CapabilityDeclaration {
+            name: "core.session.heartbeat.1".to_string(),
+            role: Role::Both,
+            mutual: true,
+            scope: None,
+            applicable_scope_keys: Some(vec![
+                scope_keys::HEARTBEAT_INTERVAL_MS,
+                scope_keys::HEARTBEAT_TIMEOUT_MS,
+            ]),
+        };
+        let keys = cap.applicable_scope_keys.as_ref().unwrap();
+        assert!(keys.contains(&scope_keys::HEARTBEAT_INTERVAL_MS));
+        assert!(keys.contains(&scope_keys::HEARTBEAT_TIMEOUT_MS));
+        assert!(!keys.contains(&scope_keys::RELAY_MAX_CIRCUITS));
+    }
+
+    #[test]
+    fn applicable_scope_keys_none_means_spec_fallback() {
+        let cap = CapabilityDeclaration {
+            name: "howm.social.feed.1".to_string(),
+            role: Role::Both,
+            mutual: true,
+            scope: None,
+            applicable_scope_keys: None,
+        };
+        assert!(cap.applicable_scope_keys.is_none());
+    }
+
+    // ── Phase 1 v4 conformance: CapabilityHandler trait ───────────────────────
+
+    #[test]
+    fn capability_handler_default_impls() {
+        // Verify the default on_activated and on_deactivated compile and return Ok
+        struct TestHandler;
+        impl CapabilityHandler for TestHandler {
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+            fn capability_name(&self) -> &str {
+                "test.cap.1"
+            }
+            fn handled_message_types(&self) -> &[u64] {
+                &[99]
+            }
+            fn on_message(
+                &self,
+                _msg_type: u64,
+                _payload: &[u8],
+                _ctx: &CapabilityContext,
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + '_>>
+            {
+                Box::pin(async { Ok(()) })
+            }
+        }
+
+        let handler = TestHandler;
+        assert_eq!(handler.capability_name(), "test.cap.1");
+        assert_eq!(handler.handled_message_types(), &[99]);
+    }
+
+    #[test]
+    fn capability_handler_on_activated_default_ok() {
+        // Verify the default on_activated/on_deactivated return Ok via poll
+        struct NoopHandler;
+        impl CapabilityHandler for NoopHandler {
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+            fn capability_name(&self) -> &str {
+                "noop.1"
+            }
+            fn handled_message_types(&self) -> &[u64] {
+                &[]
+            }
+            fn on_message(
+                &self,
+                _: u64,
+                _: &[u8],
+                _: &CapabilityContext,
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + '_>>
+            {
+                Box::pin(async { Ok(()) })
+            }
+        }
+
+        let h = NoopHandler;
+        let ctx = CapabilityContext {
+            peer_id: [0xAA; 32],
+            params: ScopeParams::default(),
+            capability_name: "noop.1".to_string(),
+        };
+        // The default impl returns a ready future — poll it synchronously
+        use std::task::{Context as TaskContext, Poll, Wake, Waker};
+        struct NoopWaker;
+        impl Wake for NoopWaker {
+            fn wake(self: std::sync::Arc<Self>) {}
+        }
+        let waker = Waker::from(std::sync::Arc::new(NoopWaker));
+        let mut cx = TaskContext::from_waker(&waker);
+
+        let mut fut = h.on_activated(&ctx);
+        assert!(matches!(fut.as_mut().poll(&mut cx), Poll::Ready(Ok(()))));
+        let mut fut = h.on_deactivated(&ctx);
+        assert!(matches!(fut.as_mut().poll(&mut cx), Poll::Ready(Ok(()))));
+    }
+
+    #[test]
+    fn capability_context_fields() {
+        let ctx = CapabilityContext {
+            peer_id: [0xBB; 32],
+            params: ScopeParams {
+                rate_limit: 42,
+                ttl: 100,
+                ..Default::default()
+            },
+            capability_name: "core.session.heartbeat.1".to_string(),
+        };
+        assert_eq!(ctx.peer_id, [0xBB; 32]);
+        assert_eq!(ctx.params.rate_limit, 42);
+        assert_eq!(ctx.capability_name, "core.session.heartbeat.1");
+    }
+
+    // ── Phase 1 v4 conformance: message type registry ─────────────────────────
+
+    #[test]
+    fn message_types_core_range() {
+        // Protocol core messages 1-5
+        assert_eq!(message_types::OFFER, 1);
+        assert_eq!(message_types::CONFIRM, 2);
+        assert_eq!(message_types::CLOSE, 3);
+        assert_eq!(message_types::PING, 4);
+        assert_eq!(message_types::PONG, 5);
+    }
+
+    #[test]
+    fn message_types_capability_range() {
+        // Capability messages 6-30
+        assert_eq!(message_types::BUILD_ATTEST, 6);
+        assert_eq!(message_types::STREAM_CONTROL, 30);
+        // All capability message types > 5
+        let cap_types = [
+            message_types::BUILD_ATTEST,
+            message_types::TIME_REQ,
+            message_types::TIME_RESP,
+            message_types::LAT_PING,
+            message_types::LAT_PONG,
+            message_types::WHOAMI_REQ,
+            message_types::WHOAMI_RESP,
+            message_types::CIRCUIT_OPEN,
+            message_types::CIRCUIT_DATA,
+            message_types::CIRCUIT_CLOSE,
+            message_types::PEX_REQ,
+            message_types::PEX_RESP,
+            message_types::BLOB_REQ,
+            message_types::BLOB_OFFER,
+            message_types::BLOB_CHUNK,
+            message_types::BLOB_ACK,
+            message_types::RPC_REQ,
+            message_types::RPC_RESP,
+            message_types::EVENT_SUB,
+            message_types::EVENT_UNSUB,
+            message_types::EVENT_MSG,
+            message_types::STREAM_OPEN,
+            message_types::STREAM_DATA,
+            message_types::STREAM_CLOSE,
+            message_types::STREAM_CONTROL,
+        ];
+        for t in &cap_types {
+            assert!(
+                *t >= 6 && *t <= 30,
+                "capability msg type {} out of range",
+                t
+            );
+        }
+        // All unique
+        let set: HashSet<u64> = cap_types.iter().copied().collect();
+        assert_eq!(set.len(), cap_types.len());
+    }
+
+    #[test]
+    fn message_type_is_protocol() {
+        assert!(MessageType::Offer.is_protocol());
+        assert!(MessageType::Pong.is_protocol());
     }
 }

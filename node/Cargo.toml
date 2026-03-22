@@ -1,3 +1,3 @@
 [workspace]
-members = ["daemon", "p2pcd-types"]
+members = ["daemon", "p2pcd", "p2pcd-types"]
 resolver = "2"

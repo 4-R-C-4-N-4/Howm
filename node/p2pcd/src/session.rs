@@ -18,7 +18,7 @@ use p2pcd_types::{
     TrustPolicy,
 };
 
-use super::transport::P2pcdTransport;
+use crate::transport::P2pcdTransport;
 
 // ── State enum ───────────────────────────────────────────────────────────────
 
@@ -443,7 +443,7 @@ pub fn peer_short(id: &PeerId) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::p2pcd::transport::{connect, P2pcdListener};
+    use crate::transport::{connect, P2pcdListener};
     use p2pcd_types::{
         CapabilityDeclaration, CloseReason, DiscoveryManifest, Role, ScopeParams, PROTOCOL_VERSION,
     };
@@ -462,22 +462,25 @@ mod tests {
 
     fn social_cap(role: Role) -> CapabilityDeclaration {
         CapabilityDeclaration {
-            name: "p2pcd.social.post.1".to_string(),
+            name: "howm.social.feed.1".to_string(),
             role,
             mutual: false,
             scope: Some(ScopeParams {
                 rate_limit: 100,
                 ttl: 3600,
+                ..Default::default()
             }),
+            applicable_scope_keys: None,
         }
     }
 
     fn heartbeat_cap() -> CapabilityDeclaration {
         CapabilityDeclaration {
-            name: "core.heartbeat.liveness.1".to_string(),
+            name: "core.session.heartbeat.1".to_string(),
             role: Role::Both,
             mutual: true,
             scope: Option::None,
+            applicable_scope_keys: None,
         }
     }
 
@@ -530,12 +533,12 @@ mod tests {
             .unwrap();
         finalize_session(
             &mut session,
-            vec!["p2pcd.social.post.1".to_string()],
+            vec!["howm.social.feed.1".to_string()],
             BTreeMap::new(),
         )
         .unwrap();
         assert_eq!(session.state, SessionState::Active);
-        assert_eq!(session.active_set, vec!["p2pcd.social.post.1"]);
+        assert_eq!(session.active_set, vec!["howm.social.feed.1"]);
     }
 
     #[test]
@@ -543,10 +546,12 @@ mod tests {
         let a = ScopeParams {
             rate_limit: 100,
             ttl: 3600,
+            ..Default::default()
         };
         let b = ScopeParams {
             rate_limit: 50,
             ttl: 7200,
+            ..Default::default()
         };
         let r = a.reconcile(&b);
         assert_eq!(r.rate_limit, 50);
@@ -604,8 +609,8 @@ mod tests {
         assert!(
             session
                 .active_set
-                .contains(&"p2pcd.social.post.1".to_string()),
-            "social.post should be in active_set, got {:?}",
+                .contains(&"howm.social.feed.1".to_string()),
+            "howm.social.feed.1 should be in active_set, got {:?}",
             session.active_set
         );
     }
@@ -615,10 +620,11 @@ mod tests {
     async fn lurker_lurker_no_social() {
         // Both have Role::Both but mutual=false for social → no match
         let lurker_cap = CapabilityDeclaration {
-            name: "p2pcd.social.post.1".to_string(),
-            role: Role::Both,
+            name: "howm.social.feed.1".to_string(),
+            role: Role::Consume,
             mutual: false,
-            scope: Option::None,
+            scope: None,
+            applicable_scope_keys: None,
         };
 
         let local_manifest = make_manifest(3, vec![lurker_cap.clone(), heartbeat_cap()]);
@@ -654,19 +660,19 @@ mod tests {
         assert!(
             !session
                 .active_set
-                .contains(&"p2pcd.social.post.1".to_string()),
+                .contains(&"howm.social.feed.1".to_string()),
             "lurker+lurker social should NOT match"
         );
         assert!(
             session
                 .active_set
-                .contains(&"core.heartbeat.liveness.1".to_string()),
+                .contains(&"core.session.heartbeat.1".to_string()),
             "heartbeat should match, got {:?}",
             session.active_set
         );
         assert_eq!(session.state, SessionState::Active);
 
-        assert!(!resp_set.contains(&"p2pcd.social.post.1".to_string()));
+        assert!(!resp_set.contains(&"howm.social.feed.1".to_string()));
         assert_eq!(resp_state, SessionState::Active);
     }
 
@@ -676,10 +682,11 @@ mod tests {
         let local_manifest = make_manifest(5, vec![social_cap(Role::Provide)]);
         // remote only has a different cap (no consumer for social, no heartbeat mutual)
         let other_cap = CapabilityDeclaration {
-            name: "p2pcd.files.share.1".to_string(),
+            name: "howm.social.feed.1".to_string(),
             role: Role::Provide,
             mutual: false,
-            scope: Option::None,
+            scope: None,
+            applicable_scope_keys: None,
         };
         let remote_manifest = make_manifest(6, vec![other_cap]);
 

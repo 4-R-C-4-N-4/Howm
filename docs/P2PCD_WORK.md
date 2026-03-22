@@ -267,7 +267,7 @@ CLOSED → PEER_VISIBLE (wait for WG re-handshake)
 
 ### Task 4.1: Implement PING/PONG heartbeat
 
-**Goal:** Application-layer liveness per spec Section 8.7 and POC doc capability `core.heartbeat.liveness.1`.
+**Goal:** Application-layer liveness per spec Section 8.7 and POC doc capability `core.session.heartbeat.1`.
 
 **Files to create:**
 - `node/daemon/src/p2pcd/heartbeat.rs`
@@ -279,7 +279,7 @@ CLOSED → PEER_VISIBLE (wait for WG re-handshake)
 - Expect PONG within `timeout_ms`; 3 missed pings → session failure
 - On PONG received: update `last_activity`
 - On timeout: transition session to CLOSED, send CLOSE with `Timeout` reason
-- Heartbeat only runs for sessions where `core.heartbeat.liveness.1` is in the active_set
+- Heartbeat only runs for sessions where `core.session.heartbeat.1` is in the active_set
 
 **Tests:** Test normal ping/pong, test timeout triggers session close.
 

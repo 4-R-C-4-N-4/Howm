@@ -9,6 +9,7 @@ use axum::{
 };
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
+use std::sync::Arc;
 use tower_http::services::{ServeDir, ServeFile};
 
 pub mod auth_layer;
@@ -118,6 +119,16 @@ pub fn build_router(state: AppState, ui_dir: Option<PathBuf>) -> Router {
         .route("/settings/identity", get(settings_routes::get_identity))
         .route("/settings/p2pcd", get(settings_routes::get_p2pcd_config))
         .layer(middleware::from_fn(local_or_wg_middleware));
+
+    // ── 2b. Bridge routes — localhost-only, for out-of-process capabilities ──
+    // These use Arc<ProtocolEngine> as state, nested with their own .with_state()
+    // so they're independent of AppState.
+    let local_or_wg = if let Some(ref engine) = state.p2pcd_engine {
+        let bridge = crate::p2pcd::bridge::bridge_routes(Arc::clone(engine));
+        local_or_wg.nest_service("/p2pcd/bridge", bridge)
+    } else {
+        local_or_wg
+    };
 
     // ── 3. Peer ceremony routes (public internet, no bearer, no IP check) ─
     let peer_ceremony = Router::new()

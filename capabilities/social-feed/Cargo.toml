@@ -19,3 +19,8 @@ clap = { version = "4", features = ["derive", "env"] }
 anyhow = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 include_dir = "0.7"
+base64 = "0.22"
+p2pcd = { path = "../../node/p2pcd", features = ["bridge-client"] }
+
+[dev-dependencies]
+tempfile = "3"
