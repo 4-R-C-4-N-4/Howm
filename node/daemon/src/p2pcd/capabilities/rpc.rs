@@ -1,0 +1,213 @@
+// core.data.rpc.1 — Remote procedure calls (msg types 22-23)
+//
+// Simple request-response RPC. Methods are registered by name.
+// Dispatches incoming RPC_REQ to the matching method handler.
+
+use std::collections::HashMap;
+use std::pin::Pin;
+use std::sync::Arc;
+
+use tokio::sync::RwLock;
+
+use p2pcd_types::{
+    message_types, CapabilityContext, CapabilityHandler, ProtocolMessage,
+};
+
+/// CBOR payload keys for RPC_REQ/RPC_RESP
+mod keys {
+    pub const METHOD: u64 = 1;
+    pub const REQUEST_ID: u64 = 2;
+    pub const PAYLOAD: u64 = 3;
+    pub const ERROR: u64 = 4;
+}
+
+/// Trait for RPC method handlers.
+pub trait RpcMethodHandler: Send + Sync {
+    fn handle(
+        &self,
+        payload: &[u8],
+        ctx: &CapabilityContext,
+    ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<Vec<u8>>> + Send + '_>>;
+}
+
+pub struct RpcHandler {
+    methods: Arc<RwLock<HashMap<String, Box<dyn RpcMethodHandler>>>>,
+    send_tx: RwLock<Option<tokio::sync::mpsc::Sender<ProtocolMessage>>>,
+}
+
+impl RpcHandler {
+    pub fn new() -> Self {
+        Self {
+            methods: Arc::new(RwLock::new(HashMap::new())),
+            send_tx: RwLock::new(None),
+        }
+    }
+
+    pub async fn set_sender(&self, tx: tokio::sync::mpsc::Sender<ProtocolMessage>) {
+        *self.send_tx.write().await = Some(tx);
+    }
+
+    pub async fn register_method(&self, name: String, handler: Box<dyn RpcMethodHandler>) {
+        self.methods.write().await.insert(name, handler);
+    }
+}
+
+impl CapabilityHandler for RpcHandler {
+    fn capability_name(&self) -> &str {
+        "core.data.rpc.1"
+    }
+
+    fn handled_message_types(&self) -> &[u64] {
+        &[message_types::RPC_REQ, message_types::RPC_RESP]
+    }
+
+    fn on_message(
+        &self,
+        msg_type: u64,
+        payload: &[u8],
+        ctx: &CapabilityContext,
+    ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + '_>> {
+        let payload = payload.to_vec();
+        let peer_id = ctx.peer_id;
+        let ctx_clone = ctx.clone();
+        Box::pin(async move {
+            let map = decode_payload(&payload)?;
+
+            match msg_type {
+                message_types::RPC_REQ => {
+                    let method = cbor_get_text(&map, keys::METHOD).unwrap_or_default();
+                    let req_id = cbor_get_int(&map, keys::REQUEST_ID).unwrap_or(0);
+                    let req_payload = cbor_get_bytes(&map, keys::PAYLOAD).unwrap_or_default();
+
+                    tracing::debug!(
+                        "rpc: REQ method={} id={} from {}",
+                        method,
+                        req_id,
+                        hex::encode(&peer_id[..4])
+                    );
+
+                    let methods = self.methods.read().await;
+                    let result = if let Some(handler) = methods.get(&method) {
+                        handler.handle(&req_payload, &ctx_clone).await
+                    } else {
+                        Err(anyhow::anyhow!("unknown method: {}", method))
+                    };
+
+                    let resp = match result {
+                        Ok(data) => cbor_encode_map(vec![
+                            (keys::REQUEST_ID, ciborium::value::Value::Integer(
+                                ciborium::value::Integer::from(req_id),
+                            )),
+                            (keys::PAYLOAD, ciborium::value::Value::Bytes(data)),
+                        ]),
+                        Err(e) => cbor_encode_map(vec![
+                            (keys::REQUEST_ID, ciborium::value::Value::Integer(
+                                ciborium::value::Integer::from(req_id),
+                            )),
+                            (keys::ERROR, ciborium::value::Value::Text(e.to_string())),
+                        ]),
+                    };
+
+                    let msg = make_capability_msg(message_types::RPC_RESP, resp);
+                    if let Some(tx) = self.send_tx.read().await.as_ref() {
+                        let _ = tx.send(msg).await;
+                    }
+                }
+                message_types::RPC_RESP => {
+                    let req_id = cbor_get_int(&map, keys::REQUEST_ID).unwrap_or(0);
+                    if let Some(err) = cbor_get_text(&map, keys::ERROR) {
+                        tracing::warn!("rpc: RESP id={} error={}", req_id, err);
+                    } else {
+                        tracing::debug!("rpc: RESP id={} ok", req_id);
+                    }
+                }
+                _ => {}
+            }
+            Ok(())
+        })
+    }
+}
+
+
+fn cbor_encode_map(pairs: Vec<(u64, ciborium::value::Value)>) -> Vec<u8> {
+    use ciborium::value::{Integer, Value};
+    let map: Vec<(Value, Value)> = pairs
+        .into_iter()
+        .map(|(k, v)| (Value::Integer(Integer::from(k)), v))
+        .collect();
+    let mut out = Vec::new();
+    ciborium::ser::into_writer(&Value::Map(map), &mut out).expect("CBOR encode");
+    out
+}
+
+fn cbor_get_int(map: &[(ciborium::value::Value, ciborium::value::Value)], key: u64) -> Option<u64> {
+    use ciborium::value::Value;
+    for (k, v) in map {
+        if let Value::Integer(ki) = k {
+            if u64::try_from(*ki).ok() == Some(key) {
+                if let Value::Integer(vi) = v {
+                    return u64::try_from(*vi).ok();
+                }
+            }
+        }
+    }
+    None
+}
+
+fn cbor_get_text(map: &[(ciborium::value::Value, ciborium::value::Value)], key: u64) -> Option<String> {
+    use ciborium::value::Value;
+    for (k, v) in map {
+        if let Value::Integer(ki) = k {
+            if u64::try_from(*ki).ok() == Some(key) {
+                if let Value::Text(s) = v {
+                    return Some(s.clone());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn cbor_get_bytes(map: &[(ciborium::value::Value, ciborium::value::Value)], key: u64) -> Option<Vec<u8>> {
+    use ciborium::value::Value;
+    for (k, v) in map {
+        if let Value::Integer(ki) = k {
+            if u64::try_from(*ki).ok() == Some(key) {
+                if let Value::Bytes(b) = v {
+                    return Some(b.clone());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn cbor_get_array(map: &[(ciborium::value::Value, ciborium::value::Value)], key: u64) -> Option<Vec<ciborium::value::Value>> {
+    use ciborium::value::Value;
+    for (k, v) in map {
+        if let Value::Integer(ki) = k {
+            if u64::try_from(*ki).ok() == Some(key) {
+                if let Value::Array(arr) = v {
+                    return Some(arr.clone());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn decode_payload(payload: &[u8]) -> anyhow::Result<Vec<(ciborium::value::Value, ciborium::value::Value)>> {
+    let val: ciborium::value::Value = ciborium::de::from_reader(payload)
+        .map_err(|e| anyhow::anyhow!("CBOR decode: {e}"))?;
+    match val {
+        ciborium::value::Value::Map(m) => Ok(m),
+        _ => anyhow::bail!("expected CBOR map payload"),
+    }
+}
+
+fn make_capability_msg(msg_type: u64, payload: Vec<u8>) -> p2pcd_types::ProtocolMessage {
+    p2pcd_types::ProtocolMessage::CapabilityMsg {
+        message_type: msg_type,
+        payload,
+    }
+}

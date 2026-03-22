@@ -645,6 +645,7 @@ dependencies = [
  "axum",
  "base64",
  "chrono",
+ "ciborium",
  "clap",
  "dirs",
  "hex",

@@ -1,0 +1,212 @@
+// core.session.timesync.1 — Clock synchronization (msg types 7-8)
+//
+// After activation, initiator sends TIME_REQ with local timestamp.
+// Responder replies with TIME_RESP containing their local timestamp.
+// Both sides compute approximate clock offset.
+
+use std::collections::HashMap;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use tokio::sync::RwLock;
+
+use p2pcd_types::{
+    message_types, CapabilityContext, CapabilityHandler, PeerId, ProtocolMessage,
+};
+
+/// CBOR payload keys for TIME_REQ/TIME_RESP
+mod keys {
+    pub const LOCAL_TIMESTAMP_MS: u64 = 1;
+    pub const REMOTE_TIMESTAMP_MS: u64 = 2;
+}
+
+pub struct TimesyncHandler {
+    /// Clock offset per peer in milliseconds (positive = peer is ahead).
+    offsets: Arc<RwLock<HashMap<PeerId, i64>>>,
+    send_tx: RwLock<Option<tokio::sync::mpsc::Sender<ProtocolMessage>>>,
+}
+
+impl TimesyncHandler {
+    pub fn new() -> Self {
+        Self {
+            offsets: Arc::new(RwLock::new(HashMap::new())),
+            send_tx: RwLock::new(None),
+        }
+    }
+
+    pub async fn set_sender(&self, tx: tokio::sync::mpsc::Sender<ProtocolMessage>) {
+        *self.send_tx.write().await = Some(tx);
+    }
+
+    pub async fn get_offset(&self, peer_id: &PeerId) -> Option<i64> {
+        self.offsets.read().await.get(peer_id).copied()
+    }
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+impl CapabilityHandler for TimesyncHandler {
+    fn capability_name(&self) -> &str {
+        "core.session.timesync.1"
+    }
+
+    fn handled_message_types(&self) -> &[u64] {
+        &[message_types::TIME_REQ, message_types::TIME_RESP]
+    }
+
+    fn on_activated(
+        &self,
+        _ctx: &CapabilityContext,
+    ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + '_>> {
+        Box::pin(async move {
+            let payload = cbor_encode_map(vec![
+                (keys::LOCAL_TIMESTAMP_MS, ciborium::value::Value::Integer(
+                    ciborium::value::Integer::from(now_ms()),
+                )),
+            ]);
+            let msg = make_capability_msg(message_types::TIME_REQ, payload);
+            if let Some(tx) = self.send_tx.read().await.as_ref() {
+                let _ = tx.send(msg).await;
+            }
+            Ok(())
+        })
+    }
+
+    fn on_message(
+        &self,
+        msg_type: u64,
+        payload: &[u8],
+        ctx: &CapabilityContext,
+    ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + '_>> {
+        let payload = payload.to_vec();
+        let peer_id = ctx.peer_id;
+        Box::pin(async move {
+            let map = decode_payload(&payload)?;
+
+            match msg_type {
+                message_types::TIME_REQ => {
+                    // Respond with our local timestamp + their original timestamp
+                    let remote_ts = cbor_get_int(&map, keys::LOCAL_TIMESTAMP_MS).unwrap_or(0);
+                    let resp_payload = cbor_encode_map(vec![
+                        (keys::LOCAL_TIMESTAMP_MS, ciborium::value::Value::Integer(
+                            ciborium::value::Integer::from(now_ms()),
+                        )),
+                        (keys::REMOTE_TIMESTAMP_MS, ciborium::value::Value::Integer(
+                            ciborium::value::Integer::from(remote_ts),
+                        )),
+                    ]);
+                    let msg = make_capability_msg(message_types::TIME_RESP, resp_payload);
+                    if let Some(tx) = self.send_tx.read().await.as_ref() {
+                        let _ = tx.send(msg).await;
+                    }
+                }
+                message_types::TIME_RESP => {
+                    let remote_ts = cbor_get_int(&map, keys::LOCAL_TIMESTAMP_MS).unwrap_or(0);
+                    let our_original = cbor_get_int(&map, keys::REMOTE_TIMESTAMP_MS).unwrap_or(0);
+                    let now = now_ms();
+                    // Simple offset: remote_ts - midpoint(our_original, now)
+                    let midpoint = (our_original as i64 + now as i64) / 2;
+                    let offset = remote_ts as i64 - midpoint;
+                    tracing::debug!(
+                        "timesync: peer {} offset={}ms",
+                        hex::encode(&peer_id[..4]),
+                        offset
+                    );
+                    self.offsets.write().await.insert(peer_id, offset);
+                }
+                _ => {}
+            }
+            Ok(())
+        })
+    }
+}
+
+
+fn cbor_encode_map(pairs: Vec<(u64, ciborium::value::Value)>) -> Vec<u8> {
+    use ciborium::value::{Integer, Value};
+    let map: Vec<(Value, Value)> = pairs
+        .into_iter()
+        .map(|(k, v)| (Value::Integer(Integer::from(k)), v))
+        .collect();
+    let mut out = Vec::new();
+    ciborium::ser::into_writer(&Value::Map(map), &mut out).expect("CBOR encode");
+    out
+}
+
+fn cbor_get_int(map: &[(ciborium::value::Value, ciborium::value::Value)], key: u64) -> Option<u64> {
+    use ciborium::value::Value;
+    for (k, v) in map {
+        if let Value::Integer(ki) = k {
+            if u64::try_from(*ki).ok() == Some(key) {
+                if let Value::Integer(vi) = v {
+                    return u64::try_from(*vi).ok();
+                }
+            }
+        }
+    }
+    None
+}
+
+fn cbor_get_text(map: &[(ciborium::value::Value, ciborium::value::Value)], key: u64) -> Option<String> {
+    use ciborium::value::Value;
+    for (k, v) in map {
+        if let Value::Integer(ki) = k {
+            if u64::try_from(*ki).ok() == Some(key) {
+                if let Value::Text(s) = v {
+                    return Some(s.clone());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn cbor_get_bytes(map: &[(ciborium::value::Value, ciborium::value::Value)], key: u64) -> Option<Vec<u8>> {
+    use ciborium::value::Value;
+    for (k, v) in map {
+        if let Value::Integer(ki) = k {
+            if u64::try_from(*ki).ok() == Some(key) {
+                if let Value::Bytes(b) = v {
+                    return Some(b.clone());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn cbor_get_array(map: &[(ciborium::value::Value, ciborium::value::Value)], key: u64) -> Option<Vec<ciborium::value::Value>> {
+    use ciborium::value::Value;
+    for (k, v) in map {
+        if let Value::Integer(ki) = k {
+            if u64::try_from(*ki).ok() == Some(key) {
+                if let Value::Array(arr) = v {
+                    return Some(arr.clone());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn decode_payload(payload: &[u8]) -> anyhow::Result<Vec<(ciborium::value::Value, ciborium::value::Value)>> {
+    let val: ciborium::value::Value = ciborium::de::from_reader(payload)
+        .map_err(|e| anyhow::anyhow!("CBOR decode: {e}"))?;
+    match val {
+        ciborium::value::Value::Map(m) => Ok(m),
+        _ => anyhow::bail!("expected CBOR map payload"),
+    }
+}
+
+fn make_capability_msg(msg_type: u64, payload: Vec<u8>) -> p2pcd_types::ProtocolMessage {
+    p2pcd_types::ProtocolMessage::CapabilityMsg {
+        message_type: msg_type,
+        payload,
+    }
+}

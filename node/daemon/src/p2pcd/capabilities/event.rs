@@ -1,0 +1,205 @@
+// core.data.event.1 — Pub/sub event system (msg types 24-26)
+//
+// Peers subscribe to topics; publishers send events to all subscribers.
+
+use std::collections::HashMap;
+use std::pin::Pin;
+use std::sync::Arc;
+
+use tokio::sync::RwLock;
+
+use p2pcd_types::{
+    message_types, CapabilityContext, CapabilityHandler, PeerId, ProtocolMessage,
+};
+
+/// CBOR payload keys for EVENT_SUB/UNSUB/MSG
+mod keys {
+    pub const TOPIC: u64 = 1;
+    pub const PAYLOAD: u64 = 2;
+}
+
+pub struct EventHandler {
+    /// topic -> list of subscribed peer_ids
+    subscriptions: Arc<RwLock<HashMap<String, Vec<PeerId>>>>,
+    send_tx: RwLock<Option<tokio::sync::mpsc::Sender<ProtocolMessage>>>,
+}
+
+impl EventHandler {
+    pub fn new() -> Self {
+        Self {
+            subscriptions: Arc::new(RwLock::new(HashMap::new())),
+            send_tx: RwLock::new(None),
+        }
+    }
+
+    pub async fn set_sender(&self, tx: tokio::sync::mpsc::Sender<ProtocolMessage>) {
+        *self.send_tx.write().await = Some(tx);
+    }
+
+    pub async fn subscribers(&self, topic: &str) -> Vec<PeerId> {
+        self.subscriptions
+            .read()
+            .await
+            .get(topic)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    pub async fn subscribed_topics(&self) -> Vec<String> {
+        self.subscriptions.read().await.keys().cloned().collect()
+    }
+}
+
+impl CapabilityHandler for EventHandler {
+    fn capability_name(&self) -> &str {
+        "core.data.event.1"
+    }
+
+    fn handled_message_types(&self) -> &[u64] {
+        &[
+            message_types::EVENT_SUB,
+            message_types::EVENT_UNSUB,
+            message_types::EVENT_MSG,
+        ]
+    }
+
+    fn on_message(
+        &self,
+        msg_type: u64,
+        payload: &[u8],
+        ctx: &CapabilityContext,
+    ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + '_>> {
+        let payload = payload.to_vec();
+        let peer_id = ctx.peer_id;
+        Box::pin(async move {
+            let map = decode_payload(&payload)?;
+            let topic = cbor_get_text(&map, keys::TOPIC).unwrap_or_default();
+
+            match msg_type {
+                message_types::EVENT_SUB => {
+                    tracing::debug!(
+                        "event: peer {} subscribed to '{}'",
+                        hex::encode(&peer_id[..4]),
+                        topic
+                    );
+                    let mut subs = self.subscriptions.write().await;
+                    let list = subs.entry(topic).or_insert_with(Vec::new);
+                    if !list.contains(&peer_id) {
+                        list.push(peer_id);
+                    }
+                }
+                message_types::EVENT_UNSUB => {
+                    tracing::debug!(
+                        "event: peer {} unsubscribed from '{}'",
+                        hex::encode(&peer_id[..4]),
+                        topic
+                    );
+                    let mut subs = self.subscriptions.write().await;
+                    if let Some(list) = subs.get_mut(&topic) {
+                        list.retain(|p| *p != peer_id);
+                        if list.is_empty() {
+                            subs.remove(&topic);
+                        }
+                    }
+                }
+                message_types::EVENT_MSG => {
+                    let event_payload = cbor_get_bytes(&map, keys::PAYLOAD).unwrap_or_default();
+                    tracing::debug!(
+                        "event: received msg on '{}' from {} ({} bytes)",
+                        topic,
+                        hex::encode(&peer_id[..4]),
+                        event_payload.len()
+                    );
+                    // In a full implementation, this would forward to local subscribers
+                    // and re-broadcast to other subscribed peers.
+                }
+                _ => {}
+            }
+            Ok(())
+        })
+    }
+}
+
+
+fn cbor_encode_map(pairs: Vec<(u64, ciborium::value::Value)>) -> Vec<u8> {
+    use ciborium::value::{Integer, Value};
+    let map: Vec<(Value, Value)> = pairs
+        .into_iter()
+        .map(|(k, v)| (Value::Integer(Integer::from(k)), v))
+        .collect();
+    let mut out = Vec::new();
+    ciborium::ser::into_writer(&Value::Map(map), &mut out).expect("CBOR encode");
+    out
+}
+
+fn cbor_get_int(map: &[(ciborium::value::Value, ciborium::value::Value)], key: u64) -> Option<u64> {
+    use ciborium::value::Value;
+    for (k, v) in map {
+        if let Value::Integer(ki) = k {
+            if u64::try_from(*ki).ok() == Some(key) {
+                if let Value::Integer(vi) = v {
+                    return u64::try_from(*vi).ok();
+                }
+            }
+        }
+    }
+    None
+}
+
+fn cbor_get_text(map: &[(ciborium::value::Value, ciborium::value::Value)], key: u64) -> Option<String> {
+    use ciborium::value::Value;
+    for (k, v) in map {
+        if let Value::Integer(ki) = k {
+            if u64::try_from(*ki).ok() == Some(key) {
+                if let Value::Text(s) = v {
+                    return Some(s.clone());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn cbor_get_bytes(map: &[(ciborium::value::Value, ciborium::value::Value)], key: u64) -> Option<Vec<u8>> {
+    use ciborium::value::Value;
+    for (k, v) in map {
+        if let Value::Integer(ki) = k {
+            if u64::try_from(*ki).ok() == Some(key) {
+                if let Value::Bytes(b) = v {
+                    return Some(b.clone());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn cbor_get_array(map: &[(ciborium::value::Value, ciborium::value::Value)], key: u64) -> Option<Vec<ciborium::value::Value>> {
+    use ciborium::value::Value;
+    for (k, v) in map {
+        if let Value::Integer(ki) = k {
+            if u64::try_from(*ki).ok() == Some(key) {
+                if let Value::Array(arr) = v {
+                    return Some(arr.clone());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn decode_payload(payload: &[u8]) -> anyhow::Result<Vec<(ciborium::value::Value, ciborium::value::Value)>> {
+    let val: ciborium::value::Value = ciborium::de::from_reader(payload)
+        .map_err(|e| anyhow::anyhow!("CBOR decode: {e}"))?;
+    match val {
+        ciborium::value::Value::Map(m) => Ok(m),
+        _ => anyhow::bail!("expected CBOR map payload"),
+    }
+}
+
+fn make_capability_msg(msg_type: u64, payload: Vec<u8>) -> p2pcd_types::ProtocolMessage {
+    p2pcd_types::ProtocolMessage::CapabilityMsg {
+        message_type: msg_type,
+        payload,
+    }
+}
