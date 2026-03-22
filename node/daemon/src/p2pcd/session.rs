@@ -474,7 +474,7 @@ mod tests {
 
     fn heartbeat_cap() -> CapabilityDeclaration {
         CapabilityDeclaration {
-            name: "core.heartbeat.liveness.1".to_string(),
+            name: "core.session.heartbeat.1".to_string(),
             role: Role::Both,
             mutual: true,
             scope: Option::None,
@@ -660,7 +660,7 @@ mod tests {
         assert!(
             session
                 .active_set
-                .contains(&"core.heartbeat.liveness.1".to_string()),
+                .contains(&"core.session.heartbeat.1".to_string()),
             "heartbeat should match, got {:?}",
             session.active_set
         );

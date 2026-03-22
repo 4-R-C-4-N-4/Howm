@@ -517,7 +517,7 @@ mod tests {
         manifest(
             id,
             vec![
-                cap("core.heartbeat.liveness.1", Role::Both, true),
+                cap("core.session.heartbeat.1", Role::Both, true),
                 cap("howm.social.feed.1", Role::Both, true),
             ],
         )
@@ -525,7 +525,7 @@ mod tests {
 
     /// Peer without social participation (heartbeat only)
     fn no_social_peer(id: u8) -> DiscoveryManifest {
-        manifest(id, vec![cap("core.heartbeat.liveness.1", Role::Both, true)])
+        manifest(id, vec![cap("core.session.heartbeat.1", Role::Both, true)])
     }
 
     /// §9.1: Social ↔ Social → both caps active
@@ -537,7 +537,7 @@ mod tests {
         let active = compute_intersection(&alice, &bob, &policies);
         assert_eq!(
             active,
-            vec!["core.heartbeat.liveness.1", "howm.social.feed.1"]
+            vec!["core.session.heartbeat.1", "howm.social.feed.1"]
         );
     }
 
@@ -548,7 +548,7 @@ mod tests {
         let bob = no_social_peer(0xB0);
         let policies = HashMap::new();
         let active = compute_intersection(&alice, &bob, &policies);
-        assert_eq!(active, vec!["core.heartbeat.liveness.1"]);
+        assert_eq!(active, vec!["core.session.heartbeat.1"]);
     }
 
     /// §9.3: Private ↔ Stranger → heartbeat only (trust gate blocks social)
@@ -578,7 +578,7 @@ mod tests {
         );
 
         let active = compute_intersection(&private_user, &stranger, &policies);
-        assert_eq!(active, vec!["core.heartbeat.liveness.1"]);
+        assert_eq!(active, vec!["core.session.heartbeat.1"]);
     }
 
     /// §9.4: Private ↔ Friend → both caps active
@@ -609,7 +609,7 @@ mod tests {
         let active = compute_intersection(&private_user, &friend, &policies);
         assert_eq!(
             active,
-            vec!["core.heartbeat.liveness.1", "howm.social.feed.1"]
+            vec!["core.session.heartbeat.1", "howm.social.feed.1"]
         );
     }
 
@@ -620,6 +620,6 @@ mod tests {
         let b = no_social_peer(0xB0);
         let policies = HashMap::new();
         let active = compute_intersection(&a, &b, &policies);
-        assert_eq!(active, vec!["core.heartbeat.liveness.1"]);
+        assert_eq!(active, vec!["core.session.heartbeat.1"]);
     }
 }

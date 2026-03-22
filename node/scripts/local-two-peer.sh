@@ -49,7 +49,7 @@ poll_interval_ms = 500
 "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbg=" = "127.0.0.1:$BOB_P2PCD_PORT"
 
 [capabilities.heartbeat]
-name = "core.heartbeat.liveness.1"
+name = "core.session.heartbeat.1"
 role = "both"
 mutual = true
 
@@ -82,7 +82,7 @@ poll_interval_ms = 500
 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaag=" = "127.0.0.1:$ALICE_P2PCD_PORT"
 
 [capabilities.heartbeat]
-name = "core.heartbeat.liveness.1"
+name = "core.session.heartbeat.1"
 role = "both"
 mutual = true
 

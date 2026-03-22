@@ -509,7 +509,7 @@ mod tests {
         let peer_id = [0xA1u8; 32];
         let caps = vec![
             CapabilityDeclaration {
-                name: "core.heartbeat.liveness.1".to_string(),
+                name: "core.session.heartbeat.1".to_string(),
                 role: Role::Both,
                 mutual: true,
                 scope: None,
@@ -583,7 +583,7 @@ mod tests {
             .collect();
         assert_eq!(
             names,
-            vec!["core.heartbeat.liveness.1", "howm.social.feed.1"]
+            vec!["core.session.heartbeat.1", "howm.social.feed.1"]
         );
     }
 
@@ -617,7 +617,7 @@ mod tests {
         let msg = ProtocolMessage::Confirm {
             personal_hash: vec![0xDE, 0xAD],
             active_set: vec![
-                "core.heartbeat.liveness.1".to_string(),
+                "core.session.heartbeat.1".to_string(),
                 "p2pcd.social.post.1".to_string(),
             ],
             accepted_params: Some(params.clone()),

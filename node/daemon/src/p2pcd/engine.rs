@@ -376,11 +376,11 @@ impl ProtocolEngine {
 
         let peer_id = s.remote_peer_id;
 
-        // 1. Start heartbeat if core.heartbeat.liveness.1 is in the active_set
+        // 1. Start heartbeat if core.session.heartbeat.1 is in the active_set
         let wants_heartbeat = s
             .active_set
             .iter()
-            .any(|c| c == "core.heartbeat.liveness.1");
+            .any(|c| c == "core.session.heartbeat.1");
 
         if wants_heartbeat {
             if let Some(transport) = s.transport.take() {
@@ -391,7 +391,7 @@ impl ProtocolEngine {
                 let hb_params = cfg
                     .capabilities
                     .values()
-                    .find(|c| c.name == "core.heartbeat.liveness.1")
+                    .find(|c| c.name == "core.session.heartbeat.1")
                     .and_then(|c| c.params.clone());
                 drop(cfg);
                 let hb = match hb_params {
@@ -728,7 +728,7 @@ mod tests {
             peer_id: [id; 32],
             sequence_num: 1,
             capabilities: vec![CapabilityDeclaration {
-                name: "core.heartbeat.liveness.1".to_string(),
+                name: "core.session.heartbeat.1".to_string(),
                 role: Role::Both,
                 mutual: true,
                 scope: None,
@@ -767,8 +767,8 @@ mod tests {
         assert_eq!(b_state, SessionState::Active);
         assert!(a
             .active_set
-            .contains(&"core.heartbeat.liveness.1".to_string()));
-        assert!(b_set.contains(&"core.heartbeat.liveness.1".to_string()));
+            .contains(&"core.session.heartbeat.1".to_string()));
+        assert!(b_set.contains(&"core.session.heartbeat.1".to_string()));
     }
 
     // ── Full-engine integration test ──────────────────────────────────────────
@@ -808,7 +808,7 @@ mod tests {
                 m.insert(
                     "heartbeat".to_string(),
                     CapabilityConfig {
-                        name: "core.heartbeat.liveness.1".to_string(),
+                        name: "core.session.heartbeat.1".to_string(),
                         role: RoleConfig::Both,
                         mutual: true,
                         scope: None,
@@ -1127,7 +1127,7 @@ mod tests {
         cfg.capabilities.insert(
             "heartbeat".to_string(),
             CapabilityConfig {
-                name: "core.heartbeat.liveness.1".to_string(),
+                name: "core.session.heartbeat.1".to_string(),
                 role: RoleConfig::Both,
                 mutual: true,
                 scope: None,
@@ -1162,7 +1162,7 @@ mod tests {
         let s = SessionSummary {
             peer_id: [1u8; 32],
             state: SessionState::Active,
-            active_set: vec!["core.heartbeat.liveness.1".to_string()],
+            active_set: vec!["core.session.heartbeat.1".to_string()],
             uptime_s: 42,
         };
         assert_eq!(s.active_set.len(), 1);

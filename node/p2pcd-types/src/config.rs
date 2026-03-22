@@ -340,7 +340,7 @@ impl PeerConfig {
                 m.insert(
                     "heartbeat".to_string(),
                     CapabilityConfig {
-                        name: "core.heartbeat.liveness.1".to_string(),
+                        name: "core.session.heartbeat.1".to_string(),
                         role: RoleConfig::Both,
                         mutual: true,
                         scope: None,
@@ -483,7 +483,7 @@ ttl = 3600
 default_tier = "public"
 
 [capabilities.heartbeat]
-name = "core.heartbeat.liveness.1"
+name = "core.session.heartbeat.1"
 role = "both"
 mutual = true
 
@@ -540,13 +540,13 @@ list = []
         let policies = cfg.trust_policies();
         assert!(policies.contains_key("howm.social.feed.1"));
         // Heartbeat has no classification config → no policy
-        assert!(!policies.contains_key("core.heartbeat.liveness.1"));
+        assert!(!policies.contains_key("core.session.heartbeat.1"));
     }
 
     #[test]
     fn validate_capability_names() {
         assert!(validate_capability_name("p2pcd.social.post.1"));
-        assert!(validate_capability_name("core.heartbeat.liveness.1"));
+        assert!(validate_capability_name("core.session.heartbeat.1"));
         assert!(validate_capability_name("org.example.cap.2"));
         assert!(!validate_capability_name("invalid"));
         assert!(!validate_capability_name("p2pcd.1"));

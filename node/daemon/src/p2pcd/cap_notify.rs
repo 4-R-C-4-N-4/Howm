@@ -231,12 +231,12 @@ mod tests {
 
         let notifier = CapabilityNotifier::new();
         notifier
-            .register("core.heartbeat.liveness.1".to_string(), port)
+            .register("core.session.heartbeat.1".to_string(), port)
             .await;
 
         let peer_id = [1u8; 32];
         let wg_addr: IpAddr = "100.222.0.2".parse().unwrap();
-        let active_set = vec!["core.heartbeat.liveness.1".to_string()];
+        let active_set = vec!["core.session.heartbeat.1".to_string()];
         let scope = BTreeMap::new();
 
         // Should not panic
@@ -275,7 +275,7 @@ mod tests {
         let p = PeerActivePayload {
             peer_id: "AAAA".to_string(),
             wg_address: "100.222.0.2".to_string(),
-            capability: "core.heartbeat.liveness.1".to_string(),
+            capability: "core.session.heartbeat.1".to_string(),
             scope: ScopeParams::default(),
             active_since: 0,
         };
@@ -283,6 +283,6 @@ mod tests {
         assert!(json.contains("peer_id"));
 
         let q: PeerActivePayload = serde_json::from_str(&json).unwrap();
-        assert_eq!(q.capability, "core.heartbeat.liveness.1");
+        assert_eq!(q.capability, "core.session.heartbeat.1");
     }
 }
