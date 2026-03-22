@@ -61,33 +61,26 @@ that's an application concern built on top of the stream primitive.
 
 ## 3. Message Types
 
-Stream needs 4 message types. Since the catalog says "(spec B.2)" without
-allocating specific numbers, and types 27–31 are reserved for v2 bridge
-capabilities, we use **application-defined types starting at 32**:
+Stream needs 4 message types. 
 
 | Type | Name | Direction | Purpose |
 |------|------|-----------|---------|
-| 32 | STREAM_OPEN | Either → Either | Request/accept a new stream |
-| 33 | STREAM_DATA | Provider → Consumer | Payload frame |
-| 34 | STREAM_CLOSE | Either → Either | Graceful teardown |
-| 35 | STREAM_CONTROL | Either → Either | Flow control / metadata |
+| 27 | STREAM_OPEN | Either → Either | Request/accept a new stream |
+| 28 | STREAM_DATA | Provider → Consumer | Payload frame |
+| 29 | STREAM_CLOSE | Either → Either | Graceful teardown |
+| 30 | STREAM_CONTROL | Either → Either | Flow control / metadata |
 
-**Rationale for 32+:** The core range (4–26) is full. Types 27–31 are
-reserved for v2 bridge capabilities per the catalog. Application types start
-at 32, and since howm is the reference implementation, we claim 32–35.
-
-> **Alternative:** If the spec formally allocates core stream types in a
-> future revision, we remap at that time. The CBOR wire format is identical
+> The CBOR wire format is identical
 > regardless of type number — only the dispatch table changes.
 
 ### Add to `p2pcd-types/src/lib.rs`:
 
 ```rust
-// core.data.stream.1 (32-35, application-defined pending spec allocation)
-pub const STREAM_OPEN: u64 = 32;
-pub const STREAM_DATA: u64 = 33;
-pub const STREAM_CLOSE: u64 = 34;
-pub const STREAM_CONTROL: u64 = 35;
+// core.data.stream.1 (27-30, application-defined pending spec allocation)
+pub const STREAM_OPEN: u64 = 27;
+pub const STREAM_DATA: u64 = 28;
+pub const STREAM_CLOSE: u64 = 29;
+pub const STREAM_CONTROL: u64 = 30;
 ```
 
 ---
@@ -97,21 +90,49 @@ pub const STREAM_CONTROL: u64 = 35;
 All messages are CBOR maps with integer keys, consistent with every other
 capability.
 
-### 4.1 — STREAM_OPEN (type 32)
+### 4.1 — STREAM_OPEN (type 27)
 
 Initiator (consumer or provider, depending on who starts) sends STREAM_OPEN
 to request a stream. The other side responds with STREAM_OPEN to accept.
 
 ```
 stream-open = {
-    1 : uint,          ; stream_id — unique per session, chosen by initiator
+    1 : uint,          ; stream_id — unique per peer, chosen by opener
     2 : uint,          ; status (0=request, 1=accepted, 2=rejected)
     ? 3 : tstr,        ; codec — e.g. "opus", "h264", "raw", "cbor"
     ? 4 : uint,        ; bitrate_kbps — requested/accepted bitrate
     ? 5 : tstr,        ; label — human-readable stream name ("camera-front", "mic")
     ? 6 : uint,        ; max_frame_bytes — max size of a single DATA frame
+    ? 13 : uint,       ; mode (0=framed [default], 1=raw)
 }
 ```
+
+**Stream ID namespacing:** Stream IDs are scoped per `(peer_id, stream_id)`.
+Each peer independently chooses IDs for streams it opens. Two peers can both
+open stream_id=1 without collision because the owning peer_id distinguishes
+them. This avoids hard-coded odd/even conventions and naturally supports
+multiple concurrent streams per peer.
+
+**Stream modes:**
+
+| Mode | Name | Sequence counts | Use case |
+|------|------|-----------------|----------|
+| 0 | FRAMED | Frames (0, 1, 2, ...) | Audio/video codec packets, CBOR deltas |
+| 1 | RAW | Bytes (cumulative offset) | Log tailing, pipe forwarding, raw byte streams |
+
+In **framed mode** (default), each STREAM_DATA is a discrete application frame.
+Sequence numbers count frames. The consumer processes each DATA payload
+independently.
+
+In **raw mode**, STREAM_DATA payloads are segments of a continuous byte stream.
+Sequence numbers count cumulative bytes (i.e., sequence = byte offset of the
+first byte in this DATA payload). The consumer concatenates payloads. The
+provider can split the stream at arbitrary boundaries for chunking efficiency.
+Codec is typically `"raw"` or omitted.
+
+Raw mode does not sidestep the protocol — it uses the exact same CBOR wire
+format and message types. The only difference is what sequence numbers mean
+and how the consumer reassembles.
 
 **CBOR key constants:**
 
@@ -129,10 +150,11 @@ mod keys {
     pub const REASON: u64 = 10;
     pub const CONTROL_TYPE: u64 = 11;
     pub const VALUE: u64 = 12;
+    pub const MODE: u64 = 13;
 }
 ```
 
-### 4.2 — STREAM_DATA (type 33)
+### 4.2 — STREAM_DATA (type 28)
 
 Payload frame. Sent continuously by the provider.
 
@@ -145,12 +167,15 @@ stream-data = {
 }
 ```
 
-Sequence numbers are per-stream, starting at 0. They enable:
-- Gap detection (consumer knows if a frame was dropped at the application layer)
+Sequence numbers are per-stream, starting at 0. In **framed mode** they count
+frames (0, 1, 2, ...). In **raw mode** they count cumulative bytes (byte offset
+of the first byte in this payload). They enable:
+- Gap detection (consumer knows if a frame was dropped or bytes are missing)
 - Ordering verification (should always be monotonic over TCP)
-- Statistics (frames/sec, jitter calculation from timestamp gaps)
+- Statistics (frames/sec or bytes/sec, jitter from timestamp gaps)
+- Raw mode reassembly (consumer can detect gaps in the byte stream)
 
-### 4.3 — STREAM_CLOSE (type 34)
+### 4.3 — STREAM_CLOSE (type 29)
 
 Either side can close a stream.
 
@@ -170,7 +195,7 @@ stream-close = {
 | 2 | TIMEOUT | Inactivity timeout |
 | 3 | REPLACED | Stream replaced by a new one (e.g., codec change) |
 
-### 4.4 — STREAM_CONTROL (type 35)
+### 4.4 — STREAM_CONTROL (type 30)
 
 In-band control messages for flow management without closing the stream.
 
@@ -298,10 +323,10 @@ a specific stream opens at 128 kbps).
 
 ```rust
 // In message_types:
-pub const STREAM_OPEN: u64 = 32;
-pub const STREAM_DATA: u64 = 33;
-pub const STREAM_CLOSE: u64 = 34;
-pub const STREAM_CONTROL: u64 = 35;
+pub const STREAM_OPEN: u64 = 27;
+pub const STREAM_DATA: u64 = 28;
+pub const STREAM_CLOSE: u64 = 29;
+pub const STREAM_CONTROL: u64 = 30;
 
 // In scope_keys:
 pub const STREAM_MAX_CONCURRENT: u64 = 24;
@@ -319,9 +344,9 @@ Following the established pattern (blob, relay):
 
 ```rust
 pub struct StreamHandler {
-    /// Active streams indexed by stream_id.
-    streams: Arc<RwLock<HashMap<u64, StreamState>>>,
-    /// Per-peer send channels (shared concept with relay).
+    /// Active streams indexed by (peer_id, stream_id).
+    streams: Arc<RwLock<HashMap<(PeerId, u64), StreamState>>>,
+    /// Send channel for outbound messages to the connected peer.
     send_tx: RwLock<Option<tokio::sync::mpsc::Sender<ProtocolMessage>>>,
     /// Callback for delivering received stream data to the application layer.
     data_sink: Arc<RwLock<Option<Box<dyn StreamDataSink>>>>,
@@ -331,16 +356,22 @@ struct StreamState {
     stream_id: u64,
     peer_id: PeerId,
     codec: String,
+    mode: StreamMode,
     bitrate_kbps: u64,
     label: Option<String>,
-    direction: StreamDirection,  // Sending | Receiving
+    direction: StreamDirection,
     paused: bool,
-    next_sequence: u64,          // for outbound: next seq to send
-    last_received_seq: u64,      // for inbound: gap detection
+    next_sequence: u64,          // framed: next frame #; raw: next byte offset
+    last_received_seq: u64,      // for inbound gap detection
     created_at: u64,
     last_activity: u64,
     bytes_transferred: u64,
     frames_transferred: u64,
+}
+
+enum StreamMode {
+    Framed,  // mode=0: sequence counts frames
+    Raw,     // mode=1: sequence counts cumulative bytes
 }
 
 enum StreamDirection {
@@ -348,11 +379,25 @@ enum StreamDirection {
     Receiving,
 }
 
-/// Application callback for received stream data.
+/// Application callback for stream lifecycle and data delivery.
 pub trait StreamDataSink: Send + Sync {
-    fn on_stream_data(&self, stream_id: u64, data: &[u8], sequence: u64, timestamp_ms: Option<u64>);
-    fn on_stream_opened(&self, stream_id: u64, codec: &str, label: Option<&str>);
-    fn on_stream_closed(&self, stream_id: u64, reason: u64);
+    /// Called when a remote peer requests a new stream. Return true to accept,
+    /// false to reject. If no sink is registered, streams are auto-accepted.
+    /// Protocol-level constraints (max_concurrent_streams, max_frame_bytes)
+    /// are enforced by the handler before this is called.
+    fn on_stream_requested(&self, stream_id: u64, peer_id: &PeerId,
+                           codec: &str, label: Option<&str>, mode: u8) -> bool;
+
+    /// Called after a stream is accepted and active.
+    fn on_stream_opened(&self, stream_id: u64, peer_id: &PeerId,
+                        codec: &str, label: Option<&str>);
+
+    /// Called for each received data frame/segment.
+    fn on_stream_data(&self, stream_id: u64, peer_id: &PeerId,
+                      data: &[u8], sequence: u64, timestamp_ms: Option<u64>);
+
+    /// Called when a stream is closed (by either side or timeout).
+    fn on_stream_closed(&self, stream_id: u64, peer_id: &PeerId, reason: u64);
 }
 ```
 
@@ -382,8 +427,7 @@ router.register(Arc::new(stream::StreamHandler::new()));
 ```
 
 Update `router_all_message_types_covered` test range from `4..=26` to
-`4..=26` + check for 32–35 separately (or adjust the test to handle
-the gap at 27–31).
+`4..=30` (contiguous now that stream claims 27–30).
 
 ---
 
@@ -391,21 +435,25 @@ the gap at 27–31).
 
 | # | Test | Validates |
 |---|------|-----------|
-| 1 | `handler_metadata` | Name = "core.data.stream.1", types = [32,33,34,35] |
+| 1 | `handler_metadata` | Name = "core.data.stream.1", types = [27,28,29,30] |
 | 2 | `open_accept_flow` | Consumer opens, provider accepts |
 | 3 | `open_reject_flow` | Consumer opens, provider rejects |
-| 4 | `data_frame_delivery` | STREAM_DATA reaches data_sink with correct seq/data |
-| 5 | `sequence_gap_detection` | Missing sequence number is detectable |
-| 6 | `pause_resume` | STREAM_CONTROL PAUSE/RESUME toggles paused state |
-| 7 | `bitrate_change` | STREAM_CONTROL BITRATE_CHANGE updates stream state |
-| 8 | `close_normal` | STREAM_CLOSE tears down and notifies sink |
-| 9 | `close_timeout` | Idle stream reaped after timeout |
-| 10 | `concurrent_stream_limit` | Exceeding max_concurrent_streams rejects OPEN |
-| 11 | `on_deactivated_cleanup` | Peer disconnect closes all streams |
-| 12 | `bidirectional_two_streams` | Two streams in opposite directions |
-| 13 | `max_frame_bytes_enforced` | Oversized DATA frame rejected |
-| 14 | `stats_request_response` | STATS_REQ returns frame/byte counts |
-| 15 | `provider_initiated_open` | Provider opens stream to consumer |
+| 4 | `open_app_reject` | StreamDataSink::on_stream_requested returns false → rejected |
+| 5 | `open_auto_accept_no_sink` | No sink registered → auto-accepted |
+| 6 | `data_frame_delivery` | STREAM_DATA reaches data_sink with correct seq/data |
+| 7 | `raw_mode_byte_sequence` | Raw mode: sequence = cumulative byte offset |
+| 8 | `sequence_gap_detection` | Missing sequence number is detectable |
+| 9 | `pause_resume` | STREAM_CONTROL PAUSE/RESUME toggles paused state |
+| 10 | `bitrate_change` | STREAM_CONTROL BITRATE_CHANGE updates stream state |
+| 11 | `close_normal` | STREAM_CLOSE tears down and notifies sink |
+| 12 | `close_timeout` | Idle stream reaped after timeout |
+| 13 | `concurrent_stream_limit` | Exceeding max_concurrent_streams rejects OPEN |
+| 14 | `on_deactivated_cleanup` | Peer disconnect closes all streams |
+| 15 | `bidirectional_two_streams` | Two streams in opposite directions, same stream_id ok |
+| 16 | `stream_id_namespacing` | (peer_a, 1) and (peer_b, 1) are distinct streams |
+| 17 | `max_frame_bytes_enforced` | Oversized DATA frame rejected |
+| 18 | `stats_request_response` | STATS_REQ returns frame/byte counts |
+| 19 | `provider_initiated_open` | Provider opens stream to consumer |
 
 ---
 
@@ -456,28 +504,36 @@ Gaming portal streams for multiplayer state replication:
 
 ---
 
-## 11. Open Questions
+## 11. Resolved Design Decisions
 
-1. **Message type allocation:** 32–35 works but means stream types live
-   outside the core range. If the P2P-CD spec formally allocates stream
-   types (e.g., at 27–30 in a v2 revision), we remap. The wire format
-   doesn't change — only the dispatch table.
+1. **Congestion feedback:** TCP backpressure handles this implicitly — if
+   the consumer can't keep up, TCP flow control slows the sender. The
+   BITRATE_CHANGE control (type 2) gives the application explicit adaptive
+   bitrate signaling on top of that. No separate congestion control message
+   needed. If the provider's send buffer fills up, that's TCP doing its job.
 
-2. **Congestion feedback:** TCP backpressure is implicit. Should
-   STREAM_CONTROL include an explicit congestion signal, or is the
-   BITRATE_CHANGE control sufficient?
+2. **Frame boundaries vs byte stream:** Both modes supported via the `mode`
+   field in STREAM_OPEN (key 13). Mode 0 = framed (discrete frames, sequence
+   counts frames). Mode 1 = raw (continuous byte stream, sequence counts
+   cumulative bytes). Same wire format, same message types. See §4.1 for
+   details.
 
-3. **Frame boundaries vs byte stream:** The current design uses framed
-   DATA messages (each frame is a discrete CBOR message). This is natural
-   for audio/video (one frame = one codec packet) but slightly wasteful
-   for raw byte streams. Is a "raw mode" needed where DATA payloads are
-   concatenated, or is the framing overhead acceptable?
+3. **Encryption beyond WireGuard:** Out of scope. Stream data is encrypted
+   by WireGuard. Relay is a simple forwarding mechanism — if two peers want
+   a private stream, they connect directly. E2E encryption over relayed
+   streams is a bridge networking concern, not a stream protocol concern.
 
-4. **Encryption beyond WireGuard:** Stream data is already encrypted by
-   WireGuard. Should there be an option for end-to-end encryption of
-   stream payloads (e.g., for relayed streams where the relay node
-   shouldn't see the content)? This would be a `StreamDataSink` wrapper,
-   not a protocol concern.
+4. **Stream ID namespacing:** IDs are scoped per `(peer_id, stream_id)`.
+   No odd/even convention. Each peer independently chooses IDs for the
+   streams it opens. Multiple concurrent streams per peer are natural.
+
+5. **Auto-accept policy:** Configurable at the application layer. The
+   `StreamHandler` enforces protocol-level constraints (max_concurrent_streams,
+   max_frame_bytes). For application-level accept/reject, the `StreamDataSink`
+   trait includes an `on_stream_requested() -> bool` hook. If the application
+   doesn't register a sink or the hook returns true, streams are auto-accepted.
+   This is the "phone on silent vs vibrate" model — the infrastructure handles
+   the call, the user decides whether to pick up.
 
 ---
 
@@ -487,6 +543,6 @@ Gaming portal streams for multiplayer state replication:
 2. Add `StreamDataSink` trait to `p2pcd-types` (or `p2pcd` library)
 3. Implement `StreamHandler` in `p2pcd/src/capabilities/stream.rs`
 4. Register in `CapabilityRouter::with_core_handlers()`
-5. Update router test for message types 32–35
-6. Write 15 tests per test plan
+5. Update router test for message types 27–30
+6. Write 19 tests per test plan
 7. Update `mod.rs` comment — remove "STUB" / "deferred"
