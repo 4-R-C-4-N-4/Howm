@@ -9,7 +9,9 @@ use tokio::sync::RwLock;
 
 use p2pcd_types::{message_types, CapabilityContext, CapabilityHandler, PeerId, ProtocolMessage};
 
-use crate::cbor_helpers::{cbor_encode_map, cbor_get_int, decode_payload, cbor_get_array, make_capability_msg};
+use crate::cbor_helpers::{
+    cbor_encode_map, cbor_get_array, cbor_get_int, decode_payload, make_capability_msg,
+};
 
 /// CBOR payload keys for PEX_REQ/PEX_RESP
 mod keys {
@@ -121,7 +123,6 @@ impl CapabilityHandler for PeerExchangeHandler {
         })
     }
 }
-
 
 #[cfg(test)]
 mod tests {

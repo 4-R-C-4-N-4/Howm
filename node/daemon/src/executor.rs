@@ -121,14 +121,13 @@ pub async fn stop_capability(pid: u32) -> anyhow::Result<()> {
             }
             Ok(s) => {
                 // taskkill returns non-zero if process already gone
-                info!("taskkill exited with {} for pid {} (probably already gone)", s, pid);
+                info!(
+                    "taskkill exited with {} for pid {} (probably already gone)",
+                    s, pid
+                );
             }
             Err(e) => {
-                return Err(anyhow::anyhow!(
-                    "Failed to terminate pid {}: {}",
-                    pid,
-                    e
-                ));
+                return Err(anyhow::anyhow!("Failed to terminate pid {}: {}", pid, e));
             }
         }
     }

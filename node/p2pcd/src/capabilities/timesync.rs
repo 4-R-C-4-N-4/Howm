@@ -140,7 +140,6 @@ impl CapabilityHandler for TimesyncHandler {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

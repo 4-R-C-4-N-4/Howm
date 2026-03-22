@@ -11,7 +11,10 @@ use tokio::sync::RwLock;
 
 use p2pcd_types::{message_types, CapabilityContext, CapabilityHandler, ProtocolMessage};
 
-use crate::cbor_helpers::{cbor_encode_map, cbor_get_bytes, cbor_get_int, cbor_get_text, decode_payload, make_capability_msg};
+use crate::cbor_helpers::{
+    cbor_encode_map, cbor_get_bytes, cbor_get_int, cbor_get_text, decode_payload,
+    make_capability_msg,
+};
 
 /// CBOR payload keys for RPC_REQ/RPC_RESP
 mod keys {
@@ -140,7 +143,6 @@ impl CapabilityHandler for RpcHandler {
         })
     }
 }
-
 
 #[cfg(test)]
 mod tests {

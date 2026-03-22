@@ -120,7 +120,6 @@ impl CapabilityHandler for AttestHandler {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -129,7 +129,6 @@ impl CapabilityHandler for LatencyHandler {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -21,8 +21,7 @@ pub fn cbor_encode_map(pairs: Vec<(u64, Value)>) -> Vec<u8> {
 
 /// Decode a CBOR payload into a map of (key, value) pairs.
 pub fn decode_payload(payload: &[u8]) -> Result<Vec<(Value, Value)>> {
-    let val: Value =
-        ciborium::de::from_reader(payload).map_err(|e| anyhow!("CBOR decode: {e}"))?;
+    let val: Value = ciborium::de::from_reader(payload).map_err(|e| anyhow!("CBOR decode: {e}"))?;
     match val {
         Value::Map(m) => Ok(m),
         _ => bail!("expected CBOR map payload"),

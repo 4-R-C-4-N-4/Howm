@@ -127,7 +127,6 @@ impl CapabilityHandler for EventHandler {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

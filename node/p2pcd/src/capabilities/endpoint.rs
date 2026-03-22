@@ -86,7 +86,6 @@ impl CapabilityHandler for EndpointHandler {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

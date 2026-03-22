@@ -29,7 +29,10 @@ impl BlobStore {
 
     /// Get the size of a stored blob (None if not found).
     pub async fn size(&self, hash: &[u8; 32]) -> Option<u64> {
-        fs::metadata(self.path_for(hash)).await.ok().map(|m| m.len())
+        fs::metadata(self.path_for(hash))
+            .await
+            .ok()
+            .map(|m| m.len())
     }
 
     /// Read a chunk of a stored blob.

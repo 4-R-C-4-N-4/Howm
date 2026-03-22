@@ -141,18 +141,22 @@ impl BlobHandler {
     }
 
     /// Public API: request a blob from a peer.
-    pub async fn request_blob(
-        &self,
-        transfer_id: u64,
-        blob_hash: [u8; 32],
-    ) -> Result<()> {
+    pub async fn request_blob(&self, transfer_id: u64, blob_hash: [u8; 32]) -> Result<()> {
         let payload = cbor_encode_map(vec![
-            (keys::TRANSFER_ID, ciborium::value::Value::Integer(transfer_id.into())),
-            (keys::BLOB_HASH, ciborium::value::Value::Bytes(blob_hash.to_vec())),
+            (
+                keys::TRANSFER_ID,
+                ciborium::value::Value::Integer(transfer_id.into()),
+            ),
+            (
+                keys::BLOB_HASH,
+                ciborium::value::Value::Bytes(blob_hash.to_vec()),
+            ),
         ]);
         let msg = make_capability_msg(message_types::BLOB_REQ, payload);
         if let Some(tx) = self.send_tx.read().await.as_ref() {
-            tx.send(msg).await.map_err(|e| anyhow::anyhow!("send BLOB_REQ: {}", e))?;
+            tx.send(msg)
+                .await
+                .map_err(|e| anyhow::anyhow!("send BLOB_REQ: {}", e))?;
         }
         Ok(())
     }
@@ -180,7 +184,10 @@ impl BlobHandler {
         let offset = cbor_get_int(&map, keys::OFFSET).unwrap_or(0);
 
         if blob_hash_bytes.len() != 32 {
-            tracing::warn!("blob: REQ with invalid hash length from {:?}", &ctx.peer_id[..4]);
+            tracing::warn!(
+                "blob: REQ with invalid hash length from {:?}",
+                &ctx.peer_id[..4]
+            );
             return Ok(());
         }
         let mut hash = [0u8; 32];
@@ -188,14 +195,23 @@ impl BlobHandler {
 
         tracing::debug!(
             "blob: REQ transfer_id={} hash={} offset={} from {}",
-            transfer_id, hex::encode(&hash[..4]), offset, hex::encode(&ctx.peer_id[..4])
+            transfer_id,
+            hex::encode(&hash[..4]),
+            offset,
+            hex::encode(&ctx.peer_id[..4])
         );
 
         // Check if we have it
         if !self.store.has(&hash).await {
             let ack = cbor_encode_map(vec![
-                (keys::TRANSFER_ID, ciborium::value::Value::Integer(transfer_id.into())),
-                (keys::STATUS, ciborium::value::Value::Integer(status::NOT_FOUND.into())),
+                (
+                    keys::TRANSFER_ID,
+                    ciborium::value::Value::Integer(transfer_id.into()),
+                ),
+                (
+                    keys::STATUS,
+                    ciborium::value::Value::Integer(status::NOT_FOUND.into()),
+                ),
             ]);
             self.send_msg(message_types::BLOB_ACK, ack).await;
             return Ok(());
@@ -207,11 +223,26 @@ impl BlobHandler {
 
         // Send OFFER
         let offer = cbor_encode_map(vec![
-            (keys::TRANSFER_ID, ciborium::value::Value::Integer(transfer_id.into())),
-            (keys::BLOB_HASH, ciborium::value::Value::Bytes(hash.to_vec())),
-            (keys::TOTAL_SIZE, ciborium::value::Value::Integer(total_size.into())),
-            (keys::CHUNK_SIZE, ciborium::value::Value::Integer(chunk_size.into())),
-            (keys::CHUNK_COUNT, ciborium::value::Value::Integer(chunk_count.into())),
+            (
+                keys::TRANSFER_ID,
+                ciborium::value::Value::Integer(transfer_id.into()),
+            ),
+            (
+                keys::BLOB_HASH,
+                ciborium::value::Value::Bytes(hash.to_vec()),
+            ),
+            (
+                keys::TOTAL_SIZE,
+                ciborium::value::Value::Integer(total_size.into()),
+            ),
+            (
+                keys::CHUNK_SIZE,
+                ciborium::value::Value::Integer(chunk_size.into()),
+            ),
+            (
+                keys::CHUNK_COUNT,
+                ciborium::value::Value::Integer(chunk_count.into()),
+            ),
         ]);
         self.send_msg(message_types::BLOB_OFFER, offer).await;
 
@@ -231,7 +262,8 @@ impl BlobHandler {
 
         // Stream chunks (starting from offset)
         let start_chunk = if offset > 0 { offset / chunk_size } else { 0 };
-        self.send_chunks(transfer_id, &hash, start_chunk, chunk_count, chunk_size).await;
+        self.send_chunks(transfer_id, &hash, start_chunk, chunk_count, chunk_size)
+            .await;
 
         Ok(())
     }
@@ -246,7 +278,10 @@ impl BlobHandler {
 
         tracing::debug!(
             "blob: OFFER transfer_id={} size={} chunks={} from {}",
-            transfer_id, total_size, chunk_count, hex::encode(&ctx.peer_id[..4])
+            transfer_id,
+            total_size,
+            chunk_count,
+            hex::encode(&ctx.peer_id[..4])
         );
 
         // Validate size
@@ -254,8 +289,14 @@ impl BlobHandler {
         if total_size > max {
             tracing::warn!("blob: OFFER rejected — size {} > max {}", total_size, max);
             let ack = cbor_encode_map(vec![
-                (keys::TRANSFER_ID, ciborium::value::Value::Integer(transfer_id.into())),
-                (keys::STATUS, ciborium::value::Value::Integer(status::REJECTED.into())),
+                (
+                    keys::TRANSFER_ID,
+                    ciborium::value::Value::Integer(transfer_id.into()),
+                ),
+                (
+                    keys::STATUS,
+                    ciborium::value::Value::Integer(status::REJECTED.into()),
+                ),
             ]);
             self.send_msg(message_types::BLOB_ACK, ack).await;
             return Ok(());
@@ -302,7 +343,11 @@ impl BlobHandler {
 
         let idx = chunk_index as usize;
         if idx >= transfer.chunks.len() {
-            tracing::warn!("blob: CHUNK index {} out of range for transfer {}", idx, transfer_id);
+            tracing::warn!(
+                "blob: CHUNK index {} out of range for transfer {}",
+                idx,
+                transfer_id
+            );
             return Ok(());
         }
 
@@ -323,23 +368,41 @@ impl BlobHandler {
                 Ok(bytes) => {
                     tracing::info!(
                         "blob: transfer {} complete — {} bytes, hash {}",
-                        transfer_id, bytes, hex::encode(&blob_hash[..8])
+                        transfer_id,
+                        bytes,
+                        hex::encode(&blob_hash[..8])
                     );
                     let ack = cbor_encode_map(vec![
-                        (keys::TRANSFER_ID, ciborium::value::Value::Integer(transfer_id.into())),
-                        (keys::STATUS, ciborium::value::Value::Integer(status::COMPLETE.into())),
+                        (
+                            keys::TRANSFER_ID,
+                            ciborium::value::Value::Integer(transfer_id.into()),
+                        ),
+                        (
+                            keys::STATUS,
+                            ciborium::value::Value::Integer(status::COMPLETE.into()),
+                        ),
                     ]);
                     self.send_msg(message_types::BLOB_ACK, ack).await;
                 }
                 Err(e) => {
-                    tracing::warn!("blob: hash verification failed for transfer {}: {}", transfer_id, e);
+                    tracing::warn!(
+                        "blob: hash verification failed for transfer {}: {}",
+                        transfer_id,
+                        e
+                    );
                     // Request retransmit of all chunks (hash mismatch = data corruption)
                     let all: Vec<ciborium::value::Value> = (0..assembled.len() as u64)
                         .map(|i| ciborium::value::Value::Integer(i.into()))
                         .collect();
                     let ack = cbor_encode_map(vec![
-                        (keys::TRANSFER_ID, ciborium::value::Value::Integer(transfer_id.into())),
-                        (keys::STATUS, ciborium::value::Value::Integer(status::RETRANSMIT.into())),
+                        (
+                            keys::TRANSFER_ID,
+                            ciborium::value::Value::Integer(transfer_id.into()),
+                        ),
+                        (
+                            keys::STATUS,
+                            ciborium::value::Value::Integer(status::RETRANSMIT.into()),
+                        ),
                         (keys::MISSING_CHUNKS, ciborium::value::Value::Array(all)),
                     ]);
                     self.send_msg(message_types::BLOB_ACK, ack).await;
@@ -375,7 +438,11 @@ impl BlobHandler {
                     })
                     .collect();
 
-                tracing::debug!("blob: transfer {} retransmit {} chunks", transfer_id, indices.len());
+                tracing::debug!(
+                    "blob: transfer {} retransmit {} chunks",
+                    transfer_id,
+                    indices.len()
+                );
 
                 let outbound = self.outbound.read().await;
                 if let Some(t) = outbound.get(&transfer_id) {
@@ -386,7 +453,8 @@ impl BlobHandler {
 
                     for idx in indices {
                         if idx < chunk_count {
-                            self.send_one_chunk(transfer_id, &hash, idx, chunk_size).await;
+                            self.send_one_chunk(transfer_id, &hash, idx, chunk_size)
+                                .await;
                         }
                     }
                 }
@@ -416,7 +484,8 @@ impl BlobHandler {
         chunk_size: u64,
     ) {
         for idx in start..count {
-            self.send_one_chunk(transfer_id, hash, idx, chunk_size).await;
+            self.send_one_chunk(transfer_id, hash, idx, chunk_size)
+                .await;
             // Yield between chunks for backpressure
             tokio::task::yield_now().await;
         }
@@ -433,8 +502,14 @@ impl BlobHandler {
         match self.store.read_chunk(hash, offset, chunk_size).await {
             Ok(data) => {
                 let chunk_msg = cbor_encode_map(vec![
-                    (keys::TRANSFER_ID, ciborium::value::Value::Integer(transfer_id.into())),
-                    (keys::CHUNK_INDEX, ciborium::value::Value::Integer(chunk_index.into())),
+                    (
+                        keys::TRANSFER_ID,
+                        ciborium::value::Value::Integer(transfer_id.into()),
+                    ),
+                    (
+                        keys::CHUNK_INDEX,
+                        ciborium::value::Value::Integer(chunk_index.into()),
+                    ),
                     (keys::DATA, ciborium::value::Value::Bytes(data)),
                 ]);
                 self.send_msg(message_types::BLOB_CHUNK, chunk_msg).await;
@@ -442,7 +517,9 @@ impl BlobHandler {
             Err(e) => {
                 tracing::warn!(
                     "blob: failed to read chunk {} of {}: {}",
-                    chunk_index, hex::encode(&hash[..4]), e
+                    chunk_index,
+                    hex::encode(&hash[..4]),
+                    e
                 );
             }
         }
@@ -532,7 +609,10 @@ impl CapabilityHandler for BlobHandler {
             let mut outbound = self.outbound.write().await;
             outbound.retain(|_, t| t.peer_id != peer_id);
 
-            tracing::debug!("blob: cleaned up transfers for peer {}", hex::encode(&peer_id[..4]));
+            tracing::debug!(
+                "blob: cleaned up transfers for peer {}",
+                hex::encode(&peer_id[..4])
+            );
             Ok(())
         })
     }
@@ -584,8 +664,14 @@ mod tests {
 
         let hash = [0xAAu8; 32];
         let req_payload = cbor_encode_map(vec![
-            (keys::TRANSFER_ID, ciborium::value::Value::Integer(1u64.into())),
-            (keys::BLOB_HASH, ciborium::value::Value::Bytes(hash.to_vec())),
+            (
+                keys::TRANSFER_ID,
+                ciborium::value::Value::Integer(1u64.into()),
+            ),
+            (
+                keys::BLOB_HASH,
+                ciborium::value::Value::Bytes(hash.to_vec()),
+            ),
         ]);
 
         let ctx = make_ctx([1u8; 32]);
@@ -594,7 +680,10 @@ mod tests {
         // Should receive a NOT_FOUND ACK
         let msg = rx.recv().await.unwrap();
         match msg {
-            ProtocolMessage::CapabilityMsg { message_type, payload } => {
+            ProtocolMessage::CapabilityMsg {
+                message_type,
+                payload,
+            } => {
                 assert_eq!(message_type, message_types::BLOB_ACK);
                 let map = decode_payload(&payload).unwrap();
                 assert_eq!(cbor_get_int(&map, keys::STATUS), Some(status::NOT_FOUND));
@@ -632,8 +721,14 @@ mod tests {
 
         // Consumer sends REQ → Provider
         let req = cbor_encode_map(vec![
-            (keys::TRANSFER_ID, ciborium::value::Value::Integer(42u64.into())),
-            (keys::BLOB_HASH, ciborium::value::Value::Bytes(hash.to_vec())),
+            (
+                keys::TRANSFER_ID,
+                ciborium::value::Value::Integer(42u64.into()),
+            ),
+            (
+                keys::BLOB_HASH,
+                ciborium::value::Value::Bytes(hash.to_vec()),
+            ),
         ]);
         provider.handle_req(&req, &ctx_from_a).await.unwrap();
 
@@ -647,31 +742,54 @@ mod tests {
         // First message should be OFFER
         let offer_msg = &messages[0];
         match offer_msg {
-            ProtocolMessage::CapabilityMsg { message_type, payload } => {
+            ProtocolMessage::CapabilityMsg {
+                message_type,
+                payload,
+            } => {
                 assert_eq!(*message_type, message_types::BLOB_OFFER);
                 let map = decode_payload(payload).unwrap();
-                assert_eq!(cbor_get_int(&map, keys::TOTAL_SIZE), Some(data.len() as u64));
+                assert_eq!(
+                    cbor_get_int(&map, keys::TOTAL_SIZE),
+                    Some(data.len() as u64)
+                );
             }
             _ => panic!("expected OFFER"),
         }
 
         // Feed OFFER to consumer
-        if let ProtocolMessage::CapabilityMsg { message_type, payload } = &messages[0] {
-            consumer.on_message(*message_type, payload, &ctx_from_b).await.unwrap();
+        if let ProtocolMessage::CapabilityMsg {
+            message_type,
+            payload,
+        } = &messages[0]
+        {
+            consumer
+                .on_message(*message_type, payload, &ctx_from_b)
+                .await
+                .unwrap();
         }
 
         // Feed chunks to consumer
         for msg in &messages[1..] {
-            if let ProtocolMessage::CapabilityMsg { message_type, payload } = msg {
+            if let ProtocolMessage::CapabilityMsg {
+                message_type,
+                payload,
+            } = msg
+            {
                 assert_eq!(*message_type, message_types::BLOB_CHUNK);
-                consumer.on_message(*message_type, payload, &ctx_from_b).await.unwrap();
+                consumer
+                    .on_message(*message_type, payload, &ctx_from_b)
+                    .await
+                    .unwrap();
             }
         }
 
         // Consumer should have sent COMPLETE ACK
         let ack_msg = consumer_rx.recv().await.unwrap();
         match ack_msg {
-            ProtocolMessage::CapabilityMsg { message_type, payload } => {
+            ProtocolMessage::CapabilityMsg {
+                message_type,
+                payload,
+            } => {
                 assert_eq!(message_type, message_types::BLOB_ACK);
                 let map = decode_payload(&payload).unwrap();
                 assert_eq!(cbor_get_int(&map, keys::STATUS), Some(status::COMPLETE));
@@ -682,7 +800,10 @@ mod tests {
         // Consumer's store should now have the blob
         let consumer_store = BlobStore::new(consumer_dir.path());
         assert!(consumer_store.has(&hash).await);
-        let retrieved = consumer_store.read_chunk(&hash, 0, data.len() as u64).await.unwrap();
+        let retrieved = consumer_store
+            .read_chunk(&hash, 0, data.len() as u64)
+            .await
+            .unwrap();
         assert_eq!(retrieved, data);
     }
 
@@ -696,11 +817,26 @@ mod tests {
 
         // Craft an OFFER with size > default max
         let offer = cbor_encode_map(vec![
-            (keys::TRANSFER_ID, ciborium::value::Value::Integer(1u64.into())),
-            (keys::BLOB_HASH, ciborium::value::Value::Bytes(vec![0u8; 32])),
-            (keys::TOTAL_SIZE, ciborium::value::Value::Integer((DEFAULT_MAX_BYTES + 1).into())),
-            (keys::CHUNK_SIZE, ciborium::value::Value::Integer(DEFAULT_CHUNK_SIZE.into())),
-            (keys::CHUNK_COUNT, ciborium::value::Value::Integer(1u64.into())),
+            (
+                keys::TRANSFER_ID,
+                ciborium::value::Value::Integer(1u64.into()),
+            ),
+            (
+                keys::BLOB_HASH,
+                ciborium::value::Value::Bytes(vec![0u8; 32]),
+            ),
+            (
+                keys::TOTAL_SIZE,
+                ciborium::value::Value::Integer((DEFAULT_MAX_BYTES + 1).into()),
+            ),
+            (
+                keys::CHUNK_SIZE,
+                ciborium::value::Value::Integer(DEFAULT_CHUNK_SIZE.into()),
+            ),
+            (
+                keys::CHUNK_COUNT,
+                ciborium::value::Value::Integer(1u64.into()),
+            ),
         ]);
 
         let ctx = make_ctx([1u8; 32]);
@@ -725,17 +861,20 @@ mod tests {
         let peer_id = [5u8; 32];
 
         // Insert a fake inbound transfer
-        handler.inbound.write().await.insert(1, InboundTransfer {
-            transfer_id: 1,
-            peer_id,
-            blob_hash: [0u8; 32],
-            total_size: 100,
-            chunk_size: 50,
-            chunk_count: 2,
-            received: vec![false, false],
-            chunks: vec![None, None],
-            started_at: unix_now(),
-        });
+        handler.inbound.write().await.insert(
+            1,
+            InboundTransfer {
+                transfer_id: 1,
+                peer_id,
+                blob_hash: [0u8; 32],
+                total_size: 100,
+                chunk_size: 50,
+                chunk_count: 2,
+                received: vec![false, false],
+                chunks: vec![None, None],
+                started_at: unix_now(),
+            },
+        );
 
         assert_eq!(handler.inbound.read().await.len(), 1);
 
