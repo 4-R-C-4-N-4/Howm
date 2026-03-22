@@ -422,6 +422,7 @@ mod tests {
             ScopeParams {
                 rate_limit: 10,
                 ttl: 3600,
+                ..Default::default()
             },
         );
 

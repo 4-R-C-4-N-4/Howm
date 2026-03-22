@@ -468,6 +468,7 @@ mod tests {
             scope: Some(ScopeParams {
                 rate_limit: 100,
                 ttl: 3600,
+                ..Default::default()
             }),
         }
     }
@@ -543,10 +544,12 @@ mod tests {
         let a = ScopeParams {
             rate_limit: 100,
             ttl: 3600,
+            ..Default::default()
         };
         let b = ScopeParams {
             rate_limit: 50,
             ttl: 7200,
+            ..Default::default()
         };
         let r = a.reconcile(&b);
         assert_eq!(r.rate_limit, 50);

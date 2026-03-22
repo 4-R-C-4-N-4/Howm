@@ -4,7 +4,7 @@
 
 use crate::{
     capability_keys, manifest_keys, message_keys, scope_keys, CapabilityDeclaration, CloseReason,
-    DiscoveryManifest, MessageType, ProtocolMessage, Role, ScopeParams, PEER_ID_LEN,
+    DiscoveryManifest, MessageType, ProtocolMessage, Role, ScopeParams, ScopeValue, PEER_ID_LEN,
 };
 use anyhow::{anyhow, bail, Context, Result};
 use ciborium::value::Value;
@@ -128,6 +128,10 @@ pub fn scope_to_cbor_value(scope: &ScopeParams) -> Value {
             Value::Integer(ciborium::value::Integer::from(scope.ttl)),
         ));
     }
+    // Extension keys (3+) — sorted by key for deterministic encoding
+    for (key, val) in &scope.extensions {
+        pairs.push((int_key(*key), scope_value_to_cbor(val)));
+    }
     Value::Map(pairs)
 }
 
@@ -136,10 +140,54 @@ pub fn scope_from_cbor_value(val: &Value) -> Result<ScopeParams> {
         Value::Map(m) => m,
         _ => bail!("scope_params: expected map"),
     };
+    let rate_limit = map_get_int(map, scope_keys::RATE_LIMIT).unwrap_or(0);
+    let ttl = map_get_int(map, scope_keys::TTL).unwrap_or(0);
+
+    // Collect extension keys (anything beyond 1 and 2)
+    let mut extensions = BTreeMap::new();
+    for (k, v) in map {
+        if let Value::Integer(ki) = k {
+            if let Ok(key) = u64::try_from(*ki) {
+                if key > scope_keys::TTL {
+                    if let Some(sv) = cbor_to_scope_value(v) {
+                        extensions.insert(key, sv);
+                    }
+                }
+            }
+        }
+    }
+
     Ok(ScopeParams {
-        rate_limit: map_get_int(map, scope_keys::RATE_LIMIT).unwrap_or(0),
-        ttl: map_get_int(map, scope_keys::TTL).unwrap_or(0),
+        rate_limit,
+        ttl,
+        extensions,
     })
+}
+
+/// Convert a ScopeValue to CBOR Value.
+fn scope_value_to_cbor(sv: &ScopeValue) -> Value {
+    match sv {
+        ScopeValue::Uint(v) => Value::Integer(ciborium::value::Integer::from(*v)),
+        ScopeValue::Text(s) => Value::Text(s.clone()),
+        ScopeValue::Bool(b) => Value::Bool(*b),
+        ScopeValue::Bytes(b) => Value::Bytes(b.clone()),
+        ScopeValue::Array(arr) => Value::Array(arr.iter().map(scope_value_to_cbor).collect()),
+    }
+}
+
+/// Convert a CBOR Value to ScopeValue.
+fn cbor_to_scope_value(val: &Value) -> Option<ScopeValue> {
+    match val {
+        Value::Integer(i) => u64::try_from(*i).ok().map(ScopeValue::Uint),
+        Value::Text(s) => Some(ScopeValue::Text(s.clone())),
+        Value::Bool(b) => Some(ScopeValue::Bool(*b)),
+        Value::Bytes(b) => Some(ScopeValue::Bytes(b.clone())),
+        Value::Array(arr) => {
+            let items: Vec<ScopeValue> = arr.iter().filter_map(cbor_to_scope_value).collect();
+            Some(ScopeValue::Array(items))
+        }
+        _ => None, // Map, Null, etc. — ignore unknown types
+    }
 }
 
 // ─── CapabilityDeclaration CBOR ───────────────────────────────────────────────
@@ -521,6 +569,7 @@ mod tests {
                 scope: Some(ScopeParams {
                     rate_limit: 10,
                     ttl: 3600,
+                    ..Default::default()
                 }),
             },
         ];
@@ -612,6 +661,7 @@ mod tests {
             ScopeParams {
                 rate_limit: 5,
                 ttl: 3600,
+                ..Default::default()
             },
         );
         let msg = ProtocolMessage::Confirm {

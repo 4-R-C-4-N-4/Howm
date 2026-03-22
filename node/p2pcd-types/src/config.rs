@@ -184,6 +184,7 @@ impl From<&ScopeConfig> for ScopeParams {
         ScopeParams {
             rate_limit: s.rate_limit,
             ttl: s.ttl,
+            extensions: Default::default(),
         }
     }
 }
