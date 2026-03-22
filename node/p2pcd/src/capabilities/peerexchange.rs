@@ -9,6 +9,8 @@ use tokio::sync::RwLock;
 
 use p2pcd_types::{message_types, CapabilityContext, CapabilityHandler, PeerId, ProtocolMessage};
 
+use crate::cbor_helpers::{cbor_encode_map, cbor_get_int, decode_payload, cbor_get_array, make_capability_msg};
+
 /// CBOR payload keys for PEX_REQ/PEX_RESP
 mod keys {
     pub const PEERS: u64 = 1;
@@ -120,106 +122,6 @@ impl CapabilityHandler for PeerExchangeHandler {
     }
 }
 
-#[allow(dead_code)]
-fn cbor_encode_map(pairs: Vec<(u64, ciborium::value::Value)>) -> Vec<u8> {
-    use ciborium::value::{Integer, Value};
-    let map: Vec<(Value, Value)> = pairs
-        .into_iter()
-        .map(|(k, v)| (Value::Integer(Integer::from(k)), v))
-        .collect();
-    let mut out = Vec::new();
-    ciborium::ser::into_writer(&Value::Map(map), &mut out).expect("CBOR encode");
-    out
-}
-
-#[allow(dead_code)]
-fn cbor_get_int(map: &[(ciborium::value::Value, ciborium::value::Value)], key: u64) -> Option<u64> {
-    use ciborium::value::Value;
-    for (k, v) in map {
-        if let Value::Integer(ki) = k {
-            if u64::try_from(*ki).ok() == Some(key) {
-                if let Value::Integer(vi) = v {
-                    return u64::try_from(*vi).ok();
-                }
-            }
-        }
-    }
-    None
-}
-
-#[allow(dead_code)]
-fn cbor_get_text(
-    map: &[(ciborium::value::Value, ciborium::value::Value)],
-    key: u64,
-) -> Option<String> {
-    use ciborium::value::Value;
-    for (k, v) in map {
-        if let Value::Integer(ki) = k {
-            if u64::try_from(*ki).ok() == Some(key) {
-                if let Value::Text(s) = v {
-                    return Some(s.clone());
-                }
-            }
-        }
-    }
-    None
-}
-
-#[allow(dead_code)]
-fn cbor_get_bytes(
-    map: &[(ciborium::value::Value, ciborium::value::Value)],
-    key: u64,
-) -> Option<Vec<u8>> {
-    use ciborium::value::Value;
-    for (k, v) in map {
-        if let Value::Integer(ki) = k {
-            if u64::try_from(*ki).ok() == Some(key) {
-                if let Value::Bytes(b) = v {
-                    return Some(b.clone());
-                }
-            }
-        }
-    }
-    None
-}
-
-#[allow(dead_code)]
-fn cbor_get_array(
-    map: &[(ciborium::value::Value, ciborium::value::Value)],
-    key: u64,
-) -> Option<Vec<ciborium::value::Value>> {
-    use ciborium::value::Value;
-    for (k, v) in map {
-        if let Value::Integer(ki) = k {
-            if u64::try_from(*ki).ok() == Some(key) {
-                if let Value::Array(arr) = v {
-                    return Some(arr.clone());
-                }
-            }
-        }
-    }
-    None
-}
-
-#[allow(dead_code)]
-fn decode_payload(
-    payload: &[u8],
-) -> anyhow::Result<Vec<(ciborium::value::Value, ciborium::value::Value)>> {
-    let val: ciborium::value::Value =
-        ciborium::de::from_reader(payload).map_err(|e| anyhow::anyhow!("CBOR decode: {e}"))?;
-    match val {
-        ciborium::value::Value::Map(m) => Ok(m),
-        _ => anyhow::bail!("expected CBOR map payload"),
-    }
-}
-
-#[allow(dead_code)]
-fn make_capability_msg(msg_type: u64, payload: Vec<u8>) -> p2pcd_types::ProtocolMessage {
-    p2pcd_types::ProtocolMessage::CapabilityMsg {
-        message_type: msg_type,
-        payload,
-    }
-}
 
 #[cfg(test)]
 mod tests {

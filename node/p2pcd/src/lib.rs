@@ -12,6 +12,7 @@
 // and HTTP capability notifier remain in the daemon crate.
 
 pub mod capabilities;
+pub mod cbor_helpers;
 pub mod heartbeat;
 pub mod session;
 pub mod transport;
