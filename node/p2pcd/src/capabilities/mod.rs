@@ -15,7 +15,7 @@
 //   blob.rs          — core.data.blob.1
 //   rpc.rs           — core.data.rpc.1
 //   event.rs         — core.data.event.1
-//   stream.rs        — core.data.stream.1 (STUB) — no file yet, deferred
+//   stream.rs        — core.data.stream.1
 
 pub mod attest;
 pub mod blob;
@@ -26,6 +26,7 @@ pub mod latency;
 pub mod peerexchange;
 pub mod relay;
 pub mod rpc;
+pub mod stream;
 pub mod timesync;
 
 use std::collections::HashMap;
@@ -161,6 +162,7 @@ impl CapabilityRouter {
         ))));
         router.register(Arc::new(rpc::RpcHandler::new()));
         router.register(Arc::new(event::EventHandler::new()));
+        router.register(Arc::new(stream::StreamHandler::new()));
         router
     }
 
@@ -182,8 +184,8 @@ mod tests {
     #[test]
     fn router_registers_all_core_handlers() {
         let router = CapabilityRouter::with_core_handlers();
-        // 10 handlers (11 caps minus stream which is deferred)
-        assert_eq!(router.handler_count(), 10);
+        // 11 handlers (all core caps)
+        assert_eq!(router.handler_count(), 11);
     }
 
     #[test]
@@ -284,10 +286,28 @@ mod tests {
     }
 
     #[test]
+    fn router_registers_stream() {
+        let router = CapabilityRouter::with_core_handlers();
+        assert!(router
+            .handler_for_type(message_types::STREAM_OPEN)
+            .is_some());
+        assert!(router
+            .handler_for_type(message_types::STREAM_DATA)
+            .is_some());
+        assert!(router
+            .handler_for_type(message_types::STREAM_CLOSE)
+            .is_some());
+        assert!(router
+            .handler_for_type(message_types::STREAM_CONTROL)
+            .is_some());
+        assert!(router.handler_by_name("core.data.stream.1").is_some());
+    }
+
+    #[test]
     fn router_all_message_types_covered() {
         let router = CapabilityRouter::with_core_handlers();
-        // Message types 4-26 should all have handlers (23 types total)
-        for msg_type in 4..=26 {
+        // Message types 4-30 should all have handlers (27 types total)
+        for msg_type in 4..=30 {
             assert!(
                 router.handler_for_type(msg_type).is_some(),
                 "message type {} should have a handler",

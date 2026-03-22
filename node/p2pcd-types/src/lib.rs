@@ -67,6 +67,10 @@ pub mod scope_keys {
     pub const RPC_METHODS: u64 = 21;
     pub const EVENT_TOPICS: u64 = 22;
     pub const EVENT_MAX_PAYLOAD_BYTES: u64 = 23;
+    // core.data.stream.1 (keys 24-26)
+    pub const STREAM_MAX_CONCURRENT: u64 = 24;
+    pub const STREAM_MAX_FRAME_BYTES: u64 = 25;
+    pub const STREAM_TIMEOUT_SECS: u64 = 26;
 }
 
 /// CBOR integer map keys for protocol messages (outer envelope)
@@ -121,8 +125,13 @@ pub mod message_types {
     pub const EVENT_SUB: u64 = 24;
     pub const EVENT_UNSUB: u64 = 25;
     pub const EVENT_MSG: u64 = 26;
-    // 27-31: reserved for v2 core extensions
-    // 32+: application-defined
+    // core.data.stream.1 (27-30)
+    pub const STREAM_OPEN: u64 = 27;
+    pub const STREAM_DATA: u64 = 28;
+    pub const STREAM_CLOSE: u64 = 29;
+    pub const STREAM_CONTROL: u64 = 30;
+    // 31-35: reserved for v2 core extensions
+    // 36+: application-defined
 }
 
 #[repr(u64)]
@@ -448,7 +457,7 @@ pub enum ProtocolMessage {
     },
     /// Generic capability message (type 6+). Decoded by capability handlers.
     CapabilityMsg {
-        /// Message type integer (6-26 for core, 32+ for app-defined).
+        /// Message type integer (6-30 for core, 36+ for app-defined).
         message_type: u64,
         /// Raw CBOR payload (the full message map minus the message_type key).
         payload: Vec<u8>,
@@ -970,7 +979,7 @@ mod tests {
 
     #[test]
     fn scope_key_registry_core_keys_distinct() {
-        // Verify all core scope keys 3-23 are distinct
+        // Verify all core scope keys 3-26 are distinct
         let keys = [
             scope_keys::HEARTBEAT_INTERVAL_MS,
             scope_keys::HEARTBEAT_TIMEOUT_MS,
@@ -993,14 +1002,17 @@ mod tests {
             scope_keys::RPC_METHODS,
             scope_keys::EVENT_TOPICS,
             scope_keys::EVENT_MAX_PAYLOAD_BYTES,
+            scope_keys::STREAM_MAX_CONCURRENT,
+            scope_keys::STREAM_MAX_FRAME_BYTES,
+            scope_keys::STREAM_TIMEOUT_SECS,
         ];
         let set: HashSet<u64> = keys.iter().copied().collect();
         assert_eq!(set.len(), keys.len(), "scope keys must be unique");
-        // All in range 3..=23
+        // All in range 3..=26
         for k in &keys {
             assert!(
-                *k >= 3 && *k <= 23,
-                "core scope key {} out of range 3-23",
+                *k >= 3 && *k <= 26,
+                "core scope key {} out of range 3-26",
                 k
             );
         }
@@ -1146,9 +1158,9 @@ mod tests {
 
     #[test]
     fn message_types_capability_range() {
-        // Capability messages 6-26
+        // Capability messages 6-30
         assert_eq!(message_types::BUILD_ATTEST, 6);
-        assert_eq!(message_types::EVENT_MSG, 26);
+        assert_eq!(message_types::STREAM_CONTROL, 30);
         // All capability message types > 5
         let cap_types = [
             message_types::BUILD_ATTEST,
@@ -1172,10 +1184,14 @@ mod tests {
             message_types::EVENT_SUB,
             message_types::EVENT_UNSUB,
             message_types::EVENT_MSG,
+            message_types::STREAM_OPEN,
+            message_types::STREAM_DATA,
+            message_types::STREAM_CLOSE,
+            message_types::STREAM_CONTROL,
         ];
         for t in &cap_types {
             assert!(
-                *t >= 6 && *t <= 26,
+                *t >= 6 && *t <= 30,
                 "capability msg type {} out of range",
                 t
             );
