@@ -80,7 +80,50 @@ pub mod message_keys {
     pub const TIMESTAMP: u64 = 7; // for PING/PONG
 }
 
-// ─── Wire message types ───────────────────────────────────────────────────────
+// ─── Wire message types (§5.3.6 + Appendix B.12) ────────────────────────────
+
+/// Message type constants per spec §5.3.6 and Appendix B.12.
+pub mod message_types {
+    // Protocol core (1-3)
+    pub const OFFER: u64 = 1;
+    pub const CONFIRM: u64 = 2;
+    pub const CLOSE: u64 = 3;
+    // core.session.heartbeat.1 (4-5)
+    pub const PING: u64 = 4;
+    pub const PONG: u64 = 5;
+    // core.session.attest.1 (6)
+    pub const BUILD_ATTEST: u64 = 6;
+    // core.session.timesync.1 (7-8)
+    pub const TIME_REQ: u64 = 7;
+    pub const TIME_RESP: u64 = 8;
+    // core.session.latency.1 (9-10)
+    pub const LAT_PING: u64 = 9;
+    pub const LAT_PONG: u64 = 10;
+    // core.network.endpoint.1 (11-12)
+    pub const WHOAMI_REQ: u64 = 11;
+    pub const WHOAMI_RESP: u64 = 12;
+    // core.network.relay.1 (13-15)
+    pub const CIRCUIT_OPEN: u64 = 13;
+    pub const CIRCUIT_DATA: u64 = 14;
+    pub const CIRCUIT_CLOSE: u64 = 15;
+    // core.network.peerexchange.1 (16-17)
+    pub const PEX_REQ: u64 = 16;
+    pub const PEX_RESP: u64 = 17;
+    // core.data.blob.1 (18-21)
+    pub const BLOB_REQ: u64 = 18;
+    pub const BLOB_OFFER: u64 = 19;
+    pub const BLOB_CHUNK: u64 = 20;
+    pub const BLOB_ACK: u64 = 21;
+    // core.data.rpc.1 (22-23)
+    pub const RPC_REQ: u64 = 22;
+    pub const RPC_RESP: u64 = 23;
+    // core.data.event.1 (24-26)
+    pub const EVENT_SUB: u64 = 24;
+    pub const EVENT_UNSUB: u64 = 25;
+    pub const EVENT_MSG: u64 = 26;
+    // 27-31: reserved for v2 core extensions
+    // 32+: application-defined
+}
 
 #[repr(u64)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -102,6 +145,12 @@ impl MessageType {
             5 => Some(MessageType::Pong),
             _ => None,
         }
+    }
+
+    /// Returns true if this message_type is a protocol-level message (1-5).
+    /// Capability messages (6+) are routed to handlers.
+    pub fn is_protocol(&self) -> bool {
+        (*self as u64) <= 5
     }
 }
 
@@ -397,6 +446,64 @@ pub enum ProtocolMessage {
     Pong {
         timestamp: u64,
     },
+    /// Generic capability message (type 6+). Decoded by capability handlers.
+    CapabilityMsg {
+        /// Message type integer (6-26 for core, 32+ for app-defined).
+        message_type: u64,
+        /// Raw CBOR payload (the full message map minus the message_type key).
+        payload: Vec<u8>,
+    },
+}
+
+// ─── Capability handler trait ─────────────────────────────────────────────────
+
+/// Context passed to capability handlers when they are activated or receive messages.
+#[derive(Debug, Clone)]
+pub struct CapabilityContext {
+    /// Remote peer identity.
+    pub peer_id: PeerId,
+    /// Negotiated scope params for this capability.
+    pub params: ScopeParams,
+    /// Capability name.
+    pub capability_name: String,
+}
+
+/// Trait for capability message handlers.
+///
+/// Each capability (heartbeat, attest, timesync, etc.) implements this trait.
+/// The engine dispatches incoming messages by type to the appropriate handler.
+pub trait CapabilityHandler: Send + Sync {
+    /// Capability name this handler serves (e.g. "core.session.heartbeat.1").
+    fn capability_name(&self) -> &str;
+
+    /// Message type integers this handler accepts (e.g. [4, 5] for heartbeat).
+    fn handled_message_types(&self) -> &[u64];
+
+    /// Called when the capability enters the active set after CONFIRM reconciliation.
+    /// For capabilities with an activation exchange (e.g. attest), this is where
+    /// the initial message is sent.
+    fn on_activated(
+        &self,
+        _ctx: &CapabilityContext,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + '_>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    /// Called when a message of a handled type arrives.
+    fn on_message(
+        &self,
+        msg_type: u64,
+        payload: &[u8],
+        ctx: &CapabilityContext,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + '_>>;
+
+    /// Called when the capability is deactivated (session close or re-exchange removal).
+    fn on_deactivated(
+        &self,
+        _ctx: &CapabilityContext,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + '_>> {
+        Box::pin(async { Ok(()) })
+    }
 }
 
 // ─── Trust gate (application-level) ───────────────────────────────────────────

@@ -482,6 +482,24 @@ impl ProtocolMessage {
                     Value::Integer(ciborium::value::Integer::from(*timestamp)),
                 ),
             ]),
+
+            ProtocolMessage::CapabilityMsg {
+                message_type,
+                payload,
+            } => {
+                // Re-wrap: decode payload back to CBOR value, add message_type key
+                let inner = decode_cbor(payload)
+                    .unwrap_or(Value::Map(vec![]));
+                let mut pairs = vec![(
+                    int_key(message_keys::MESSAGE_TYPE),
+                    Value::Integer(ciborium::value::Integer::from(*message_type)),
+                )];
+                // Merge inner map entries (if it's a map)
+                if let Value::Map(m) = inner {
+                    pairs.extend(m);
+                }
+                Value::Map(pairs)
+            }
         };
         cbor_to_bytes(&val).expect("protocol message CBOR encode should not fail")
     }
@@ -495,8 +513,24 @@ impl ProtocolMessage {
 
         let msg_type_u64 = map_get_int(map, message_keys::MESSAGE_TYPE)
             .ok_or_else(|| anyhow!("protocol message: missing message_type"))?;
-        let msg_type = MessageType::from_u64(msg_type_u64)
-            .ok_or_else(|| anyhow!("protocol message: unknown message_type {msg_type_u64}"))?;
+
+        // Types 6+ are capability messages — extract payload and route to handlers
+        if let None = MessageType::from_u64(msg_type_u64) {
+            // Build payload: re-encode the map without the message_type key
+            let filtered: Vec<(Value, Value)> = map
+                .iter()
+                .filter(|(k, _)| {
+                    !matches!(k, Value::Integer(ki) if u64::try_from(*ki).ok() == Some(message_keys::MESSAGE_TYPE))
+                })
+                .cloned()
+                .collect();
+            let payload = cbor_to_bytes(&Value::Map(filtered))?;
+            return Ok(ProtocolMessage::CapabilityMsg {
+                message_type: msg_type_u64,
+                payload,
+            });
+        }
+        let msg_type = MessageType::from_u64(msg_type_u64).unwrap();
 
         match msg_type {
             MessageType::Offer => {
