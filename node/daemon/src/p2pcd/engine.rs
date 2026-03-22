@@ -19,6 +19,7 @@ use tokio::sync::{mpsc, Mutex, RwLock};
 use p2pcd_types::{config::PeerConfig, CloseReason, DiscoveryManifest, PeerId, TrustPolicy};
 
 use super::cap_notify::CapabilityNotifier;
+use super::capabilities::CapabilityRouter;
 use super::heartbeat::{HeartbeatEvent, HeartbeatManager};
 use super::session::{self, Session, SessionState};
 use super::transport::{self, P2pcdListener};
@@ -88,6 +89,8 @@ pub struct ProtocolEngine {
     peer_addr_overrides: Arc<RwLock<HashMap<PeerId, SocketAddr>>>,
     /// §4.1 replay detection: last seen sequence_num per peer_id.
     last_seen_sequence: Arc<Mutex<HashMap<PeerId, u64>>>,
+    /// Routes capability messages (types 4+) to registered handlers.
+    cap_router: Arc<CapabilityRouter>,
 }
 
 impl ProtocolEngine {
@@ -115,6 +118,7 @@ impl ProtocolEngine {
             hb_event_tx,
             peer_addr_overrides: Arc::new(RwLock::new(HashMap::new())),
             last_seen_sequence: Arc::new(Mutex::new(HashMap::new())),
+            cap_router: Arc::new(CapabilityRouter::with_core_handlers()),
         }
     }
 
@@ -287,6 +291,23 @@ impl ProtocolEngine {
         };
 
         if !active_set.is_empty() {
+            // Deactivate capability handlers for removed caps
+            if let Err(e) = self
+                .cap_router
+                .deactivate_capabilities(
+                    peer_id,
+                    &active_set,
+                    &std::collections::BTreeMap::new(),
+                )
+                .await
+            {
+                tracing::warn!(
+                    "engine: capability deactivation failed for {}: {}",
+                    short(peer_id),
+                    e
+                );
+            }
+
             self.notifier
                 .notify_peer_inactive(peer_id, &active_set, &format!("{:?}", reason))
                 .await;
@@ -449,14 +470,24 @@ impl ProtocolEngine {
         let peer_id = s.remote_peer_id;
 
         // §7.7 Post-CONFIRM activation exchange.
-        // Capabilities that define an activation protocol (e.g. core.session.attest.1)
-        // run here before the session is fully announced. Phase 2 will add per-capability
-        // activation via CapabilityHandler::on_activated().
+        // Notify each capability handler that the session is active.
         tracing::debug!(
             "engine: post-CONFIRM activation for {} ({} caps)",
             short(peer_id),
             s.active_set.len()
         );
+
+        if let Err(e) = self
+            .cap_router
+            .activate_capabilities(peer_id, &s.active_set, &s.accepted_params)
+            .await
+        {
+            tracing::warn!(
+                "engine: capability activation failed for {}: {}",
+                short(peer_id),
+                e
+            );
+        }
 
         // 1. Start heartbeat if core.session.heartbeat.1 is in the active_set
         let wants_heartbeat = s

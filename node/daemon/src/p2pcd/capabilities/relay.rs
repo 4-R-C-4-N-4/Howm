@@ -9,6 +9,7 @@ use p2pcd_types::{
     message_types, CapabilityContext, CapabilityHandler,
 };
 
+#[allow(dead_code)]
 pub struct RelayHandler;
 
 impl RelayHandler {
@@ -46,5 +47,18 @@ impl CapabilityHandler for RelayHandler {
             );
             Ok(())
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use p2pcd_types::CapabilityHandler;
+
+    #[test]
+    fn handler_metadata() {
+        let h = RelayHandler::new();
+        assert_eq!(h.capability_name(), "core.network.relay.1");
+        assert_eq!(h.handled_message_types(), &[13, 14, 15]);
     }
 }

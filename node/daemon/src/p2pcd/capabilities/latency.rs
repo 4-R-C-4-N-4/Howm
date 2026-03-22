@@ -21,6 +21,7 @@ mod keys {
 
 const DEFAULT_WINDOW_SIZE: usize = 20;
 
+#[allow(dead_code)]
 pub struct LatencyHandler {
     samples: Arc<RwLock<HashMap<PeerId, VecDeque<u64>>>>,
     window_size: usize,
@@ -64,6 +65,7 @@ impl LatencyHandler {
     }
 }
 
+#[allow(dead_code)]
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -127,6 +129,7 @@ impl CapabilityHandler for LatencyHandler {
 }
 
 
+#[allow(dead_code)]
 fn cbor_encode_map(pairs: Vec<(u64, ciborium::value::Value)>) -> Vec<u8> {
     use ciborium::value::{Integer, Value};
     let map: Vec<(Value, Value)> = pairs
@@ -138,6 +141,7 @@ fn cbor_encode_map(pairs: Vec<(u64, ciborium::value::Value)>) -> Vec<u8> {
     out
 }
 
+#[allow(dead_code)]
 fn cbor_get_int(map: &[(ciborium::value::Value, ciborium::value::Value)], key: u64) -> Option<u64> {
     use ciborium::value::Value;
     for (k, v) in map {
@@ -152,6 +156,7 @@ fn cbor_get_int(map: &[(ciborium::value::Value, ciborium::value::Value)], key: u
     None
 }
 
+#[allow(dead_code)]
 fn cbor_get_text(map: &[(ciborium::value::Value, ciborium::value::Value)], key: u64) -> Option<String> {
     use ciborium::value::Value;
     for (k, v) in map {
@@ -166,6 +171,7 @@ fn cbor_get_text(map: &[(ciborium::value::Value, ciborium::value::Value)], key: 
     None
 }
 
+#[allow(dead_code)]
 fn cbor_get_bytes(map: &[(ciborium::value::Value, ciborium::value::Value)], key: u64) -> Option<Vec<u8>> {
     use ciborium::value::Value;
     for (k, v) in map {
@@ -180,6 +186,7 @@ fn cbor_get_bytes(map: &[(ciborium::value::Value, ciborium::value::Value)], key:
     None
 }
 
+#[allow(dead_code)]
 fn cbor_get_array(map: &[(ciborium::value::Value, ciborium::value::Value)], key: u64) -> Option<Vec<ciborium::value::Value>> {
     use ciborium::value::Value;
     for (k, v) in map {
@@ -194,6 +201,7 @@ fn cbor_get_array(map: &[(ciborium::value::Value, ciborium::value::Value)], key:
     None
 }
 
+#[allow(dead_code)]
 fn decode_payload(payload: &[u8]) -> anyhow::Result<Vec<(ciborium::value::Value, ciborium::value::Value)>> {
     let val: ciborium::value::Value = ciborium::de::from_reader(payload)
         .map_err(|e| anyhow::anyhow!("CBOR decode: {e}"))?;
@@ -203,9 +211,35 @@ fn decode_payload(payload: &[u8]) -> anyhow::Result<Vec<(ciborium::value::Value,
     }
 }
 
+#[allow(dead_code)]
 fn make_capability_msg(msg_type: u64, payload: Vec<u8>) -> p2pcd_types::ProtocolMessage {
     p2pcd_types::ProtocolMessage::CapabilityMsg {
         message_type: msg_type,
         payload,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use p2pcd_types::CapabilityHandler;
+
+    #[test]
+    fn handler_metadata() {
+        let h = LatencyHandler::new();
+        assert_eq!(h.capability_name(), "core.session.latency.1");
+        assert_eq!(h.handled_message_types(), &[9, 10]);
+    }
+
+    #[test]
+    fn default_window_size() {
+        let h = LatencyHandler::new();
+        assert_eq!(h.window_size, 20);
+    }
+
+    #[test]
+    fn custom_window_size() {
+        let h = LatencyHandler::new().with_window_size(5);
+        assert_eq!(h.window_size, 5);
     }
 }

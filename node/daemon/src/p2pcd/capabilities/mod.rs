@@ -4,24 +4,45 @@
 // The CapabilityRouter dispatches incoming messages by type to the right handler.
 //
 // Module layout:
-//   mod.rs      — CapabilityRouter, handler registration
-//   heartbeat.rs — core.session.heartbeat.1 (refactored from engine)
+//   mod.rs           — CapabilityRouter, handler registration
+//   heartbeat.rs     — core.session.heartbeat.1
+//   attest.rs        — core.session.attest.1
+//   timesync.rs      — core.session.timesync.1
+//   latency.rs       — core.session.latency.1
+//   endpoint.rs      — core.network.endpoint.1
+//   peerexchange.rs  — core.network.peerexchange.1
+//   relay.rs         — core.network.relay.1 (STUB)
+//   blob.rs          — core.data.blob.1 (STUB)
+//   rpc.rs           — core.data.rpc.1
+//   event.rs         — core.data.event.1
+//   stream.rs        — core.data.stream.1 (STUB) — no file yet, deferred
 
+pub mod attest;
+pub mod blob;
+pub mod endpoint;
+pub mod event;
 pub mod heartbeat;
+pub mod latency;
+pub mod peerexchange;
+pub mod relay;
+pub mod rpc;
+pub mod timesync;
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::Result;
-use tokio::sync::mpsc;
 
-use p2pcd_types::{message_types, CapabilityContext, CapabilityHandler, PeerId, ProtocolMessage, ScopeParams};
+use p2pcd_types::{CapabilityContext, CapabilityHandler, PeerId, ScopeParams};
+#[cfg(test)]
+use p2pcd_types::message_types;
 
 /// Routes incoming capability messages (types 4+) to registered handlers.
 ///
 /// After a session reaches ACTIVE, the engine splits the transport into channels
 /// and feeds inbound messages to the router. The router dispatches by message_type
 /// to the appropriate CapabilityHandler.
+#[allow(dead_code)]
 pub struct CapabilityRouter {
     /// Message type → handler.
     handlers: HashMap<u64, Arc<dyn CapabilityHandler>>,
@@ -124,8 +145,30 @@ impl CapabilityRouter {
     /// Build the default router with all core capability handlers registered.
     pub fn with_core_handlers() -> Self {
         let mut router = Self::new();
+        // Session tier
         router.register(Arc::new(heartbeat::HeartbeatHandler::new()));
+        router.register(Arc::new(attest::AttestHandler::new()));
+        router.register(Arc::new(timesync::TimesyncHandler::new()));
+        router.register(Arc::new(latency::LatencyHandler::new()));
+        // Network tier
+        router.register(Arc::new(endpoint::EndpointHandler::new()));
+        router.register(Arc::new(peerexchange::PeerExchangeHandler::new()));
+        router.register(Arc::new(relay::RelayHandler::new()));
+        // Data tier
+        router.register(Arc::new(blob::BlobHandler::new()));
+        router.register(Arc::new(rpc::RpcHandler::new()));
+        router.register(Arc::new(event::EventHandler::new()));
         router
+    }
+
+    /// Number of registered handlers.
+    pub fn handler_count(&self) -> usize {
+        self.by_name.len()
+    }
+
+    /// Number of message types routed.
+    pub fn message_type_count(&self) -> usize {
+        self.handlers.len()
     }
 }
 
@@ -134,11 +177,106 @@ mod tests {
     use super::*;
 
     #[test]
+    fn router_registers_all_core_handlers() {
+        let router = CapabilityRouter::with_core_handlers();
+        // 10 handlers (11 caps minus stream which is deferred)
+        assert_eq!(router.handler_count(), 10);
+    }
+
+    #[test]
     fn router_registers_heartbeat() {
         let router = CapabilityRouter::with_core_handlers();
         assert!(router.handler_for_type(message_types::PING).is_some());
         assert!(router.handler_for_type(message_types::PONG).is_some());
         assert!(router.handler_by_name("core.session.heartbeat.1").is_some());
+    }
+
+    #[test]
+    fn router_registers_attest() {
+        let router = CapabilityRouter::with_core_handlers();
+        assert!(router.handler_for_type(message_types::BUILD_ATTEST).is_some());
+        assert!(router.handler_by_name("core.session.attest.1").is_some());
+    }
+
+    #[test]
+    fn router_registers_timesync() {
+        let router = CapabilityRouter::with_core_handlers();
+        assert!(router.handler_for_type(message_types::TIME_REQ).is_some());
+        assert!(router.handler_for_type(message_types::TIME_RESP).is_some());
+        assert!(router.handler_by_name("core.session.timesync.1").is_some());
+    }
+
+    #[test]
+    fn router_registers_latency() {
+        let router = CapabilityRouter::with_core_handlers();
+        assert!(router.handler_for_type(message_types::LAT_PING).is_some());
+        assert!(router.handler_for_type(message_types::LAT_PONG).is_some());
+        assert!(router.handler_by_name("core.session.latency.1").is_some());
+    }
+
+    #[test]
+    fn router_registers_endpoint() {
+        let router = CapabilityRouter::with_core_handlers();
+        assert!(router.handler_for_type(message_types::WHOAMI_REQ).is_some());
+        assert!(router.handler_for_type(message_types::WHOAMI_RESP).is_some());
+        assert!(router.handler_by_name("core.network.endpoint.1").is_some());
+    }
+
+    #[test]
+    fn router_registers_peerexchange() {
+        let router = CapabilityRouter::with_core_handlers();
+        assert!(router.handler_for_type(message_types::PEX_REQ).is_some());
+        assert!(router.handler_for_type(message_types::PEX_RESP).is_some());
+        assert!(router.handler_by_name("core.network.peerexchange.1").is_some());
+    }
+
+    #[test]
+    fn router_registers_relay() {
+        let router = CapabilityRouter::with_core_handlers();
+        assert!(router.handler_for_type(message_types::CIRCUIT_OPEN).is_some());
+        assert!(router.handler_for_type(message_types::CIRCUIT_DATA).is_some());
+        assert!(router.handler_for_type(message_types::CIRCUIT_CLOSE).is_some());
+        assert!(router.handler_by_name("core.network.relay.1").is_some());
+    }
+
+    #[test]
+    fn router_registers_blob() {
+        let router = CapabilityRouter::with_core_handlers();
+        assert!(router.handler_for_type(message_types::BLOB_REQ).is_some());
+        assert!(router.handler_for_type(message_types::BLOB_OFFER).is_some());
+        assert!(router.handler_for_type(message_types::BLOB_CHUNK).is_some());
+        assert!(router.handler_for_type(message_types::BLOB_ACK).is_some());
+        assert!(router.handler_by_name("core.data.blob.1").is_some());
+    }
+
+    #[test]
+    fn router_registers_rpc() {
+        let router = CapabilityRouter::with_core_handlers();
+        assert!(router.handler_for_type(message_types::RPC_REQ).is_some());
+        assert!(router.handler_for_type(message_types::RPC_RESP).is_some());
+        assert!(router.handler_by_name("core.data.rpc.1").is_some());
+    }
+
+    #[test]
+    fn router_registers_event() {
+        let router = CapabilityRouter::with_core_handlers();
+        assert!(router.handler_for_type(message_types::EVENT_SUB).is_some());
+        assert!(router.handler_for_type(message_types::EVENT_UNSUB).is_some());
+        assert!(router.handler_for_type(message_types::EVENT_MSG).is_some());
+        assert!(router.handler_by_name("core.data.event.1").is_some());
+    }
+
+    #[test]
+    fn router_all_message_types_covered() {
+        let router = CapabilityRouter::with_core_handlers();
+        // Message types 4-26 should all have handlers (23 types total)
+        for msg_type in 4..=26 {
+            assert!(
+                router.handler_for_type(msg_type).is_some(),
+                "message type {} should have a handler",
+                msg_type
+            );
+        }
     }
 
     #[test]

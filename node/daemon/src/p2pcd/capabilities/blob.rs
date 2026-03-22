@@ -9,6 +9,7 @@ use p2pcd_types::{
     message_types, CapabilityContext, CapabilityHandler,
 };
 
+#[allow(dead_code)]
 pub struct BlobHandler;
 
 impl BlobHandler {
@@ -47,5 +48,18 @@ impl CapabilityHandler for BlobHandler {
             );
             Ok(())
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use p2pcd_types::CapabilityHandler;
+
+    #[test]
+    fn handler_metadata() {
+        let h = BlobHandler::new();
+        assert_eq!(h.capability_name(), "core.data.blob.1");
+        assert_eq!(h.handled_message_types(), &[18, 19, 20, 21]);
     }
 }
