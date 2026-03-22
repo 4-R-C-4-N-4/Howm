@@ -84,6 +84,7 @@ pub fn build_router(state: AppState, ui_dir: Option<PathBuf>) -> Router {
             "/settings/p2pcd",
             axum::routing::put(settings_routes::update_p2pcd_config),
         )
+        .route("/settings/nat-detect", post(settings_routes::detect_nat))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             bearer_auth_middleware,
@@ -118,6 +119,7 @@ pub fn build_router(state: AppState, ui_dir: Option<PathBuf>) -> Router {
         .route("/settings/node", get(settings_routes::get_node_settings))
         .route("/settings/identity", get(settings_routes::get_identity))
         .route("/settings/p2pcd", get(settings_routes::get_p2pcd_config))
+        .route("/settings/nat", get(settings_routes::get_nat_profile))
         .layer(middleware::from_fn(local_or_wg_middleware));
 
     // ── 2b. Bridge routes — localhost-only, for out-of-process capabilities ──

@@ -18,6 +18,7 @@ mod p2pcd;
 mod peers;
 mod proxy;
 mod state;
+mod stun;
 mod wireguard;
 
 use config::Config;

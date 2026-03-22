@@ -83,6 +83,47 @@ pub async fn update_p2pcd_config(
     Ok(Json(merged))
 }
 
+/// Run NAT detection and return the result.
+/// Also caches the result to nat_profile.json.
+pub async fn detect_nat(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
+    let wg_port = state
+        .identity
+        .wg_listen_port
+        .unwrap_or(state.config.wg_port);
+
+    // Run NAT characterization (blocking I/O — STUN is fast, ~1-2 seconds)
+    let data_dir = state.config.data_dir.clone();
+    let profile =
+        tokio::task::spawn_blocking(move || crate::stun::refresh_mapping(&data_dir, wg_port))
+            .await
+            .map_err(|e| AppError::Internal(format!("NAT detection task failed: {e}")))?;
+
+    Ok(Json(json!({
+        "nat_type": profile.nat_type,
+        "external_ip": profile.external_ip,
+        "external_port": profile.external_port,
+        "observed_stride": profile.observed_stride,
+        "detected_at": profile.detected_at,
+    })))
+}
+
+/// Get cached NAT profile without re-running detection.
+pub async fn get_nat_profile(State(state): State<AppState>) -> Json<Value> {
+    match crate::stun::load_nat_profile(&state.config.data_dir) {
+        Some(profile) => Json(json!({
+            "nat_type": profile.nat_type,
+            "external_ip": profile.external_ip,
+            "external_port": profile.external_port,
+            "observed_stride": profile.observed_stride,
+            "detected_at": profile.detected_at,
+        })),
+        None => Json(json!({
+            "nat_type": "unknown",
+            "message": "NAT detection has not been run. POST /settings/nat-detect to detect."
+        })),
+    }
+}
+
 fn merge_json(base: Value, overlay: Value) -> Value {
     match (base, overlay) {
         (Value::Object(mut base_map), Value::Object(overlay_map)) => {
