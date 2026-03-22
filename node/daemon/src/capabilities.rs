@@ -1,6 +1,19 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UiManifest {
+    pub label: String,
+    pub icon: Option<String>,
+    pub entry: String,
+    #[serde(default = "default_ui_style")]
+    pub style: String,
+}
+
+fn default_ui_style() -> String {
+    "iframe".to_string()
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub enum CapStatus {
     Running,
@@ -13,10 +26,52 @@ pub struct CapabilityEntry {
     pub name: String,
     pub version: String,
     pub port: u16,
-    pub container_id: String,
-    pub image: String,
+    pub pid: Option<u32>,
+    pub binary_path: String,
+    pub manifest_path: String,
+    pub data_dir: String,
     pub status: CapStatus,
     pub visibility: String,
+    pub ui: Option<UiManifest>,
+}
+
+/// Capability manifest read from manifest.json on disk.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CapabilityManifest {
+    pub name: String,
+    pub version: String,
+    pub description: Option<String>,
+    /// Relative path to the executable binary within the capability directory.
+    pub binary: String,
+    pub port: Option<u16>,
+    pub api: Option<ApiManifest>,
+    pub permissions: Option<PermissionsManifest>,
+    pub resources: Option<ResourcesManifest>,
+    pub ui: Option<UiManifest>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApiManifest {
+    pub base_path: Option<String>,
+    pub endpoints: Option<Vec<EndpointManifest>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EndpointManifest {
+    pub name: String,
+    pub method: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PermissionsManifest {
+    pub visibility: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResourcesManifest {
+    pub cpu: Option<String>,
+    pub memory: Option<String>,
 }
 
 pub fn load(data_dir: &Path) -> anyhow::Result<Vec<CapabilityEntry>> {

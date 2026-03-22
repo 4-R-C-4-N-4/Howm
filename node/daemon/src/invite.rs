@@ -51,6 +51,15 @@ pub fn generate(
         .or(identity.wg_endpoint.clone())
         .unwrap_or_else(|| "0.0.0.0:51820".to_string());
 
+    // Refuse to create invites with an unroutable endpoint — the joiner would
+    // try to HTTP-call 0.0.0.0 during redemption and fail silently.
+    if our_endpoint.starts_with("0.0.0.0") {
+        anyhow::bail!(
+            "Cannot create invite: WireGuard endpoint not configured. \
+             Restart with --wg-endpoint <public-ip:port> or set HOWM_WG_ENDPOINT."
+        );
+    }
+
     let psk = wireguard::generate_psk();
     let assigned_ip = wireguard::assign_next_address(data_dir)?;
     let expires_at = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() + ttl_s;

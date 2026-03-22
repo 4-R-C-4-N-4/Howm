@@ -76,10 +76,9 @@ pub async fn remove_peer(
 
     // Remove WG peer
     if let Some(pubkey) = peer_pubkey {
-        let wg_id = state.wg_container_id.read().await;
-        if let Some(ref container_id) = *wg_id {
-            let _ = wireguard::remove_peer(container_id, &state.config.data_dir, &pubkey, &node_id)
-                .await;
+        let wg_active = *state.wg_active.read().await;
+        if wg_active {
+            let _ = wireguard::remove_peer(&state.config.data_dir, &pubkey, &node_id).await;
         }
     }
 
@@ -138,10 +137,10 @@ pub async fn redeem_invite(
     }
 
     // Add their WG peer on our side
-    let wg_id = state.wg_container_id.read().await;
-    let container_id = wg_id
-        .as_deref()
-        .ok_or_else(|| AppError::Internal("WireGuard not initialized".to_string()))?;
+    let wg_active = *state.wg_active.read().await;
+    if !wg_active {
+        return Err(AppError::Internal("WireGuard not initialized".to_string()));
+    }
 
     let wg_peer = wireguard::WgPeerConfig {
         pubkey: decoded.their_pubkey.clone(),
@@ -152,7 +151,7 @@ pub async fn redeem_invite(
         node_id: "pending".to_string(),
     };
 
-    wireguard::add_peer(container_id, &state.config.data_dir, &wg_peer)
+    wireguard::add_peer(&state.config.data_dir, &wg_peer)
         .await
         .map_err(|e| AppError::Internal(format!("failed to add WG peer: {}", e)))?;
 
@@ -281,10 +280,10 @@ pub async fn complete_invite(
         .ok_or_else(|| AppError::Gone("invite not found or expired".to_string()))?;
 
     // Add the redeemer as a WG peer
-    let wg_id = state.wg_container_id.read().await;
-    let container_id = wg_id
-        .as_deref()
-        .ok_or_else(|| AppError::Internal("WireGuard not initialized".to_string()))?;
+    let wg_active = *state.wg_active.read().await;
+    if !wg_active {
+        return Err(AppError::Internal("WireGuard not initialized".to_string()));
+    }
 
     let wg_peer = wireguard::WgPeerConfig {
         pubkey: req.my_pubkey.clone(),
@@ -295,7 +294,7 @@ pub async fn complete_invite(
         node_id: "pending".to_string(),
     };
 
-    wireguard::add_peer(container_id, &state.config.data_dir, &wg_peer)
+    wireguard::add_peer(&state.config.data_dir, &wg_peer)
         .await
         .map_err(|e| AppError::Internal(format!("failed to add WG peer: {}", e)))?;
 
@@ -335,10 +334,10 @@ pub async fn complete_invite(
 }
 
 pub async fn get_wg_status(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
-    let wg_id = state.wg_container_id.read().await;
+    let wg_active = *state.wg_active.read().await;
 
-    if let Some(ref container_id) = *wg_id {
-        let peers = wireguard::get_status(container_id)
+    if wg_active {
+        let peers = wireguard::get_status()
             .await
             .map_err(|e| AppError::Internal(e.to_string()))?;
 
@@ -519,10 +518,10 @@ pub async fn open_join(
     let psk = wireguard::generate_psk();
 
     // 9. Add WG peer
-    let wg_id = state.wg_container_id.read().await;
-    let container_id = wg_id
-        .as_deref()
-        .ok_or_else(|| AppError::Internal("WireGuard not initialized".to_string()))?;
+    let wg_active = *state.wg_active.read().await;
+    if !wg_active {
+        return Err(AppError::Internal("WireGuard not initialized".to_string()));
+    }
 
     let wg_peer = wireguard::WgPeerConfig {
         pubkey: req.my_pubkey.clone(),
@@ -539,7 +538,7 @@ pub async fn open_join(
             .unwrap_or_else(|| "pending".to_string()),
     };
 
-    wireguard::add_peer(container_id, &state.config.data_dir, &wg_peer)
+    wireguard::add_peer(&state.config.data_dir, &wg_peer)
         .await
         .map_err(|e| AppError::Internal(format!("failed to add WG peer: {}", e)))?;
 
@@ -679,10 +678,10 @@ pub async fn redeem_open_invite(
     let host_wg_pubkey = join_data["host_wg_pubkey"].as_str().unwrap_or(&host_pubkey);
 
     // Add host as WG peer on our side
-    let wg_id = state.wg_container_id.read().await;
-    let container_id = wg_id
-        .as_deref()
-        .ok_or_else(|| AppError::Internal("WireGuard not initialized".to_string()))?;
+    let wg_active = *state.wg_active.read().await;
+    if !wg_active {
+        return Err(AppError::Internal("WireGuard not initialized".to_string()));
+    }
 
     let wg_peer = wireguard::WgPeerConfig {
         pubkey: host_wg_pubkey.to_string(),
@@ -696,7 +695,7 @@ pub async fn redeem_open_invite(
         node_id: host_node_id.clone(),
     };
 
-    wireguard::add_peer(container_id, &state.config.data_dir, &wg_peer)
+    wireguard::add_peer(&state.config.data_dir, &wg_peer)
         .await
         .map_err(|e| AppError::Internal(format!("failed to add WG peer: {}", e)))?;
 

@@ -24,3 +24,9 @@ permissions:
 resources:
   cpu: low
   memory: low
+
+ui:
+  label: Feed
+  icon: message-circle
+  entry: /ui/
+  style: iframe

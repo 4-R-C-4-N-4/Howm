@@ -6,11 +6,12 @@ use axum::{
 use serde_json::json;
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub enum AppError {
     NotFound(String),
     BadRequest(String),
     PeerUnreachable(String),
-    DockerError(String),
+    ExecutorError(String),
     Internal(String),
     Forbidden(String),
     Gone(String),
@@ -25,7 +26,7 @@ impl IntoResponse for AppError {
             AppError::NotFound(m) => (StatusCode::NOT_FOUND, m),
             AppError::BadRequest(m) => (StatusCode::BAD_REQUEST, m),
             AppError::PeerUnreachable(m) => (StatusCode::BAD_GATEWAY, m),
-            AppError::DockerError(m) => (StatusCode::INTERNAL_SERVER_ERROR, m),
+            AppError::ExecutorError(m) => (StatusCode::INTERNAL_SERVER_ERROR, m),
             AppError::Internal(m) => (StatusCode::INTERNAL_SERVER_ERROR, m),
             AppError::Forbidden(m) => (StatusCode::FORBIDDEN, m),
             AppError::Gone(m) => (StatusCode::GONE, m),

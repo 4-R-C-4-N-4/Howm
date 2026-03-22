@@ -6,23 +6,21 @@
 #
 # Options:
 #   --port PORT             Daemon listen port (default: 7000)
-#   --data-dir DIR          Data directory (default: ./data)
+#   --data-dir DIR          Data directory (default: ~/.local/howm)
 #   --name NAME             Node name (default: hostname)
 #   --wg-port PORT          WireGuard listen port (default: 51820)
 #   --wg-endpoint HOST:PORT Public WireGuard endpoint for peers
-#   --no-wg                 Disable WireGuard (LAN-only mode)
 #   --no-ui                 Skip the web UI
-#   --no-social-feed        Skip building/installing the social-feed capability
 #   --dev                   Pass --dev flag to daemon (enables CORS for Vite proxy)
-#   --logs                  Show daemon logs in the foreground
+#   --debug                 Show daemon logs in the foreground
+#   --release               Build in release mode (default: debug)
 #   --help                  Show this help
 #
 # Examples:
 #   ./howm.sh                                          # start a standalone node
 #   ./howm.sh --wg-endpoint myhost.com:51820           # node reachable at myhost.com
-#   ./howm.sh --port 7010 --name node-b --data-dir ./data-b
-#   ./howm.sh --no-wg                                  # LAN-only, no WireGuard
-#   ./howm.sh --no-ui --no-social-feed                 # daemon-only, no extras
+#   ./howm.sh --port 7010 --name node-b --data-dir /tmp/howm-b
+#   ./howm.sh --no-ui                                  # daemon-only, no web UI
 
 set -euo pipefail
 
@@ -30,15 +28,14 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # ── Defaults ────────────────────────────────────────────────────────────────
 PORT=7000
-DATA_DIR="$ROOT_DIR/data"
+DATA_DIR=""
 NODE_NAME=""
 WG_PORT=51820
 WG_ENDPOINT=""
-NO_WG=0
 NO_UI=0
-NO_SOCIAL_FEED=0
 DEV_FLAG=""
-SHOW_LOGS=0
+DEBUG_FLAG=""
+RELEASE_MODE=0
 
 # ── Parse args ──────────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -48,11 +45,10 @@ while [[ $# -gt 0 ]]; do
         --name)              NODE_NAME="$2";      shift 2 ;;
         --wg-port)           WG_PORT="$2";        shift 2 ;;
         --wg-endpoint)       WG_ENDPOINT="$2";    shift 2 ;;
-        --no-wg)             NO_WG=1;             shift   ;;
         --no-ui)             NO_UI=1;             shift   ;;
-        --no-social-feed)    NO_SOCIAL_FEED=1;    shift   ;;
         --dev)               DEV_FLAG="--dev";    shift   ;;
-        --logs)              SHOW_LOGS=1;         shift   ;;
+        --debug)             DEBUG_FLAG="--debug"; shift  ;;
+        --release)           RELEASE_MODE=1;      shift   ;;
         --help|-h)
             grep '^#' "$0" | sed 's/^# \{0,2\}//'
             exit 0
@@ -87,22 +83,7 @@ check_cmd() {
 }
 
 check_cmd cargo "Install Rust from https://rustup.rs"
-
-HAS_DOCKER=0
-if command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
-    HAS_DOCKER=1
-fi
-
-if [[ $NO_WG -eq 0 && $HAS_DOCKER -eq 0 ]]; then
-    warn "Docker not available — WireGuard container cannot start."
-    warn "Use --no-wg for LAN-only mode, or install Docker."
-    NO_WG=1
-fi
-
-if [[ $NO_SOCIAL_FEED -eq 0 && $HAS_DOCKER -eq 0 ]]; then
-    warn "Docker not available — skipping social-feed capability"
-    NO_SOCIAL_FEED=1
-fi
+check_cmd wg "Install wireguard-tools (e.g. pacman -S wireguard-tools)"
 
 if [[ $NO_UI -eq 0 ]]; then
     if ! command -v npm &>/dev/null; then
@@ -111,25 +92,9 @@ if [[ $NO_UI -eq 0 ]]; then
     fi
 fi
 
-# ── Build daemon ─────────────────────────────────────────────────────────────
-info "Building daemon (release)..."
-cd "$ROOT_DIR/node"
-BUILD_OUT=$(cargo build --release 2>&1)
-BUILD_EXIT=$?
-if [[ $BUILD_EXIT -ne 0 ]]; then
-    error "Daemon build failed:"
-    echo "$BUILD_OUT"
-    exit 1
-fi
-if echo "$BUILD_OUT" | grep -q "Compiling daemon"; then
-    success "Daemon rebuilt (source changes detected)"
-else
-    success "Daemon up to date (no changes)"
-fi
-DAEMON_BIN="$ROOT_DIR/node/target/release/daemon"
-
-# ── Build web UI ─────────────────────────────────────────────────────────
-UI_DIR=""
+# ── Build web UI ─────────────────────────────────────────────────────────────
+# In production mode the UI is compiled into the binary via include_dir!, so it
+# must be built BEFORE cargo build.  In dev mode Vite serves it separately.
 if [[ $NO_UI -eq 0 ]]; then
     info "Installing UI dependencies..."
     cd "$ROOT_DIR/ui/web"
@@ -138,55 +103,65 @@ if [[ $NO_UI -eq 0 ]]; then
         info "Starting web UI dev server..."
         npm run dev &
         UI_PID=$!
-        success "Web UI starting on http://localhost:5173 (PID $UI_PID)"
+        success "Web UI dev server starting on http://localhost:5173 (PID $UI_PID)"
     else
         info "Building web UI (production)..."
-        npx vite build --outDir dist 2>&1 | tail -3
-        UI_DIR="$ROOT_DIR/ui/web/dist"
-        success "Web UI built: $UI_DIR"
+        npm run build 2>&1 | tail -3
+        success "Web UI built — will be embedded into the binary"
     fi
+    cd "$ROOT_DIR"
 fi
 
-# ── Build social-feed image ─────────────────────────────────────────────────
-SOCIAL_FEED_IMAGE="cap-social-feed:0.1"
-SOCIAL_FEED_BUILT=0
-if [[ $NO_SOCIAL_FEED -eq 0 ]]; then
-    info "Building social-feed Docker image ($SOCIAL_FEED_IMAGE)..."
-    cd "$ROOT_DIR"
-    if docker build -q -t "$SOCIAL_FEED_IMAGE" capabilities/social-feed/; then
-        success "social-feed image built: $SOCIAL_FEED_IMAGE"
-        SOCIAL_FEED_BUILT=1
-    else
-        warn "Docker build failed — continuing without social-feed"
-    fi
+# ── Build daemon ─────────────────────────────────────────────────────────────
+BUILD_EXIT=0
+if [[ $RELEASE_MODE -eq 1 ]]; then
+    info "Building howm (release)..."
+    BUILD_OUT=$(cd "$ROOT_DIR/node" && cargo build --release 2>&1) || BUILD_EXIT=$?
+    HOWM_BIN="$ROOT_DIR/node/target/release/howm"
+else
+    info "Building howm (debug)..."
+    BUILD_OUT=$(cd "$ROOT_DIR/node" && cargo build 2>&1) || BUILD_EXIT=$?
+    HOWM_BIN="$ROOT_DIR/node/target/debug/howm"
+fi
+
+if [[ $BUILD_EXIT -ne 0 ]]; then
+    error "Build failed (exit $BUILD_EXIT):"
+    echo "$BUILD_OUT"
+    exit 1
+fi
+if echo "$BUILD_OUT" | grep -q "Compiling howm"; then
+    success "Howm rebuilt (source changes detected)"
+else
+    success "Howm up to date (no changes)"
 fi
 
 # ── Start daemon ────────────────────────────────────────────────────────────
-mkdir -p "$DATA_DIR"
-
-DAEMON_ARGS=(--port "$PORT" --data-dir "$DATA_DIR")
+DAEMON_ARGS=(--port "$PORT")
+[[ -n "$DATA_DIR" ]]      && DAEMON_ARGS+=(--data-dir "$DATA_DIR")
 [[ -n "$NODE_NAME" ]]     && DAEMON_ARGS+=(--name "$NODE_NAME")
 [[ -n "$DEV_FLAG" ]]      && DAEMON_ARGS+=("$DEV_FLAG")
-[[ -n "$UI_DIR" ]]        && DAEMON_ARGS+=(--ui-dir "$UI_DIR")
+[[ -n "$DEBUG_FLAG" ]]    && DAEMON_ARGS+=("$DEBUG_FLAG")
 
 # WireGuard flags
-if [[ $NO_WG -eq 1 ]]; then
-    DAEMON_ARGS+=(--no-wg)
-else
-    DAEMON_ARGS+=(--wg-port "$WG_PORT")
-    [[ -n "$WG_ENDPOINT" ]] && DAEMON_ARGS+=(--wg-endpoint "$WG_ENDPOINT")
+DAEMON_ARGS+=(--wg-port "$WG_PORT")
+[[ -n "$WG_ENDPOINT" ]] && DAEMON_ARGS+=(--wg-endpoint "$WG_ENDPOINT")
+
+# Kill any stale howm process on this port
+STALE_PID=$(lsof -ti "tcp:$PORT" 2>/dev/null || true)
+if [[ -n "$STALE_PID" ]]; then
+    warn "Port $PORT already in use (PID $STALE_PID) — killing stale process"
+    kill "$STALE_PID" 2>/dev/null || true
+    sleep 1
+    # Force-kill if still alive
+    kill -9 "$STALE_PID" 2>/dev/null || true
+    sleep 0.5
 fi
 
-info "Starting daemon on port $PORT (data: $DATA_DIR)..."
+info "Starting howm on port $PORT..."
 cd "$ROOT_DIR"
-if [[ $SHOW_LOGS -eq 1 ]]; then
-    export RUST_LOG=info
-    "$DAEMON_BIN" "${DAEMON_ARGS[@]}" &
-else
-    "$DAEMON_BIN" "${DAEMON_ARGS[@]}" &>/dev/null &
-fi
+"$HOWM_BIN" "${DAEMON_ARGS[@]}" &
 DAEMON_PID=$!
-success "Daemon started (PID $DAEMON_PID)"
+success "Howm started (PID $DAEMON_PID)"
 
 # ── Wait for daemon to be ready ─────────────────────────────────────────────
 info "Waiting for daemon to accept connections..."
@@ -204,24 +179,50 @@ done
 
 # Read the API token for authenticated requests
 API_TOKEN=""
-if [[ -f "$DATA_DIR/api_token" ]]; then
-    API_TOKEN=$(cat "$DATA_DIR/api_token")
+EFFECTIVE_DATA_DIR="${DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/howm}"
+if [[ -f "$EFFECTIVE_DATA_DIR/api_token" ]]; then
+    API_TOKEN=$(cat "$EFFECTIVE_DATA_DIR/api_token")
 fi
 
-success "Daemon is ready at http://localhost:$PORT"
+success "Howm is ready at http://localhost:$PORT"
 
-# ── Install social-feed capability ──────────────────────────────────────────
-if [[ $SOCIAL_FEED_BUILT -eq 1 ]]; then
-    info "Installing social-feed capability..."
-    RESP=$(curl -sf -X POST "http://localhost:$PORT/capabilities/install" \
-        -H 'Content-Type: application/json' \
-        -H "Authorization: Bearer $API_TOKEN" \
-        -d "{\"image\":\"$SOCIAL_FEED_IMAGE\"}" || true)
-    if echo "$RESP" | grep -q '"name"'; then
-        success "social-feed installed and running"
-    else
-        warn "social-feed install returned unexpected response: $RESP"
-    fi
+# ── Build & install capabilities ──────────────────────────────────────────────
+CAP_DIR="$ROOT_DIR/capabilities"
+if [[ -d "$CAP_DIR" ]] && [[ -n "$API_TOKEN" ]]; then
+    for cap in "$CAP_DIR"/*/manifest.json; do
+        [[ -f "$cap" ]] || continue
+        cap_root="$(dirname "$cap")"
+        cap_name="$(basename "$cap_root")"
+
+        # Build the capability (Cargo project)
+        if [[ -f "$cap_root/Cargo.toml" ]]; then
+            CAP_BUILD_EXIT=0
+            if [[ $RELEASE_MODE -eq 1 ]]; then
+                info "Building capability '$cap_name' (release)..."
+                (cd "$cap_root" && cargo build --release 2>&1) || CAP_BUILD_EXIT=$?
+            else
+                info "Building capability '$cap_name' (debug)..."
+                (cd "$cap_root" && cargo build 2>&1) || CAP_BUILD_EXIT=$?
+            fi
+            if [[ $CAP_BUILD_EXIT -ne 0 ]]; then
+                warn "Capability '$cap_name' build failed (exit $CAP_BUILD_EXIT) — skipping"
+                continue
+            fi
+        fi
+
+        # Install via the daemon API (idempotent — will 400 if already installed)
+        INSTALL_RESP=$(curl -sf -X POST "http://localhost:$PORT/capabilities/install" \
+            -H "Authorization: Bearer $API_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{\"path\": \"$cap_root\"}" 2>&1) || true
+        if echo "$INSTALL_RESP" | grep -q '"capability"'; then
+            success "Capability '$cap_name' installed"
+        elif echo "$INSTALL_RESP" | grep -q 'already installed'; then
+            info "Capability '$cap_name' already registered"
+        else
+            warn "Capability '$cap_name' install: $INSTALL_RESP"
+        fi
+    done
 fi
 
 # ── Summary ──────────────────────────────────────────────────────────────────
@@ -233,23 +234,18 @@ printf "${GREEN}│${NC}  Daemon API:  http://localhost:%-17s${GREEN}│${NC}\n"
 if [[ -n "$API_TOKEN" ]]; then
 printf "${GREEN}│${NC}  API Token:   %-33s${GREEN}│${NC}\n" "$API_TOKEN"
 fi
-if [[ -n "$UI_DIR" ]]; then
-printf "${GREEN}│${NC}  Web UI:      http://localhost:%-17s${GREEN}│${NC}\n" "$PORT"
-elif [[ $NO_UI -eq 0 ]]; then
-echo -e "${GREEN}│${NC}  Web UI:      http://localhost:5173              ${GREEN}│${NC}"
+if [[ $NO_UI -eq 0 ]]; then
+  if [[ -n "$DEV_FLAG" ]]; then
+    echo -e "${GREEN}│${NC}  Web UI:      http://localhost:5173              ${GREEN}│${NC}"
+  else
+    printf "${GREEN}│${NC}  Web UI:      http://localhost:%-17s${GREEN}│${NC}\n" "$PORT"
+  fi
 fi
-if [[ $SOCIAL_FEED_BUILT -eq 1 ]]; then
-printf "${GREEN}│${NC}  Social feed: http://localhost:%s/cap/social/feed\n" "$PORT"
-fi
-if [[ $NO_WG -eq 0 ]]; then
-  WG_INFO="WG port $WG_PORT"
-  [[ -n "$WG_ENDPOINT" ]] && WG_INFO="$WG_ENDPOINT"
-  printf "${GREEN}│${NC}  WireGuard:   %-33s${GREEN}│${NC}\n" "$WG_INFO"
-else
-  echo -e "${GREEN}│${NC}  WireGuard:   disabled (LAN-only)                ${GREEN}│${NC}"
-fi
+WG_INFO="WG port $WG_PORT"
+[[ -n "$WG_ENDPOINT" ]] && WG_INFO="$WG_ENDPOINT"
+printf "${GREEN}│${NC}  WireGuard:   %-33s${GREEN}│${NC}\n" "$WG_INFO"
 echo -e "${GREEN}│                                                 │${NC}"
-echo -e "${GREEN}│${NC}  Press Ctrl+C to stop all processes             ${GREEN}│${NC}"
+echo -e "${GREEN}│${NC}  Press Ctrl+C to stop                            ${GREEN}│${NC}"
 echo -e "${GREEN}└─────────────────────────────────────────────────┘${NC}"
 echo ""
 
@@ -257,13 +253,16 @@ echo ""
 cleanup() {
     echo ""
     info "Shutting down..."
+    # Send SIGTERM to daemon (triggers graceful shutdown internally)
     kill "$DAEMON_PID" 2>/dev/null || true
+    # Wait briefly for graceful shutdown
+    for _ in $(seq 1 10); do
+        kill -0 "$DAEMON_PID" 2>/dev/null || break
+        sleep 0.5
+    done
+    # Force-kill if still alive
+    kill -9 "$DAEMON_PID" 2>/dev/null || true
     [[ -n "${UI_PID:-}" ]] && kill "$UI_PID" 2>/dev/null || true
-    # Stop capability containers (daemon shutdown handler does this too)
-    docker ps --filter "name=howm-cap-" --format "{{.ID}}" 2>/dev/null \
-        | xargs -r docker stop &>/dev/null || true
-    docker ps --filter "name=howm-wg-" --format "{{.ID}}" 2>/dev/null \
-        | xargs -r docker stop &>/dev/null || true
     info "Done."
 }
 

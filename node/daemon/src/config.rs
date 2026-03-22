@@ -1,13 +1,23 @@
 use clap::Parser;
 use std::path::PathBuf;
 
+fn default_data_dir() -> String {
+    dirs::data_local_dir()
+        .map(|d| d.join("howm").to_string_lossy().to_string())
+        .unwrap_or_else(|| {
+            dirs::home_dir()
+                .map(|h| h.join(".local").join("howm").to_string_lossy().to_string())
+                .unwrap_or_else(|| "./data".to_string())
+        })
+}
+
 #[derive(Parser, Debug, Clone)]
-#[command(name = "daemon", about = "Howm node daemon")]
+#[command(name = "howm", about = "Howm — P2P capability platform")]
 pub struct Config {
     #[arg(long, default_value = "7000", env = "HOWM_PORT")]
     pub port: u16,
 
-    #[arg(long, default_value = "./data", env = "HOWM_DATA_DIR")]
+    #[arg(long, default_value_os_t = PathBuf::from(default_data_dir()), env = "HOWM_DATA_DIR")]
     pub data_dir: PathBuf,
 
     #[arg(long, default_value = "5000", env = "HOWM_PEER_TIMEOUT_MS")]
@@ -20,10 +30,6 @@ pub struct Config {
     pub name: Option<String>,
 
     // WireGuard networking
-    /// Disable WireGuard (LAN-only mode)
-    #[arg(long, default_value = "false", env = "HOWM_NO_WG")]
-    pub no_wg: bool,
-
     #[arg(long, default_value = "51820", env = "HOWM_WG_PORT")]
     pub wg_port: u16,
 
@@ -48,14 +54,18 @@ pub struct Config {
     #[arg(long, default_value = "false")]
     pub dev: bool,
 
+    /// Enable debug logging (logs to stdout + files instead of files only)
+    #[arg(long, default_value = "false")]
+    pub debug: bool,
+
     /// Path to UI dist directory to serve as static files
     #[arg(long, env = "HOWM_UI_DIR")]
     pub ui_dir: Option<PathBuf>,
 }
 
 impl Config {
-    /// WireGuard is enabled unless --no-wg is passed.
+    /// WireGuard is always enabled.
     pub fn wg_enabled(&self) -> bool {
-        !self.no_wg
+        true
     }
 }

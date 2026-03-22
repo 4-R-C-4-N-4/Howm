@@ -1,0 +1,66 @@
+/**
+ * Howm theme — global CSS custom properties.
+ * Served by the daemon at /theme.css so capability UIs can link to it.
+ * Capability UIs should reference these variables with hardcoded fallbacks
+ * in case the page is opened without the theme (e.g. during development).
+ */
+
+:root {
+  /* ── Backgrounds ─────────────────────────────────────────── */
+  --howm-bg-primary:   #0f1117;
+  --howm-bg-secondary: #1a1d27;
+  --howm-bg-surface:   #232733;
+  --howm-bg-elevated:  #2a2e3d;
+
+  /* ── Text ────────────────────────────────────────────────── */
+  --howm-text-primary:   #e1e4eb;
+  --howm-text-secondary: #8b91a0;
+  --howm-text-muted:     #5c6170;
+
+  /* ── Accent / brand ──────────────────────────────────────── */
+  --howm-accent:       #6c8cff;
+  --howm-accent-hover: #8da6ff;
+  --howm-accent-dim:   rgba(108, 140, 255, 0.15);
+
+  /* ── Semantic ────────────────────────────────────────────── */
+  --howm-success: #4ade80;
+  --howm-warning: #fbbf24;
+  --howm-error:   #f87171;
+  --howm-info:    #38bdf8;
+
+  /* ── Borders ─────────────────────────────────────────────── */
+  --howm-border:        #2e3341;
+  --howm-border-subtle: #1e2230;
+
+  /* ── Border radius ───────────────────────────────────────── */
+  --howm-radius-sm: 4px;
+  --howm-radius-md: 8px;
+  --howm-radius-lg: 12px;
+
+  /* ── Spacing ─────────────────────────────────────────────── */
+  --howm-space-xs:  4px;
+  --howm-space-sm:  8px;
+  --howm-space-md:  16px;
+  --howm-space-lg:  24px;
+  --howm-space-xl:  32px;
+  --howm-space-2xl: 48px;
+
+  /* ── Typography ──────────────────────────────────────────── */
+  --howm-font-family:    system-ui, 'Segoe UI', Roboto, sans-serif;
+  --howm-font-mono:      ui-monospace, Consolas, 'Courier New', monospace;
+  --howm-font-size-xs:   0.75rem;
+  --howm-font-size-sm:   0.875rem;
+  --howm-font-size-base: 1rem;
+  --howm-font-size-lg:   1.125rem;
+  --howm-font-size-xl:   1.25rem;
+  --howm-font-size-2xl:  1.5rem;
+
+  /* ── Shadows ─────────────────────────────────────────────── */
+  --howm-shadow-sm: 0 1px 3px rgba(0,0,0,0.4);
+  --howm-shadow-md: 0 4px 12px rgba(0,0,0,0.5);
+
+  /* ── Z-index ladder ──────────────────────────────────────── */
+  --howm-z-nav:     100;
+  --howm-z-overlay: 200;
+  --howm-z-toast:   300;
+}

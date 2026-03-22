@@ -1,41 +1,61 @@
 use clap::Parser;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use tracing::info;
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 mod api;
 mod capabilities;
 mod config;
-mod discovery;
-mod docker;
+mod embedded_ui;
 mod error;
-mod health;
+mod executor;
 mod identity;
 mod invite;
+mod net_detect;
 mod open_invite;
+mod p2pcd;
 mod peers;
 mod proxy;
-mod prune;
 mod state;
-#[allow(clippy::needless_range_loop, clippy::useless_vec)]
 mod wireguard;
 
 use config::Config;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env().add_directive("info".parse()?))
-        .init();
-
     let config = Config::parse();
     std::fs::create_dir_all(&config.data_dir)?;
+
+    // Set up logging: file-based with optional stdout in debug mode
+    let log_dir = config.data_dir.join("logs");
+    std::fs::create_dir_all(&log_dir)?;
+    let file_appender = tracing_appender::rolling::daily(&log_dir, "howm.log");
+    let env_filter = EnvFilter::from_default_env().add_directive("info".parse()?);
+
+    if config.debug {
+        let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(fmt::layer().with_writer(std::io::stdout))
+            .with(fmt::layer().with_writer(non_blocking).with_ansi(false))
+            .init();
+        // Leak guard so it lives for the program duration
+        std::mem::forget(_guard);
+    } else {
+        let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(fmt::layer().with_writer(non_blocking).with_ansi(false))
+            .init();
+        std::mem::forget(_guard);
+    }
 
     // Load or create identity
     let mut identity = identity::load_or_create(&config.data_dir, config.name.clone())?;
     info!("Node identity: {} ({})", identity.name, identity.node_id);
 
-    // Init WireGuard — manages howm-wg Docker container
+    // Init WireGuard
     let wg_config = wireguard::WgConfig {
         enabled: config.wg_enabled(),
         port: config.wg_port,
@@ -62,37 +82,48 @@ async fn main() -> anyhow::Result<()> {
     let peers = peers::load(&config.data_dir)?;
     let mut capabilities = capabilities::load(&config.data_dir)?;
 
-    // Restart capability containers that were running before daemon shutdown
+    // Restart capability processes that were running before daemon shutdown
     for cap in capabilities.iter_mut() {
         if matches!(cap.status, capabilities::CapStatus::Stopped) {
             continue;
         }
-        // Check if the container is still alive
-        let alive = docker::check_health(&cap.container_id)
-            .await
-            .unwrap_or(false);
+        // Check if the process is still alive
+        let alive = cap.pid.map(executor::check_health).unwrap_or(false);
         if alive {
-            info!("Capability '{}' container still running", cap.name);
+            info!(
+                "Capability '{}' process still running (pid={:?})",
+                cap.name, cap.pid
+            );
             continue;
         }
-        // Container is dead — restart from the image
+        // Process is dead — restart from the binary
         info!(
-            "Restarting capability '{}' from image {}",
-            cap.name, cap.image
+            "Restarting capability '{}' from {}",
+            cap.name, cap.binary_path
         );
-        let data_volume = config
-            .data_dir
-            .join("cap-data")
-            .join(cap.image.replace(['/', ':'], "-"));
-        std::fs::create_dir_all(&data_volume)?;
-        match docker::start_capability(&cap.image, cap.port, data_volume, 7001, None).await {
-            Ok(new_id) => {
-                info!("Capability '{}' restarted on port {}", cap.name, cap.port);
-                cap.container_id = new_id;
+        let data_dir = &cap.data_dir;
+        std::fs::create_dir_all(data_dir)?;
+        match executor::start_capability(
+            &cap.binary_path,
+            &cap.name,
+            cap.port,
+            data_dir,
+            std::collections::HashMap::new(),
+        )
+        .await
+        {
+            Ok(new_pid) => {
+                info!(
+                    "Capability '{}' restarted on port {} (pid={})",
+                    cap.name, cap.port, new_pid
+                );
+                cap.pid = Some(new_pid);
+                cap.status = capabilities::CapStatus::Running;
             }
             Err(e) => {
                 tracing::warn!("Failed to restart capability '{}': {}", cap.name, e);
                 cap.status = capabilities::CapStatus::Error(format!("restart failed: {}", e));
+                cap.pid = None;
             }
         }
     }
@@ -109,7 +140,7 @@ async fn main() -> anyhow::Result<()> {
     info!("API bearer token: {}", api_token);
 
     // Build app state
-    let state = state::AppState::new(
+    let mut state = state::AppState::new(
         identity.clone(),
         peers,
         capabilities,
@@ -117,49 +148,56 @@ async fn main() -> anyhow::Result<()> {
         api_token,
     );
 
-    // Store WG container ID for graceful shutdown cleanup
+    // Build capability notifier and register running capabilities
+    let cap_notifier = p2pcd::cap_notify::CapabilityNotifier::new();
     {
-        let mut wg_id = state.wg_container_id.write().await;
-        *wg_id = wg_state.container_id.clone();
+        let caps = state.capabilities.read().await;
+        for cap in caps.iter() {
+            if matches!(cap.status, capabilities::CapStatus::Running) {
+                cap_notifier.register(cap.name.clone(), cap.port).await;
+                tracing::debug!("cap_notify: registered '{}' on port {}", cap.name, cap.port);
+            }
+        }
+    }
+
+    // Construct P2P-CD protocol engine (only when WG is active)
+    let p2pcd_engine = if wg_state.tunnel_handle.is_some() {
+        match build_p2pcd_engine(&config, &identity, &wg_state, Arc::clone(&cap_notifier)) {
+            Ok(engine) => {
+                info!("P2P-CD engine initialised");
+                Some(engine)
+            }
+            Err(e) => {
+                tracing::warn!("P2P-CD engine init failed (continuing without): {}", e);
+                None
+            }
+        }
+    } else {
+        info!("WG disabled — P2P-CD engine not started");
+        None
+    };
+    state.p2pcd_engine = p2pcd_engine.clone();
+
+    // Store WG active state
+    {
+        let mut wg_active = state.wg_active.write().await;
+        *wg_active = wg_state.tunnel_handle.is_some();
     }
 
     // Build Axum router
-    // Single listener on 0.0.0.0 with bearer auth on mutations.
-    // complete-invite must be reachable before the WG tunnel exists,
-    // so we can't use a WG-only peer listener for that.
-    // WG tunnel IS the auth for ongoing peer traffic; bearer token
-    // protects the local management mutations from the LAN.
     let router = api::build_router(state.clone(), config.ui_dir.clone());
 
-    // Background: discovery loop
-    let discovery_state = state.clone();
-    tokio::spawn(async move {
-        discovery::start_loop(discovery_state).await;
-    });
+    // Background: P2P-CD engine
+    if let Some(ref engine) = p2pcd_engine {
+        let engine_arc = Arc::clone(engine);
+        tokio::spawn(async move {
+            if let Err(e) = engine_arc.run().await {
+                tracing::error!("P2P-CD engine exited with error: {}", e);
+            }
+        });
+    }
 
-    // Background: capability health check loop (S10)
-    let health_state = state.clone();
-    tokio::spawn(async move {
-        health::start_loop(health_state).await;
-    });
-
-    // Background: prune stale public peers
-    let prune_state = state.clone();
-    tokio::spawn(async move {
-        prune::start_loop(prune_state).await;
-    });
-
-    // Background: graceful shutdown handler (SIGTERM / SIGINT / Ctrl-C)
-    let shutdown_wg_id = wg_state.container_id.clone();
-    let shutdown_app_state = state.clone();
-    tokio::spawn(async move {
-        wait_for_shutdown_signal().await;
-        info!("Shutdown signal received — cleaning up...");
-        do_shutdown(&shutdown_app_state, shutdown_wg_id.as_deref()).await;
-        std::process::exit(0);
-    });
-
-    // Start HTTP server
+    // Start HTTP server with graceful shutdown
     let addr: SocketAddr = format!("0.0.0.0:{}", config.port).parse()?;
     info!("Starting Howm daemon on {}", addr);
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -167,7 +205,12 @@ async fn main() -> anyhow::Result<()> {
         listener,
         router.into_make_service_with_connect_info::<SocketAddr>(),
     )
+    .with_graceful_shutdown(wait_for_shutdown_signal())
     .await?;
+
+    // Server has stopped accepting connections — clean up
+    info!("Shutdown signal received — cleaning up...");
+    do_shutdown(&state).await;
 
     Ok(())
 }
@@ -191,18 +234,75 @@ async fn wait_for_shutdown_signal() {
     }
 }
 
-async fn do_shutdown(state: &state::AppState, wg_container_id: Option<&str>) {
-    // Stop all running capability containers
+async fn do_shutdown(state: &state::AppState) {
+    // Gracefully close all P2P-CD sessions
+    if let Some(ref engine) = state.p2pcd_engine {
+        engine.shutdown().await;
+    }
+    // Stop all running capability processes
     let caps = state.capabilities.read().await.clone();
     for cap in &caps {
-        info!("Stopping capability container: {}", cap.name);
-        let _ = docker::stop_capability(&cap.container_id).await;
+        if let Some(pid) = cap.pid {
+            info!("Stopping capability process: {} (pid={})", cap.name, pid);
+            let _ = executor::stop_capability(pid).await;
+        }
     }
-
-    // Stop WG container
-    if let Some(id) = wg_container_id {
-        if let Err(e) = wireguard::shutdown(id).await {
+    // Shutdown WireGuard interface
+    let wg_active = *state.wg_active.read().await;
+    if wg_active {
+        if let Err(e) = wireguard::shutdown().await {
             tracing::warn!("WG shutdown error: {}", e);
         }
     }
+}
+
+// ── P2P-CD engine builder ────────────────────────────────────────────────────
+
+fn build_p2pcd_engine(
+    config: &Config,
+    identity: &identity::NodeIdentity,
+    wg_state: &wireguard::WgState,
+    notifier: Arc<p2pcd::cap_notify::CapabilityNotifier>,
+) -> anyhow::Result<Arc<p2pcd::engine::ProtocolEngine>> {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+
+    // Derive PeerId from the WireGuard public key stored in identity
+    let pubkey_b64 = identity
+        .wg_pubkey
+        .as_deref()
+        .or(wg_state.public_key.as_deref())
+        .ok_or_else(|| anyhow::anyhow!("No WireGuard public key available for P2P-CD engine"))?;
+
+    let key_bytes = STANDARD
+        .decode(pubkey_b64)
+        .map_err(|e| anyhow::anyhow!("Failed to decode WG pubkey: {}", e))?;
+    if key_bytes.len() != 32 {
+        anyhow::bail!("WG public key is {} bytes, expected 32", key_bytes.len());
+    }
+    let mut peer_id = [0u8; 32];
+    peer_id.copy_from_slice(&key_bytes);
+
+    // Load or generate p2pcd-peer.toml
+    let toml_path = config.data_dir.join("p2pcd-peer.toml");
+    let peer_config = if toml_path.exists() {
+        p2pcd_types::config::PeerConfig::load(&toml_path)
+            .map_err(|e| anyhow::anyhow!("Failed to load p2pcd-peer.toml: {}", e))?
+    } else {
+        let default_cfg = p2pcd_types::config::PeerConfig::generate_default(&config.data_dir);
+        // Write the default config for the user to inspect/modify
+        if let Ok(toml_str) = toml::to_string_pretty(&default_cfg) {
+            let _ = std::fs::write(&toml_path, toml_str);
+            info!(
+                "Generated default p2pcd-peer.toml at {}",
+                toml_path.display()
+            );
+        }
+        default_cfg
+    };
+
+    Ok(Arc::new(p2pcd::engine::ProtocolEngine::new(
+        peer_config,
+        peer_id,
+        notifier,
+    )))
 }

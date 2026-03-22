@@ -1,3 +1,4 @@
+import { Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { getCapabilities } from '../api/capabilities';
 import type { Capability } from '../api/capabilities';
@@ -10,9 +11,9 @@ export function CapabilityList() {
   });
 
   const statusColor = (status: Capability['status']) => {
-    if (status === 'Running') return '#22c55e';
-    if (status === 'Stopped') return '#f59e0b';
-    return '#ef4444';
+    if (status === 'Running') return 'var(--howm-success, #4ade80)';
+    if (status === 'Stopped') return 'var(--howm-warning, #fbbf24)';
+    return 'var(--howm-error, #f87171)';
   };
 
   const statusLabel = (status: Capability['status']) => {
@@ -21,28 +22,44 @@ export function CapabilityList() {
     return 'Unknown';
   };
 
-  if (isLoading) return <p>Loading capabilities...</p>;
+  if (isLoading) return <p style={mutedStyle}>Loading capabilities…</p>;
 
   return (
     <div>
-      <h3>Capabilities ({capabilities.length})</h3>
+      <h3 style={{ margin: '0 0 12px' }}>Capabilities ({capabilities.length})</h3>
       {capabilities.length === 0 ? (
-        <p style={{ color: '#888' }}>No capabilities installed.</p>
+        <p style={mutedStyle}>No capabilities installed.</p>
       ) : (
-        <ul style={{ listStyle: 'none', padding: 0 }}>
+        <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
           {capabilities.map((cap: Capability) => (
-            <li key={cap.name} style={{
-              padding: '10px 14px', border: '1px solid #eee', borderRadius: '6px', marginBottom: '8px',
-              display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-            }}>
-              <div>
-                <strong>{cap.name}</strong>
-                <span style={{ color: '#888', marginLeft: '8px', fontSize: '0.85em' }}>v{cap.version}</span>
-                <span style={{ color: '#aaa', marginLeft: '8px', fontSize: '0.8em' }}>:{cap.port}</span>
+            <li key={cap.name} style={rowStyle}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
+                <strong style={{ whiteSpace: 'nowrap' }}>{cap.name}</strong>
+                <span style={mutedStyle}>v{cap.version}</span>
+                <span style={{ ...mutedStyle, fontFamily: 'var(--howm-font-mono, monospace)', fontSize: '0.8em' }}>:{cap.port}</span>
+                {/* Task 4: link to capability UI page if available */}
+                {cap.ui && (
+                  <Link
+                    to={`/cap/${cap.name}`}
+                    style={{
+                      fontSize: '0.8em',
+                      padding: '2px 8px',
+                      background: 'var(--howm-accent-dim, rgba(108,140,255,0.15))',
+                      color: 'var(--howm-accent, #6c8cff)',
+                      borderRadius: 'var(--howm-radius-sm, 4px)',
+                      textDecoration: 'none',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    Open {cap.ui.label} →
+                  </Link>
+                )}
               </div>
               <span style={{
-                background: statusColor(cap.status), color: '#fff',
-                borderRadius: '12px', padding: '2px 10px', fontSize: '0.8em',
+                background: `${statusColor(cap.status)}1a`,
+                color: statusColor(cap.status),
+                border: `1px solid ${statusColor(cap.status)}4d`,
+                borderRadius: '12px', padding: '2px 10px', fontSize: '0.8em', whiteSpace: 'nowrap',
               }}>
                 {statusLabel(cap.status)}
               </span>
@@ -53,3 +70,13 @@ export function CapabilityList() {
     </div>
   );
 }
+
+const mutedStyle: React.CSSProperties = { color: 'var(--howm-text-muted, #5c6170)', margin: 0, fontSize: '0.875rem' };
+const rowStyle: React.CSSProperties = {
+  padding: '10px 12px',
+  border: '1px solid var(--howm-border, #2e3341)',
+  borderRadius: 'var(--howm-radius-sm, 4px)',
+  marginBottom: '6px',
+  display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px',
+  background: 'var(--howm-bg-secondary, #1a1d27)',
+};

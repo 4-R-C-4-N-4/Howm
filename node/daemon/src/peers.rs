@@ -1,18 +1,13 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum TrustLevel {
+    #[default]
     Friend,
     Public,
     Restricted,
-}
-
-impl Default for TrustLevel {
-    fn default() -> Self {
-        TrustLevel::Friend
-    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

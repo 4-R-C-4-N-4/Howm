@@ -55,24 +55,24 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            artifact: daemon
+            artifact: howm
             archive: howm-linux-amd64.tar.gz
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
-            artifact: daemon
+            artifact: howm
             archive: howm-linux-arm64.tar.gz
             cross: true
           - os: macos-latest
             target: aarch64-apple-darwin
-            artifact: daemon
+            artifact: howm
             archive: howm-macos-arm64.tar.gz
           - os: macos-latest
             target: x86_64-apple-darwin
-            artifact: daemon
+            artifact: howm
             archive: howm-macos-amd64.tar.gz
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            artifact: daemon.exe
+            artifact: howm.exe
             archive: howm-windows-amd64.zip
     steps:
       - uses: actions/checkout@v4
@@ -90,6 +90,12 @@ jobs:
           echo '[target.aarch64-unknown-linux-gnu]' >> ~/.cargo/config.toml
           echo 'linker = "aarch64-linux-gnu-gcc"' >> ~/.cargo/config.toml
 
+      - name: Download UI dist
+        uses: actions/download-artifact@v4
+        with:
+          name: ui-dist
+          path: ui/web/dist
+
       - name: Cache cargo registry & build
         uses: actions/cache@v4
         with:
@@ -105,19 +111,12 @@ jobs:
         working-directory: node
         run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Download UI dist
-        uses: actions/download-artifact@v4
-        with:
-          name: ui-dist
-          path: ui-dist
-
       - name: Package (Unix)
         if: runner.os != 'Windows'
         run: |
-          mkdir -p staging/ui
+          mkdir -p staging
           cp node/target/${{ matrix.target }}/release/${{ matrix.artifact }} staging/
           cp README.md LICENSE staging/
-          cp -r ui-dist/* staging/ui/
           cd staging
           tar czf ../${{ matrix.archive }} .
 
@@ -125,10 +124,9 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path staging/ui
+          New-Item -ItemType Directory -Force -Path staging
           Copy-Item "node/target/${{ matrix.target }}/release/${{ matrix.artifact }}" staging/
           Copy-Item README.md, LICENSE staging/
-          Copy-Item -Recurse ui-dist/* staging/ui/
           Compress-Archive -Path staging/* -DestinationPath ${{ matrix.archive }}
 
       - name: Upload archive
@@ -140,50 +138,11 @@ jobs:
           if-no-files-found: error
 
   # ─────────────────────────────────────────────
-  # Build & push Docker images
-  # ─────────────────────────────────────────────
-  docker:
-    name: Push Docker Images
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract version and lowercase owner
-        id: version
-        run: |
-          echo "VERSION=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
-          echo "REPO_LC=${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
-
-      - name: Build & push social-feed
-        uses: docker/build-push-action@v6
-        with:
-          context: capabilities/social-feed
-          push: true
-          tags: |
-            ghcr.io/${{ steps.version.outputs.REPO_LC }}/cap-social-feed:${{ steps.version.outputs.VERSION }}
-            ghcr.io/${{ steps.version.outputs.REPO_LC }}/cap-social-feed:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-  # ─────────────────────────────────────────────
   # Create GitHub Release
   # ─────────────────────────────────────────────
   release:
     name: Create Release
-    needs: [build-binaries, docker]
+    needs: [build-binaries]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
