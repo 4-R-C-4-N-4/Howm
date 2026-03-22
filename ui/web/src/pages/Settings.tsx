@@ -84,9 +84,14 @@ export function Settings() {
       {/* P2P-CD config */}
       <section style={sectionStyle}>
         <h2 style={h2Style}>P2P-CD</h2>
-        <p style={{ ...mutedStyle, marginBottom: '12px' }}>
+        <p style={{ ...mutedStyle, marginBottom: '4px' }}>
           Edit as JSON. Changes take effect after daemon restart.
         </p>
+        {node?.data_dir && (
+          <p style={{ ...mutedStyle, marginBottom: '12px', fontSize: '0.8rem', fontFamily: 'var(--howm-font-mono, monospace)' }}>
+            {node.data_dir}/p2pcd-peer.toml
+          </p>
+        )}
         <textarea
           value={p2pcdDraft}
           onChange={e => setP2pcdDraft(e.target.value)}

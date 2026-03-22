@@ -5,14 +5,16 @@ use crate::{error::AppError, state::AppState};
 
 pub async fn get_node_settings(State(state): State<AppState>) -> Json<Value> {
     let cfg = &state.config;
+    let id = &state.identity;
     Json(json!({
-        "port": cfg.port,
+        "node_id": id.node_id,
+        "name": id.name,
+        "wg_address": id.wg_address,
+        "listen_port": cfg.port,
         "data_dir": cfg.data_dir.to_string_lossy(),
-        "name": cfg.name,
         "wg_enabled": cfg.wg_enabled(),
         "wg_port": cfg.wg_port,
         "wg_endpoint": cfg.wg_endpoint,
-        "wg_address": cfg.wg_address,
         "peer_timeout_ms": cfg.peer_timeout_ms,
         "discovery_interval_s": cfg.discovery_interval_s,
         "invite_ttl_s": cfg.invite_ttl_s,
@@ -25,8 +27,8 @@ pub async fn get_identity(State(state): State<AppState>) -> Json<Value> {
     let id = &state.identity;
     Json(json!({
         "node_id": id.node_id,
-        "name": id.name,
-        "wg_pubkey": id.wg_pubkey,
+        "display_name": id.name,
+        "public_key": id.wg_pubkey,
         "wg_address": id.wg_address,
         "wg_endpoint": id.wg_endpoint,
     }))
