@@ -11,8 +11,8 @@
 //   latency.rs       — core.session.latency.1
 //   endpoint.rs      — core.network.endpoint.1
 //   peerexchange.rs  — core.network.peerexchange.1
-//   relay.rs         — core.network.relay.1 (STUB)
-//   blob.rs          — core.data.blob.1 (STUB)
+//   relay.rs         — core.network.relay.1
+//   blob.rs          — core.data.blob.1
 //   rpc.rs           — core.data.rpc.1
 //   event.rs         — core.data.event.1
 //   stream.rs        — core.data.stream.1 (STUB) — no file yet, deferred
