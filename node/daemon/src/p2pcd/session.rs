@@ -462,7 +462,7 @@ mod tests {
 
     fn social_cap(role: Role) -> CapabilityDeclaration {
         CapabilityDeclaration {
-            name: "p2pcd.social.post.1".to_string(),
+            name: "howm.social.feed.1".to_string(),
             role,
             mutual: false,
             scope: Some(ScopeParams {
@@ -470,6 +470,7 @@ mod tests {
                 ttl: 3600,
                 ..Default::default()
             }),
+            applicable_scope_keys: None,
         }
     }
 
@@ -479,6 +480,7 @@ mod tests {
             role: Role::Both,
             mutual: true,
             scope: Option::None,
+            applicable_scope_keys: None,
         }
     }
 
@@ -607,8 +609,8 @@ mod tests {
         assert!(
             session
                 .active_set
-                .contains(&"p2pcd.social.post.1".to_string()),
-            "social.post should be in active_set, got {:?}",
+                .contains(&"howm.social.feed.1".to_string()),
+            "howm.social.feed.1 should be in active_set, got {:?}",
             session.active_set
         );
     }
@@ -617,11 +619,12 @@ mod tests {
     #[tokio::test]
     async fn lurker_lurker_no_social() {
         // Both have Role::Both but mutual=false for social → no match
-        let lurker_cap = CapabilityDeclaration {
-            name: "p2pcd.social.post.1".to_string(),
-            role: Role::Both,
+let lurker_cap = CapabilityDeclaration {
+            name: "howm.social.feed.1".to_string(),
+            role: Role::Consume,
             mutual: false,
-            scope: Option::None,
+            scope: None,
+            applicable_scope_keys: None,
         };
 
         let local_manifest = make_manifest(3, vec![lurker_cap.clone(), heartbeat_cap()]);
@@ -678,11 +681,12 @@ mod tests {
     async fn no_match_yields_none() {
         let local_manifest = make_manifest(5, vec![social_cap(Role::Provide)]);
         // remote only has a different cap (no consumer for social, no heartbeat mutual)
-        let other_cap = CapabilityDeclaration {
-            name: "p2pcd.files.share.1".to_string(),
+let other_cap = CapabilityDeclaration {
+            name: "howm.social.feed.1".to_string(),
             role: Role::Provide,
             mutual: false,
-            scope: Option::None,
+            scope: None,
+            applicable_scope_keys: None,
         };
         let remote_manifest = make_manifest(6, vec![other_cap]);
 

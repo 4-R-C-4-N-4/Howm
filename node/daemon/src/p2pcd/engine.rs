@@ -727,12 +727,13 @@ mod tests {
             protocol_version: PROTOCOL_VERSION,
             peer_id: [id; 32],
             sequence_num: 1,
-            capabilities: vec![CapabilityDeclaration {
-                name: "core.session.heartbeat.1".to_string(),
-                role: Role::Both,
-                mutual: true,
-                scope: None,
-            }],
+capabilities: vec![CapabilityDeclaration {
+                    name: "core.session.heartbeat.1".to_string(),
+                    role: Role::Both,
+                    mutual: true,
+                    scope: None,
+                    applicable_scope_keys: None,
+                }],
             personal_hash: vec![id; 32],
             hash_algorithm: "sha-256".to_string(),
         }

@@ -38,12 +38,35 @@ pub mod capability_keys {
     pub const MUTUAL: u64 = 3;
     pub const CLASSIFICATION: u64 = 4; // omitted from wire per spec
     pub const SCOPE: u64 = 5;
+    pub const APPLICABLE_SCOPE_KEYS: u64 = 6;
 }
 
 /// CBOR integer map keys for scope_params (§5.3)
 pub mod scope_keys {
     pub const RATE_LIMIT: u64 = 1;
     pub const TTL: u64 = 2;
+    // Core capability-specific params (keys 3-23, reserved per v0.4 spec)
+    pub const HEARTBEAT_INTERVAL_MS: u64 = 3;
+    pub const HEARTBEAT_TIMEOUT_MS: u64 = 4;
+    pub const TIMESYNC_PRECISION_MS: u64 = 5;
+    pub const LATENCY_SAMPLE_INTERVAL_MS: u64 = 6;
+    pub const LATENCY_WINDOW_SIZE: u64 = 7;
+    pub const ENDPOINT_INCLUDE_GEO: u64 = 8;
+    pub const RELAY_MAX_CIRCUITS: u64 = 9;
+    pub const RELAY_MAX_BANDWIDTH_KBPS: u64 = 10;
+    pub const RELAY_TTL: u64 = 11;
+    pub const PEX_MAX_PEERS: u64 = 12;
+    pub const PEX_INCLUDE_CAPABILITIES: u64 = 13;
+    pub const STREAM_BITRATE_KBPS: u64 = 14;
+    pub const STREAM_CODEC: u64 = 15;
+    pub const BLOB_MAX_BYTES: u64 = 16;
+    pub const BLOB_CHUNK_SIZE: u64 = 17;
+    pub const BLOB_HASH_ALGORITHM: u64 = 18;
+    pub const RPC_MAX_REQUEST_BYTES: u64 = 19;
+    pub const RPC_MAX_RESPONSE_BYTES: u64 = 20;
+    pub const RPC_METHODS: u64 = 21;
+    pub const EVENT_TOPICS: u64 = 22;
+    pub const EVENT_MAX_PAYLOAD_BYTES: u64 = 23;
 }
 
 /// CBOR integer map keys for protocol messages (outer envelope)
@@ -311,7 +334,7 @@ fn reconcile_scope_value(a: &ScopeValue, b: &ScopeValue) -> ScopeValue {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CapabilityDeclaration {
-    /// Fully qualified name per §4.4 namespace grammar (e.g. "p2pcd.social.post.1")
+    /// Fully qualified name per §4.4 namespace grammar (e.g. "core.session.heartbeat.1")
     pub name: String,
     pub role: Role,
     /// Required for Both+Both matching
@@ -319,6 +342,11 @@ pub struct CapabilityDeclaration {
     /// Scope constraints advertised to remote peers.
     /// Classification is local-only and MUST NOT appear on the wire.
     pub scope: Option<ScopeParams>,
+    /// Optional list of scope parameter keys meaningful for this capability (§4.2).
+    /// If present, receiver enforces only listed keys and ignores all others.
+    /// If absent, falls back to the capability's specification document.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub applicable_scope_keys: Option<Vec<u64>>,
 }
 
 // ─── Discovery manifest ────────────────────────────────────────────────────────
@@ -627,6 +655,7 @@ mod tests {
             role,
             mutual,
             scope: None,
+            applicable_scope_keys: None,
         }
     }
 

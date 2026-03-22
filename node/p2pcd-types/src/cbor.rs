@@ -210,6 +210,16 @@ pub fn cap_to_cbor_value(cap: &CapabilityDeclaration) -> Value {
     if let Some(scope) = &cap.scope {
         pairs.push((int_key(capability_keys::SCOPE), scope_to_cbor_value(scope)));
     }
+    if let Some(keys) = &cap.applicable_scope_keys {
+        let arr = keys
+            .iter()
+            .map(|k| Value::Integer(ciborium::value::Integer::from(*k)))
+            .collect();
+        pairs.push((
+            int_key(capability_keys::APPLICABLE_SCOPE_KEYS),
+            Value::Array(arr),
+        ));
+    }
     Value::Map(pairs)
 }
 
@@ -228,12 +238,25 @@ pub fn cap_from_cbor_value(val: &Value) -> Result<CapabilityDeclaration> {
     let scope = map_get_map(map, capability_keys::SCOPE)
         .map(|m| scope_from_cbor_value(&Value::Map(m)))
         .transpose()?;
+    let applicable_scope_keys =
+        map_get_array(map, capability_keys::APPLICABLE_SCOPE_KEYS).map(|arr| {
+            arr.iter()
+                .filter_map(|v| {
+                    if let Value::Integer(i) = v {
+                        u64::try_from(*i).ok()
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        });
 
     Ok(CapabilityDeclaration {
         name,
         role,
         mutual,
         scope,
+        applicable_scope_keys,
     })
 }
 
@@ -561,16 +584,18 @@ mod tests {
                 role: Role::Both,
                 mutual: true,
                 scope: None,
+                applicable_scope_keys: None,
             },
             CapabilityDeclaration {
                 name: "howm.social.feed.1".to_string(),
-                role: Role::Both,
-                mutual: true,
+                role: Role::Provide,
+                mutual: false,
                 scope: Some(ScopeParams {
                     rate_limit: 10,
                     ttl: 3600,
                     ..Default::default()
                 }),
+                applicable_scope_keys: None,
             },
         ];
         let mut m = DiscoveryManifest {

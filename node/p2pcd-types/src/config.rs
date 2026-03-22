@@ -374,6 +374,7 @@ impl PeerConfig {
                 mutual: c.mutual,
                 // Scope from config
                 scope: c.scope.as_ref().map(ScopeParams::from),
+                applicable_scope_keys: None,
             })
             .collect();
         caps.sort_by(|a, b| a.name.cmp(&b.name));
