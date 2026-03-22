@@ -3,6 +3,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
     Json,
 };
+use p2pcd::bridge_client::BridgeClient;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -14,6 +15,9 @@ use crate::posts;
 
 /// P2P-CD social capability name as declared in p2pcd-peer.toml.
 pub const SOCIAL_CAP: &str = "howm.social.feed.1";
+
+/// Message type for social feed post broadcasts (application-level, 100+).
+pub const MSG_TYPE_POST_BROADCAST: u64 = 100;
 
 // ── State ─────────────────────────────────────────────────────────────────────
 
@@ -31,8 +35,8 @@ pub struct ActiveSocialPeer {
 #[derive(Clone)]
 pub struct FeedState {
     pub data_dir:     PathBuf,
-    /// Port the daemon HTTP API is on (default 7000).
-    pub daemon_port:  u16,
+    /// Bridge client for P2P-CD daemon communication.
+    pub bridge:       BridgeClient,
     /// Active social peers discovered via P2P-CD.
     pub social_peers: Arc<RwLock<Vec<ActiveSocialPeer>>>,
 }
@@ -41,7 +45,7 @@ impl FeedState {
     pub fn new(data_dir: PathBuf, daemon_port: u16) -> Self {
         Self {
             data_dir,
-            daemon_port,
+            bridge: BridgeClient::new(daemon_port),
             social_peers: Arc::new(RwLock::new(Vec::new())),
         }
     }
@@ -86,6 +90,25 @@ pub async fn create_post(
     match posts::create(&state.data_dir, req.content, author_id, author_name) {
         Ok(post) => {
             info!("Created post: {}", post.id);
+
+            // Broadcast the new post to all social peers via the bridge
+            let bridge = state.bridge.clone();
+            let post_id = post.id.clone();
+            let post_json = serde_json::to_vec(&post).unwrap_or_default();
+            tokio::spawn(async move {
+                match bridge
+                    .broadcast_event(SOCIAL_CAP, MSG_TYPE_POST_BROADCAST, &post_json)
+                    .await
+                {
+                    Ok(n) => {
+                        if n > 0 {
+                            info!("Broadcast post {} to {} peers", post_id, n);
+                        }
+                    }
+                    Err(e) => tracing::warn!("Failed to broadcast post: {e}"),
+                }
+            });
+
             Ok((StatusCode::CREATED, Json(json!({ "post": post }))))
         }
         Err(e) => Err((StatusCode::BAD_REQUEST, Json(json!({ "error": e.to_string() })))),
@@ -166,44 +189,23 @@ pub async fn list_social_peers(State(state): State<FeedState>) -> Json<Value> {
 /// On startup, ask the daemon for peers that are already active for our capability.
 /// This rebuilds the peer list after a capability restart.
 pub async fn init_peers_from_daemon(state: FeedState) {
-    let url = format!(
-        "http://127.0.0.1:{}/p2pcd/peers-for/{}",
-        state.daemon_port, SOCIAL_CAP
-    );
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
-        .build()
-        .unwrap_or_default();
-
-    match client.get(&url).send().await {
-        Ok(resp) if resp.status().is_success() => {
-            if let Ok(body) = resp.json::<serde_json::Value>().await {
-                if let Some(peer_ids) = body.get("peers").and_then(|v| v.as_array()) {
-                    let mut peers = state.social_peers.write().await;
-                    for id in peer_ids {
-                        if let Some(peer_id) = id.as_str() {
-                            // We only have the peer_id here; wg_address requires
-                            // cross-referencing with the WG table. For now we store
-                            // the peer_id and leave wg_address empty — the daemon
-                            // will send a proper peer-active when the session is next
-                            // renewed. This satisfies the startup rebuild requirement.
-                            peers.push(ActiveSocialPeer {
-                                peer_id:      peer_id.to_string(),
-                                wg_address:   String::new(),
-                                active_since: 0,
-                            });
-                        }
-                    }
-                    info!("Restored {} active social peers from daemon", peers.len());
-                }
+    match state.bridge.list_peers(Some(SOCIAL_CAP)).await {
+        Ok(bridge_peers) => {
+            let mut peers = state.social_peers.write().await;
+            for bp in &bridge_peers {
+                peers.push(ActiveSocialPeer {
+                    peer_id:      bp.peer_id.clone(),
+                    wg_address:   String::new(), // filled on peer-active callback
+                    active_since: 0,
+                });
             }
-        }
-        Ok(resp) => {
-            tracing::warn!("daemon peers-for returned {}", resp.status());
+            if !peers.is_empty() {
+                info!("Restored {} active social peers from daemon", peers.len());
+            }
         }
         Err(e) => {
             // Daemon may not be running yet — not a fatal error
-            tracing::debug!("daemon not reachable at startup ({}), peer list empty", e);
+            tracing::debug!("daemon not reachable at startup ({e}), peer list empty");
         }
     }
 }

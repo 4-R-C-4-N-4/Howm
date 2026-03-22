@@ -12,6 +12,8 @@
 // and HTTP capability notifier remain in the daemon crate.
 
 pub mod blob_store;
+#[cfg(feature = "bridge-client")]
+pub mod bridge_client;
 pub mod capabilities;
 pub mod cbor_helpers;
 pub mod heartbeat;
