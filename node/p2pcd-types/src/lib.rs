@@ -887,4 +887,275 @@ mod tests {
         let active = compute_intersection(&a, &b, &policies);
         assert_eq!(active, vec!["core.session.heartbeat.1"]);
     }
+
+    // ── Phase 1 v4 conformance: extensible scope params ───────────────────────
+
+    #[test]
+    fn scope_extensions_uint_reconcile_min() {
+        let mut a = ScopeParams::default();
+        a.set_ext(scope_keys::HEARTBEAT_INTERVAL_MS, ScopeValue::Uint(5000));
+        let mut b = ScopeParams::default();
+        b.set_ext(scope_keys::HEARTBEAT_INTERVAL_MS, ScopeValue::Uint(3000));
+        let r = a.reconcile(&b);
+        assert_eq!(r.get_ext_uint(scope_keys::HEARTBEAT_INTERVAL_MS), Some(3000));
+    }
+
+    #[test]
+    fn scope_extensions_bool_provider_wins() {
+        let mut a = ScopeParams::default();
+        a.set_ext(scope_keys::ENDPOINT_INCLUDE_GEO, ScopeValue::Bool(true));
+        let mut b = ScopeParams::default();
+        b.set_ext(scope_keys::ENDPOINT_INCLUDE_GEO, ScopeValue::Bool(false));
+        // Provider (a) wins for non-numeric
+        let r = a.reconcile(&b);
+        assert_eq!(
+            r.get_ext(scope_keys::ENDPOINT_INCLUDE_GEO).unwrap().as_bool(),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn scope_extensions_text_array_intersection() {
+        let methods_a = ScopeValue::Array(vec![
+            ScopeValue::Text("ping".into()),
+            ScopeValue::Text("echo".into()),
+            ScopeValue::Text("status".into()),
+        ]);
+        let methods_b = ScopeValue::Array(vec![
+            ScopeValue::Text("echo".into()),
+            ScopeValue::Text("status".into()),
+            ScopeValue::Text("shutdown".into()),
+        ]);
+        let mut a = ScopeParams::default();
+        a.set_ext(scope_keys::RPC_METHODS, methods_a);
+        let mut b = ScopeParams::default();
+        b.set_ext(scope_keys::RPC_METHODS, methods_b);
+        let r = a.reconcile(&b);
+        let result = r.get_ext(scope_keys::RPC_METHODS).unwrap().as_text_array().unwrap();
+        assert_eq!(result, vec!["echo", "status"]);
+    }
+
+    #[test]
+    fn scope_extensions_one_side_only() {
+        let mut a = ScopeParams::default();
+        a.set_ext(scope_keys::RELAY_MAX_CIRCUITS, ScopeValue::Uint(10));
+        let b = ScopeParams::default();
+        let r = a.reconcile(&b);
+        assert_eq!(r.get_ext_uint(scope_keys::RELAY_MAX_CIRCUITS), Some(10));
+    }
+
+    #[test]
+    fn scope_extensions_uint_zero_unlimited() {
+        let mut a = ScopeParams::default();
+        a.set_ext(scope_keys::RELAY_MAX_BANDWIDTH_KBPS, ScopeValue::Uint(0));
+        let mut b = ScopeParams::default();
+        b.set_ext(scope_keys::RELAY_MAX_BANDWIDTH_KBPS, ScopeValue::Uint(1000));
+        let r = a.reconcile(&b);
+        assert_eq!(r.get_ext_uint(scope_keys::RELAY_MAX_BANDWIDTH_KBPS), Some(1000));
+    }
+
+    // ── Phase 1 v4 conformance: scope key registry (keys 3-23) ────────────────
+
+    #[test]
+    fn scope_key_registry_core_keys_distinct() {
+        // Verify all core scope keys 3-23 are distinct
+        let keys = [
+            scope_keys::HEARTBEAT_INTERVAL_MS,
+            scope_keys::HEARTBEAT_TIMEOUT_MS,
+            scope_keys::TIMESYNC_PRECISION_MS,
+            scope_keys::LATENCY_SAMPLE_INTERVAL_MS,
+            scope_keys::LATENCY_WINDOW_SIZE,
+            scope_keys::ENDPOINT_INCLUDE_GEO,
+            scope_keys::RELAY_MAX_CIRCUITS,
+            scope_keys::RELAY_MAX_BANDWIDTH_KBPS,
+            scope_keys::RELAY_TTL,
+            scope_keys::PEX_MAX_PEERS,
+            scope_keys::PEX_INCLUDE_CAPABILITIES,
+            scope_keys::STREAM_BITRATE_KBPS,
+            scope_keys::STREAM_CODEC,
+            scope_keys::BLOB_MAX_BYTES,
+            scope_keys::BLOB_CHUNK_SIZE,
+            scope_keys::BLOB_HASH_ALGORITHM,
+            scope_keys::RPC_MAX_REQUEST_BYTES,
+            scope_keys::RPC_MAX_RESPONSE_BYTES,
+            scope_keys::RPC_METHODS,
+            scope_keys::EVENT_TOPICS,
+            scope_keys::EVENT_MAX_PAYLOAD_BYTES,
+        ];
+        let set: HashSet<u64> = keys.iter().copied().collect();
+        assert_eq!(set.len(), keys.len(), "scope keys must be unique");
+        // All in range 3..=23
+        for k in &keys {
+            assert!(*k >= 3 && *k <= 23, "core scope key {} out of range 3-23", k);
+        }
+    }
+
+    #[test]
+    fn scope_key_registry_rate_limit_ttl_are_1_2() {
+        assert_eq!(scope_keys::RATE_LIMIT, 1);
+        assert_eq!(scope_keys::TTL, 2);
+    }
+
+    // ── Phase 1 v4 conformance: applicable_scope_keys ─────────────────────────
+
+    #[test]
+    fn applicable_scope_keys_declared() {
+        let cap = CapabilityDeclaration {
+            name: "core.session.heartbeat.1".to_string(),
+            role: Role::Both,
+            mutual: true,
+            scope: None,
+            applicable_scope_keys: Some(vec![
+                scope_keys::HEARTBEAT_INTERVAL_MS,
+                scope_keys::HEARTBEAT_TIMEOUT_MS,
+            ]),
+        };
+        let keys = cap.applicable_scope_keys.as_ref().unwrap();
+        assert!(keys.contains(&scope_keys::HEARTBEAT_INTERVAL_MS));
+        assert!(keys.contains(&scope_keys::HEARTBEAT_TIMEOUT_MS));
+        assert!(!keys.contains(&scope_keys::RELAY_MAX_CIRCUITS));
+    }
+
+    #[test]
+    fn applicable_scope_keys_none_means_spec_fallback() {
+        let cap = CapabilityDeclaration {
+            name: "howm.social.feed.1".to_string(),
+            role: Role::Both,
+            mutual: true,
+            scope: None,
+            applicable_scope_keys: None,
+        };
+        assert!(cap.applicable_scope_keys.is_none());
+    }
+
+    // ── Phase 1 v4 conformance: CapabilityHandler trait ───────────────────────
+
+    #[test]
+    fn capability_handler_default_impls() {
+        // Verify the default on_activated and on_deactivated compile and return Ok
+        struct TestHandler;
+        impl CapabilityHandler for TestHandler {
+            fn capability_name(&self) -> &str { "test.cap.1" }
+            fn handled_message_types(&self) -> &[u64] { &[99] }
+            fn on_message(
+                &self,
+                _msg_type: u64,
+                _payload: &[u8],
+                _ctx: &CapabilityContext,
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + '_>> {
+                Box::pin(async { Ok(()) })
+            }
+        }
+
+        let handler = TestHandler;
+        assert_eq!(handler.capability_name(), "test.cap.1");
+        assert_eq!(handler.handled_message_types(), &[99]);
+    }
+
+    #[test]
+    fn capability_handler_on_activated_default_ok() {
+        // Verify the default on_activated/on_deactivated return Ok via poll
+        struct NoopHandler;
+        impl CapabilityHandler for NoopHandler {
+            fn capability_name(&self) -> &str { "noop.1" }
+            fn handled_message_types(&self) -> &[u64] { &[] }
+            fn on_message(
+                &self,
+                _: u64,
+                _: &[u8],
+                _: &CapabilityContext,
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + '_>> {
+                Box::pin(async { Ok(()) })
+            }
+        }
+
+        let h = NoopHandler;
+        let ctx = CapabilityContext {
+            peer_id: [0xAA; 32],
+            params: ScopeParams::default(),
+            capability_name: "noop.1".to_string(),
+        };
+        // The default impl returns a ready future — poll it synchronously
+        use std::task::{Context as TaskContext, Poll, Wake, Waker};
+        struct NoopWaker;
+        impl Wake for NoopWaker { fn wake(self: std::sync::Arc<Self>) {} }
+        let waker = Waker::from(std::sync::Arc::new(NoopWaker));
+        let mut cx = TaskContext::from_waker(&waker);
+
+        let mut fut = h.on_activated(&ctx);
+        assert!(matches!(fut.as_mut().poll(&mut cx), Poll::Ready(Ok(()))));
+        let mut fut = h.on_deactivated(&ctx);
+        assert!(matches!(fut.as_mut().poll(&mut cx), Poll::Ready(Ok(()))));
+    }
+
+    #[test]
+    fn capability_context_fields() {
+        let ctx = CapabilityContext {
+            peer_id: [0xBB; 32],
+            params: ScopeParams {
+                rate_limit: 42,
+                ttl: 100,
+                ..Default::default()
+            },
+            capability_name: "core.session.heartbeat.1".to_string(),
+        };
+        assert_eq!(ctx.peer_id, [0xBB; 32]);
+        assert_eq!(ctx.params.rate_limit, 42);
+        assert_eq!(ctx.capability_name, "core.session.heartbeat.1");
+    }
+
+    // ── Phase 1 v4 conformance: message type registry ─────────────────────────
+
+    #[test]
+    fn message_types_core_range() {
+        // Protocol core messages 1-5
+        assert_eq!(message_types::OFFER, 1);
+        assert_eq!(message_types::CONFIRM, 2);
+        assert_eq!(message_types::CLOSE, 3);
+        assert_eq!(message_types::PING, 4);
+        assert_eq!(message_types::PONG, 5);
+    }
+
+    #[test]
+    fn message_types_capability_range() {
+        // Capability messages 6-26
+        assert_eq!(message_types::BUILD_ATTEST, 6);
+        assert_eq!(message_types::EVENT_MSG, 26);
+        // All capability message types > 5
+        let cap_types = [
+            message_types::BUILD_ATTEST,
+            message_types::TIME_REQ,
+            message_types::TIME_RESP,
+            message_types::LAT_PING,
+            message_types::LAT_PONG,
+            message_types::WHOAMI_REQ,
+            message_types::WHOAMI_RESP,
+            message_types::CIRCUIT_OPEN,
+            message_types::CIRCUIT_DATA,
+            message_types::CIRCUIT_CLOSE,
+            message_types::PEX_REQ,
+            message_types::PEX_RESP,
+            message_types::BLOB_REQ,
+            message_types::BLOB_OFFER,
+            message_types::BLOB_CHUNK,
+            message_types::BLOB_ACK,
+            message_types::RPC_REQ,
+            message_types::RPC_RESP,
+            message_types::EVENT_SUB,
+            message_types::EVENT_UNSUB,
+            message_types::EVENT_MSG,
+        ];
+        for t in &cap_types {
+            assert!(*t >= 6 && *t <= 26, "capability msg type {} out of range", t);
+        }
+        // All unique
+        let set: HashSet<u64> = cap_types.iter().copied().collect();
+        assert_eq!(set.len(), cap_types.len());
+    }
+
+    #[test]
+    fn message_type_is_protocol() {
+        assert!(MessageType::Offer.is_protocol());
+        assert!(MessageType::Pong.is_protocol());
+    }
 }

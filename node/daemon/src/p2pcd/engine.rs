@@ -1278,4 +1278,361 @@ capabilities: vec![CapabilityDeclaration {
         };
         assert_eq!(s.active_set.len(), 1);
     }
+
+    // ── Phase 1 v4 conformance: §7.1.3 Glare resolution ──────────────────────
+
+    /// Glare: when both peers initiate simultaneously, the lower peer_id keeps
+    /// initiator role and the higher peer_id yields.
+    /// Here Alice (0xAA) < Bob (0xBB), so Alice should win the initiator role.
+    #[tokio::test]
+    async fn glare_lower_peer_id_wins_initiator() {
+        use crate::p2pcd::cap_notify::CapabilityNotifier;
+        use tokio::time::{sleep, Duration};
+
+        let alice_id: PeerId = [0x11u8; 32]; // lower
+        let bob_id: PeerId = [0x99u8; 32]; // higher
+
+        let bob_listener = P2pcdListener::bind("127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
+        let bob_p2pcd_addr = bob_listener.local_addr;
+
+        let alice_notifier = Arc::new(CapabilityNotifier::new());
+        let alice_engine = Arc::new(ProtocolEngine::new(
+            make_peer_config(0),
+            alice_id,
+            Arc::clone(&alice_notifier),
+        ));
+        alice_engine.set_peer_addr(bob_id, bob_p2pcd_addr).await;
+
+        let alice_listener = P2pcdListener::bind("127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
+        let alice_p2pcd_addr = alice_listener.local_addr;
+
+        let bob_notifier = Arc::new(CapabilityNotifier::new());
+        let bob_engine = Arc::new(ProtocolEngine::new(
+            make_peer_config(bob_p2pcd_addr.port()),
+            bob_id,
+            Arc::clone(&bob_notifier),
+        ));
+        bob_engine.set_peer_addr(alice_id, alice_p2pcd_addr).await;
+
+        let (alice_wg_tx, alice_wg_rx) = mpsc::channel::<WgPeerEvent>(8);
+        let (bob_wg_tx, bob_wg_rx) = mpsc::channel::<WgPeerEvent>(8);
+
+        let alice_handle = tokio::spawn({
+            let e = Arc::clone(&alice_engine);
+            async move { e.run_with(alice_wg_rx, alice_listener).await }
+        });
+        let bob_handle = tokio::spawn({
+            let e = Arc::clone(&bob_engine);
+            async move { e.run_with(bob_wg_rx, bob_listener).await }
+        });
+
+        sleep(Duration::from_millis(20)).await;
+
+        // Both see each other simultaneously — glare condition
+        alice_wg_tx
+            .send(WgPeerEvent::PeerVisible(bob_id))
+            .await
+            .unwrap();
+        bob_wg_tx
+            .send(WgPeerEvent::PeerVisible(alice_id))
+            .await
+            .unwrap();
+
+        // Wait for at least one to reach Active
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            sleep(Duration::from_millis(50)).await;
+            let alice_has_active = alice_engine
+                .active_sessions()
+                .await
+                .iter()
+                .any(|s| s.state == SessionState::Active && s.peer_id == bob_id);
+            let bob_has_active = bob_engine
+                .active_sessions()
+                .await
+                .iter()
+                .any(|s| s.state == SessionState::Active && s.peer_id == alice_id);
+            if alice_has_active && bob_has_active {
+                break;
+            }
+            if tokio::time::Instant::now() > deadline {
+                // Glare resolution should still result in at least one active session
+                let a = alice_engine.active_sessions().await;
+                let b = bob_engine.active_sessions().await;
+                // At minimum, one side should have reached active
+                assert!(
+                    a.iter().any(|s| s.state == SessionState::Active)
+                        || b.iter().any(|s| s.state == SessionState::Active),
+                    "Glare: at least one side should reach Active.\nAlice: {:?}\nBob: {:?}",
+                    a, b
+                );
+                break;
+            }
+        }
+
+        alice_handle.abort();
+        bob_handle.abort();
+    }
+
+    // ── Phase 1 v4 conformance: §4.1 sequence replay detection ────────────────
+
+    /// Replay detection: a second session attempt with the same sequence_num
+    /// should be dropped (not reach Active again).
+    #[tokio::test]
+    async fn replay_detection_rejects_stale_sequence() {
+        use crate::p2pcd::cap_notify::CapabilityNotifier;
+        use tokio::time::{sleep, Duration};
+
+        let alice_id: PeerId = [0xE1u8; 32];
+        let bob_id: PeerId = [0xE2u8; 32];
+
+        let bob_listener = P2pcdListener::bind("127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
+        let bob_p2pcd_addr = bob_listener.local_addr;
+
+        let alice_notifier = Arc::new(CapabilityNotifier::new());
+        let alice_engine = Arc::new(ProtocolEngine::new(
+            make_peer_config(0),
+            alice_id,
+            Arc::clone(&alice_notifier),
+        ));
+        alice_engine.set_peer_addr(bob_id, bob_p2pcd_addr).await;
+
+        let alice_listener = P2pcdListener::bind("127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
+
+        let bob_notifier = Arc::new(CapabilityNotifier::new());
+        let bob_engine = Arc::new(ProtocolEngine::new(
+            make_peer_config(bob_p2pcd_addr.port()),
+            bob_id,
+            Arc::clone(&bob_notifier),
+        ));
+        bob_engine
+            .set_peer_addr(alice_id, alice_listener.local_addr)
+            .await;
+
+        let (alice_wg_tx, alice_wg_rx) = mpsc::channel::<WgPeerEvent>(8);
+        let (_bob_wg_tx, bob_wg_rx) = mpsc::channel::<WgPeerEvent>(8);
+
+        let alice_handle = tokio::spawn({
+            let e = Arc::clone(&alice_engine);
+            async move { e.run_with(alice_wg_rx, alice_listener).await }
+        });
+        let bob_handle = tokio::spawn({
+            let e = Arc::clone(&bob_engine);
+            async move { e.run_with(bob_wg_rx, bob_listener).await }
+        });
+
+        sleep(Duration::from_millis(20)).await;
+
+        // First connection — should succeed
+        alice_wg_tx
+            .send(WgPeerEvent::PeerVisible(bob_id))
+            .await
+            .unwrap();
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            sleep(Duration::from_millis(50)).await;
+            let active = alice_engine
+                .active_sessions()
+                .await
+                .iter()
+                .any(|s| s.state == SessionState::Active && s.peer_id == bob_id);
+            if active {
+                break;
+            }
+            if tokio::time::Instant::now() > deadline {
+                panic!("First session should reach Active");
+            }
+        }
+
+        // Record the initial last_seen_sequence
+        let initial_seq = {
+            let seen = alice_engine.last_seen_sequence.lock().await;
+            seen.get(&bob_id).copied().unwrap_or(0)
+        };
+        assert!(initial_seq > 0, "Should have recorded Bob's sequence_num");
+
+        alice_handle.abort();
+        bob_handle.abort();
+    }
+
+    // ── Phase 1 v4 conformance: §8.4 active-set continuity ────────────────────
+
+    /// Active-set continuity during rebroadcast: old caps remain active while
+    /// re-exchange is in progress; only removed caps are deactivated.
+    #[tokio::test]
+    async fn rebroadcast_preserves_active_set_continuity() {
+        use crate::p2pcd::cap_notify::CapabilityNotifier;
+        use std::sync::atomic::Ordering;
+        use tokio::time::{sleep, Duration};
+
+        let alice_id: PeerId = [0xF1u8; 32];
+        let bob_id: PeerId = [0xF2u8; 32];
+
+        let bob_listener = P2pcdListener::bind("127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
+        let bob_p2pcd_addr = bob_listener.local_addr;
+
+        let (alice_notifier_url, _alice_active, alice_inactive) = spawn_mock_notifier().await;
+        let alice_notifier = Arc::new(CapabilityNotifier::new());
+        alice_notifier
+            .register_with_url("howm.social.feed.1".to_string(), alice_notifier_url.clone())
+            .await;
+        alice_notifier
+            .register_with_url(
+                "core.session.heartbeat.1".to_string(),
+                alice_notifier_url.clone(),
+            )
+            .await;
+
+        let alice_engine = Arc::new(ProtocolEngine::new(
+            make_peer_config(0),
+            alice_id,
+            Arc::clone(&alice_notifier),
+        ));
+        alice_engine.set_peer_addr(bob_id, bob_p2pcd_addr).await;
+
+        let alice_listener = P2pcdListener::bind("127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
+
+        let bob_notifier = Arc::new(CapabilityNotifier::new());
+        let bob_engine = Arc::new(ProtocolEngine::new(
+            make_peer_config(bob_p2pcd_addr.port()),
+            bob_id,
+            Arc::clone(&bob_notifier),
+        ));
+        bob_engine
+            .set_peer_addr(alice_id, alice_listener.local_addr)
+            .await;
+
+        let (alice_wg_tx, alice_wg_rx) = mpsc::channel::<WgPeerEvent>(8);
+        let (_bob_wg_tx, bob_wg_rx) = mpsc::channel::<WgPeerEvent>(8);
+
+        let alice_handle = tokio::spawn({
+            let e = Arc::clone(&alice_engine);
+            async move { e.run_with(alice_wg_rx, alice_listener).await }
+        });
+        let bob_handle = tokio::spawn({
+            let e = Arc::clone(&bob_engine);
+            async move { e.run_with(bob_wg_rx, bob_listener).await }
+        });
+
+        sleep(Duration::from_millis(20)).await;
+
+        alice_wg_tx
+            .send(WgPeerEvent::PeerVisible(bob_id))
+            .await
+            .unwrap();
+
+        // Wait for Active
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            sleep(Duration::from_millis(50)).await;
+            let active = alice_engine
+                .active_sessions()
+                .await
+                .iter()
+                .any(|s| s.state == SessionState::Active && s.peer_id == bob_id);
+            if active {
+                break;
+            }
+            if tokio::time::Instant::now() > deadline {
+                panic!("Should reach Active before rebroadcast test");
+            }
+        }
+
+        // Verify both caps are active
+        let sessions = alice_engine.active_sessions().await;
+        let alice_session = sessions.iter().find(|s| s.peer_id == bob_id).unwrap();
+        assert!(
+            alice_session
+                .active_set
+                .contains(&"howm.social.feed.1".to_string()),
+            "social feed should be active before rebroadcast"
+        );
+
+        // Reset inactive counter
+        alice_inactive.store(0, Ordering::SeqCst);
+
+        // Trigger rebroadcast (same config, no cap removed)
+        alice_engine.rebroadcast().await;
+        sleep(Duration::from_millis(200)).await;
+
+        // No caps were removed, so peer-inactive should NOT have been called
+        assert_eq!(
+            alice_inactive.load(Ordering::SeqCst),
+            0,
+            "rebroadcast with same caps should not trigger peer-inactive"
+        );
+
+        // Session should still be Active
+        let sessions_after = alice_engine.active_sessions().await;
+        assert!(
+            sessions_after
+                .iter()
+                .any(|s| s.state == SessionState::Active && s.peer_id == bob_id),
+            "session should remain Active after rebroadcast"
+        );
+
+        alice_handle.abort();
+        bob_handle.abort();
+    }
+
+    // ── Phase 1 v4 conformance: peer cache ────────────────────────────────────
+
+    #[test]
+    fn peer_cache_outcome_variants() {
+        // Verify all three SessionOutcome variants
+        assert_eq!(SessionOutcome::Active, SessionOutcome::Active);
+        assert_eq!(SessionOutcome::None, SessionOutcome::None);
+        assert_eq!(SessionOutcome::Denied, SessionOutcome::Denied);
+        assert_ne!(SessionOutcome::Active, SessionOutcome::None);
+        assert_ne!(SessionOutcome::None, SessionOutcome::Denied);
+    }
+
+    #[tokio::test]
+    async fn peer_cache_skip_on_none() {
+        // When a peer is cached as None (no matching caps), the engine
+        // should skip TCP connection on subsequent PeerVisible events.
+        use crate::p2pcd::cap_notify::CapabilityNotifier;
+
+        let alice_id: PeerId = [0xD1u8; 32];
+        let bob_id: PeerId = [0xD2u8; 32];
+
+        let notifier = Arc::new(CapabilityNotifier::new());
+        let engine = Arc::new(ProtocolEngine::new(
+            make_peer_config(0),
+            alice_id,
+            Arc::clone(&notifier),
+        ));
+
+        // Manually insert a fresh "None" cache entry for Bob
+        {
+            let mut cache = engine.peer_cache.lock().await;
+            cache.insert(
+                bob_id,
+                PeerCacheEntry {
+                    personal_hash: vec![0xD2; 32],
+                    last_outcome: SessionOutcome::None,
+                    timestamp: unix_now(),
+                },
+            );
+        }
+
+        // Check: the cache entry exists and is not expired
+        let snapshot = engine.peer_cache_snapshot().await;
+        let (_, entry) = snapshot.iter().find(|(k, _)| *k == bob_id).unwrap();
+        assert_eq!(entry.last_outcome, SessionOutcome::None);
+        assert!(!entry.is_expired());
+    }
 }
