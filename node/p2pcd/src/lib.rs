@@ -11,6 +11,7 @@
 // The daemon-specific engine (ProtocolEngine), WireGuard monitor integration,
 // and HTTP capability notifier remain in the daemon crate.
 
+pub mod blob_store;
 pub mod capabilities;
 pub mod cbor_helpers;
 pub mod heartbeat;

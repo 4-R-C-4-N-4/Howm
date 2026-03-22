@@ -156,7 +156,7 @@ impl CapabilityRouter {
         router.register(Arc::new(peerexchange::PeerExchangeHandler::new()));
         router.register(Arc::new(relay::RelayHandler::new()));
         // Data tier
-        router.register(Arc::new(blob::BlobHandler::new()));
+        router.register(Arc::new(blob::BlobHandler::new(std::path::PathBuf::from("/tmp/howm/blobs"))));
         router.register(Arc::new(rpc::RpcHandler::new()));
         router.register(Arc::new(event::EventHandler::new()));
         router

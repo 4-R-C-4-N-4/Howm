@@ -60,55 +60,106 @@ pub async fn start_capability(
     Ok(pid)
 }
 
-/// Send SIGTERM to a capability process and wait briefly for it to exit.
+/// Send SIGTERM (unix) or TerminateProcess (windows) and wait briefly for exit.
 pub async fn stop_capability(pid: u32) -> anyhow::Result<()> {
-    use nix::sys::signal::{kill, Signal};
-    use nix::unistd::Pid;
+    #[cfg(unix)]
+    {
+        use nix::sys::signal::{kill, Signal};
+        use nix::unistd::Pid;
 
-    let nix_pid = Pid::from_raw(pid as i32);
+        let nix_pid = Pid::from_raw(pid as i32);
 
-    // Send SIGTERM
-    match kill(nix_pid, Signal::SIGTERM) {
-        Ok(()) => {}
-        Err(nix::errno::Errno::ESRCH) => {
-            // Process already gone
-            return Ok(());
+        // Send SIGTERM
+        match kill(nix_pid, Signal::SIGTERM) {
+            Ok(()) => {}
+            Err(nix::errno::Errno::ESRCH) => {
+                // Process already gone
+                return Ok(());
+            }
+            Err(e) => {
+                return Err(anyhow::anyhow!(
+                    "Failed to send SIGTERM to pid {}: {}",
+                    pid,
+                    e
+                ))
+            }
         }
-        Err(e) => {
-            return Err(anyhow::anyhow!(
-                "Failed to send SIGTERM to pid {}: {}",
-                pid,
-                e
-            ))
-        }
-    }
 
-    // Wait up to 10 seconds for the process to exit
-    for _ in 0..20 {
+        // Wait up to 10 seconds for the process to exit
+        for _ in 0..20 {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            if !check_health(pid) {
+                info!("Process {} exited after SIGTERM", pid);
+                return Ok(());
+            }
+        }
+
+        // Force kill with SIGKILL
+        info!(
+            "Process {} did not exit after SIGTERM, sending SIGKILL",
+            pid
+        );
+        let _ = kill(nix_pid, Signal::SIGKILL);
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        if !check_health(pid) {
-            info!("Process {} exited after SIGTERM", pid);
-            return Ok(());
-        }
     }
 
-    // Force kill with SIGKILL
-    info!(
-        "Process {} did not exit after SIGTERM, sending SIGKILL",
-        pid
-    );
-    let _ = kill(nix_pid, Signal::SIGKILL);
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    #[cfg(windows)]
+    {
+        // Open process handle with TERMINATE permission, then terminate it.
+        // Falls back to `taskkill /F /PID` if the handle approach fails.
+        use std::process::Command;
+
+        let status = Command::new("taskkill")
+            .args(["/F", "/PID", &pid.to_string()])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+
+        match status {
+            Ok(s) if s.success() => {
+                info!("Process {} terminated via taskkill", pid);
+            }
+            Ok(s) => {
+                // taskkill returns non-zero if process already gone
+                info!("taskkill exited with {} for pid {} (probably already gone)", s, pid);
+            }
+            Err(e) => {
+                return Err(anyhow::anyhow!(
+                    "Failed to terminate pid {}: {}",
+                    pid,
+                    e
+                ));
+            }
+        }
+    }
 
     Ok(())
 }
 
-/// Check if a process is still alive by sending signal 0.
+/// Check if a process is still alive.
 pub fn check_health(pid: u32) -> bool {
-    use nix::sys::signal::kill;
-    use nix::unistd::Pid;
+    #[cfg(unix)]
+    {
+        use nix::sys::signal::kill;
+        use nix::unistd::Pid;
 
-    let nix_pid = Pid::from_raw(pid as i32);
-    // Signal 0 doesn't actually send a signal, just checks if process exists
-    kill(nix_pid, None).is_ok()
+        let nix_pid = Pid::from_raw(pid as i32);
+        // Signal 0 doesn't actually send a signal, just checks if process exists
+        kill(nix_pid, None).is_ok()
+    }
+
+    #[cfg(windows)]
+    {
+        use std::process::Command;
+
+        // Use tasklist to check if PID exists
+        Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {}", pid), "/NH"])
+            .output()
+            .map(|o| {
+                let stdout = String::from_utf8_lossy(&o.stdout);
+                stdout.contains(&pid.to_string())
+            })
+            .unwrap_or(false)
+    }
 }

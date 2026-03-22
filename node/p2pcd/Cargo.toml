@@ -7,11 +7,13 @@ description = "P2P Capability Discovery protocol engine — transport, sessions,
 [dependencies]
 p2pcd-types = { path = "../p2pcd-types" }
 anyhow = "1"
-tokio = { version = "1", features = ["net", "io-util", "sync", "time", "macros", "rt"] }
+tokio = { version = "1", features = ["net", "io-util", "sync", "time", "macros", "rt", "fs"] }
 tracing = "0.1"
 base64 = "0.22"
 hex = "0.4"
 ciborium = "0.2"
+sha2 = "0.10"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
+tempfile = "3"

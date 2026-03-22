@@ -1164,6 +1164,8 @@ dependencies = [
  "ciborium",
  "hex",
  "p2pcd-types",
+ "sha2",
+ "tempfile",
  "tokio",
  "tracing",
 ]

@@ -10,7 +10,7 @@ use tokio::sync::RwLock;
 
 use p2pcd_types::{message_types, CapabilityContext, CapabilityHandler, PeerId, ProtocolMessage};
 
-use crate::cbor_helpers::{cbor_encode_map, cbor_get_bytes, cbor_get_text, decode_payload};
+use crate::cbor_helpers::{cbor_get_bytes, cbor_get_text, decode_payload};
 
 /// CBOR payload keys for EVENT_SUB/UNSUB/MSG
 mod keys {
@@ -131,6 +131,7 @@ impl CapabilityHandler for EventHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cbor_helpers::cbor_encode_map;
     use p2pcd_types::CapabilityHandler;
 
     #[test]
