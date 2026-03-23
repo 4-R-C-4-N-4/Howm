@@ -146,6 +146,12 @@ impl CapabilityRouter {
 
     /// Build the default router with all core capability handlers registered.
     pub fn with_core_handlers() -> Self {
+        Self::with_core_handlers_at(std::path::PathBuf::from("/tmp/howm"))
+    }
+
+    /// Create a router with all 11 core capability handlers, using the given
+    /// data directory for blob storage and any future on-disk state.
+    pub fn with_core_handlers_at(data_dir: std::path::PathBuf) -> Self {
         let mut router = Self::new();
         // Session tier
         router.register(Arc::new(heartbeat::HeartbeatHandler::new()));
@@ -157,9 +163,7 @@ impl CapabilityRouter {
         router.register(Arc::new(peerexchange::PeerExchangeHandler::new()));
         router.register(Arc::new(relay::RelayHandler::new()));
         // Data tier
-        router.register(Arc::new(blob::BlobHandler::new(std::path::PathBuf::from(
-            "/tmp/howm/blobs",
-        ))));
+        router.register(Arc::new(blob::BlobHandler::new(data_dir)));
         router.register(Arc::new(rpc::RpcHandler::new()));
         router.register(Arc::new(event::EventHandler::new()));
         router.register(Arc::new(stream::StreamHandler::new()));

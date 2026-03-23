@@ -20,7 +20,7 @@ Howm's `blob` core capability provides peer-to-peer content-addressed binary tra
 
 BitTorrent is an explicit influence on this capability. The key ideas borrowed:
 
-- **Multi-source downloads.** A blob is not tied to a single origin peer. Any peer that has completed a download can become a seeder. Chunk requests are distributed across all available seeders; if the original operator goes offline, downloads continue from other seeders.
+- **Multi-source downloads.** A blob is not tied to a single origin peer. Any peer that has completed a download becomes a seeder. Chunk requests are distributed across all available seeders; if the original operator goes offline, downloads continue from other seeders.
 - **Seeder counts in the catalogue.** Each catalogue listing shows how many peers currently hold the blob, analogous to a torrent's seeder count. A requester can gauge availability before initiating a download.
 - **Automatic seeding.** Completed downloads are automatically contributed back to the swarm unless the user opts out per-blob.
 
@@ -37,7 +37,7 @@ There is no user-facing mechanism to share arbitrary files with peers. The `blob
 - A node operator can add files to a local offering catalogue, giving each offering a name, description, and optional access policy.
 - Connected peers can browse the operator's file catalogue through the Howm UI and initiate downloads directly over WireGuard.
 - Downloads are delivered via the existing `blob` core capability; the files capability manages the catalogue and access layer, not the transfer mechanics.
-- The operator can restrict individual offerings to specific peer IDs, groups, or make them available to all connected peers.
+- The operator can restrict individual offerings to specific peer IDs or make them available to all connected peers.
 - Downloads are resumable via `blob`'s existing resumption semantics.
 - The operator can revoke an offering at any time; in-flight downloads are not cancelled but future requests for that blob are refused at the catalogue layer.
 
@@ -60,7 +60,7 @@ There is no user-facing mechanism to share arbitrary files with peers. The `blob
 | ID | As a… | I want to… | So that… |
 |----|-------|------------|----------|
 | U1 | Node operator | Add a file to my offerings with a name and description | Peers know what I'm sharing and can find it easily |
-| U2 | Node operator | Restrict an offering to specific peer IDs  or group | I can share privately with select peers |
+| U2 | Node operator | Restrict an offering to specific peer IDs | I can share privately with select peers |
 | U3 | Node operator | Remove an offering from my catalogue | I can stop sharing a file at any time |
 | U4 | Connected peer | Browse a peer's download page | I can see what files they're offering |
 | U5 | Connected peer | Download a specific file from a peer | I receive the file directly over WireGuard |
@@ -91,7 +91,8 @@ There is no user-facing mechanism to share arbitrary files with peers. The `blob
   - `mime_type` — UTF-8 string.
   - `size` — uint64, byte count.
   - `created_at` — Unix epoch seconds.
-  - `access` — `public` (all connected peers) or `allowlist` (list of peer ID bytes[32]).
+  - `access` — one of `public`, `friends`, `trusted`, or `peer`. Controls which peers can see this offering in the catalogue (see §6.6).
+  - `allowlist` — list of peer_id bytes[32]; used when `access` is `peer`.
 - **FR-1.3** Offering `name` values MUST be unique within a node's catalogue; attempting to add a duplicate name SHALL return a typed error.
 - **FR-1.4** An offering MAY reference any blob already registered with the local `blob` capability. The files capability is responsible for registering the blob if it is not already known.
 
@@ -107,12 +108,12 @@ There is no user-facing mechanism to share arbitrary files with peers. The `blob
 
 - **FR-2.1** `POST /cap/files/offerings` SHALL register the blob with the local `blob` capability if not already present.
 - **FR-2.2** `DELETE /cap/files/offerings/{offering_id}` SHALL remove the catalogue entry. The underlying blob is NOT deleted from the `blob` capability (other capabilities may reference it).
-- **FR-2.3** Access policy changes SHALL take effect immediately; a peer mid-browse that is subsequently removed from the allowlist SHALL receive a 403 on the next catalogue or download request.
+- **FR-2.3** Access policy changes SHALL take effect immediately; a peer mid-browse who loses access to an offering under a changed policy SHALL no longer see it on their next catalogue fetch.
 
 ### 6.4 Peer-Facing Catalogue (Download Page)
 
 - **FR-3.1** Connected peers SHALL fetch the operator's filtered catalogue via a P2P-CD `rpc` call to the operator's `files` capability. The requesting peer's Howm UI renders the catalogue locally from the returned metadata; the operator does not serve HTML or UI assets.
-- **FR-3.2** The catalogue response SHALL include only offerings the requesting peer is authorised to see (public or allowlisted).
+- **FR-3.2** The catalogue response SHALL include only offerings whose access policy permits the requesting peer (per §6.6). Offerings the peer is not authorised to see are silently omitted.
 - **FR-3.3** Each offering in the peer-facing view SHALL include: `offering_id`, `name`, `description`, `mime_type`, `size`, `blob_id`, and a `seeders` count — the number of currently connected peers known to hold a complete copy of this blob (BitTorrent influence: the requester should know how many sources are available before committing to a download).
 - **FR-3.4** The peer UI SHALL render the catalogue as a download page listing offerings with name, description, size, MIME type icon, seeder count, and a Download button.
 - **FR-3.5** The Download button SHALL trigger a `blob` fetch for the offering's `blob_id` via the local `blob` capability. The `blob` capability SHALL attempt to source chunks from all peers that hold the blob (not only the operator), following a BitTorrent-inspired multi-source download model: chunk requests are distributed across available seeders, and the fastest responding peers are preferred. The `files` capability is responsible for maintaining the seeder list per blob; the `blob` capability is responsible for multi-source chunk scheduling.
@@ -127,9 +128,27 @@ There is no user-facing mechanism to share arbitrary files with peers. The `blob
 
 ### 6.6 Access Control Enforcement
 
-- **FR-5.1** The operator's `files` capability SHALL verify the requesting peer's identity (Curve25519 public key / WireGuard identity) against the offering's access policy before serving the catalogue entry or authorising a blob fetch.
-- **FR-5.2** Peers not on the allowlist for a restricted offering SHALL receive a 403 with `{ error: "access_denied", offering_id }`. The existence of the offering SHALL NOT be revealed (treat as 404 from the peer's perspective).
-- **FR-5.3** Access control is enforced at the catalogue layer. The `blob` capability's peer-level authorisation (if any) is separate and not relied upon here.
+The `files` capability operates within a two-gate access model defined in the Access Control BRD:
+
+**Gate 1 — Capability activation (P2P-CD session layer).** Whether a peer has `howm.social.files.1` in their active set at all is determined entirely by the OFFER/CONFIRM handshake. A peer whose group does not grant the capability never receives it in the OFFER and has no awareness that files exist on the node. This gate is handled by the P2P-CD layer and the access control system; the `files` capability process does not implement it.
+
+**Gate 2 — Offering access policy (application layer).** Given that a peer has the capability active, each individual offering has its own access policy controlling which peers can see and download it. This is the gate this capability enforces.
+
+Offering access policies use the following vocabulary, resolved against the group system defined in the Access Control BRD:
+
+| Policy | Who can see the offering |
+|--------|--------------------------|
+| `public` | All peers with the capability active |
+| `friends` | Peers in `howm.friends` or `howm.trusted` groups |
+| `trusted` | Peers in `howm.trusted` group only |
+| `peer` | Explicitly named peer_id(s) only |
+
+The `access` field on an offering record (§6.2) SHALL support these four values. The `allowlist` field is used when `access` is `peer` — it contains the explicit peer_id bytes.
+
+- **FR-5.1** The `files` capability SHALL verify the requesting peer's identity and resolve their effective group membership via the shared access library before serving any catalogue entry or authorising a blob fetch.
+- **FR-5.2** Peers whose group membership does not satisfy an offering's access policy SHALL NOT see that offering in the catalogue response. The offering's existence SHALL NOT be revealed — it is silently omitted, not returned as a 403.
+- **FR-5.3** Peers explicitly named in a `peer`-policy offering's allowlist MAY see that offering regardless of their group membership, as long as Gate 1 (capability activation) is satisfied.
+- **FR-5.4** Access control is enforced at the catalogue layer. The `blob` capability's peer-level authorisation (if any) is separate and not relied upon here.
 
 ---
 
@@ -149,7 +168,7 @@ There is no user-facing mechanism to share arbitrary files with peers. The `blob
 | OQ-2 | Should the peer-facing download page be served by the operator or rendered in the requester's UI? | Closed — rendered in the requesting peer's own Howm UI from catalogue metadata. Operator serves data only. |
 | OQ-3 | Should `files` advertise offered files as P2P-CD capabilities? | Closed — `howm.social.files.1` appears in the manifest with a flexible role (PROVIDE / CONSUME / BOTH). Individual blobs are opaque data within the catalogue, not sub-capabilities. |
 | OQ-4 | What is the maximum catalogue size? 1000 offerings is assumed as a soft limit; is there a hard constraint? | Open |
-| OQ-5 | Should adding a file to the catalogue require the file to already be present on disk, | Yes |
+| OQ-5 | Should adding a file to the catalogue require the file to already be present on disk, or support pre-announcing an offering before the file is available ("coming soon")? | Open |
 | OQ-6 | Seeder state and P2P-CD manifest rebroadcast: per §8.1, any capability state change MUST trigger rebroadcast and re-exchange with all active peers. If per-blob seeder status lived in the P2P-CD manifest, every completed download would kick off re-exchange with every connected peer. | Closed — seeder tracking lives in application-layer catalogue gossip via a dedicated `catalogue.seeders` RPC method, not in the P2P-CD manifest. No rebroadcast on seeder change. |
 
 ---

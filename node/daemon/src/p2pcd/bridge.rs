@@ -25,6 +25,8 @@ use serde::{Deserialize, Serialize};
 
 use p2pcd_types::{PeerId, ProtocolMessage};
 
+use p2pcd::blob_store::BlobStore;
+
 use super::engine::ProtocolEngine;
 
 /// Monotonic counter for bridge-generated RPC request IDs.
@@ -70,6 +72,67 @@ pub struct EventRequest {
     pub message_type: u64,
     /// CBOR-encoded event payload (base64).
     pub payload: String,
+}
+
+// ── Blob request / response types ───────────────────────────────────────────
+
+/// Store a blob by hash.
+#[derive(Debug, Deserialize)]
+pub struct BlobStoreRequest {
+    /// Hex-encoded SHA-256 hash (64 hex chars).
+    pub hash: String,
+    /// Base64-encoded blob data.
+    pub data: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BlobStoreResponse {
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Request a blob from a remote peer.
+#[derive(Debug, Deserialize)]
+pub struct BlobRequestRequest {
+    /// Base64-encoded 32-byte peer ID.
+    pub peer_id: String,
+    /// Hex-encoded SHA-256 hash.
+    pub hash: String,
+    /// Transfer ID.
+    pub transfer_id: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BlobRequestResponse {
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Query params for GET /blob/status.
+#[derive(Debug, Deserialize)]
+pub struct BlobStatusQuery {
+    pub hash: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BlobStatusResponse {
+    pub exists: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+}
+
+/// Query params for GET /blob/data.
+#[derive(Debug, Deserialize)]
+pub struct BlobDataQuery {
+    pub hash: String,
+    #[serde(default)]
+    pub offset: u64,
+    #[serde(default)]
+    pub length: u64,
 }
 
 /// Query params for GET /peers.
@@ -146,6 +209,11 @@ pub fn bridge_routes(engine: Arc<ProtocolEngine>) -> Router {
         .route("/rpc", post(handle_rpc))
         .route("/event", post(handle_event))
         .route("/peers", get(handle_peers))
+        // Blob bridge endpoints
+        .route("/blob/store", post(handle_blob_store))
+        .route("/blob/request", post(handle_blob_request))
+        .route("/blob/status", get(handle_blob_status))
+        .route("/blob/data", get(handle_blob_data))
         .with_state(engine)
 }
 
@@ -396,6 +464,273 @@ async fn handle_peers(
         .collect();
 
     (StatusCode::OK, Json(peers))
+}
+
+// ── Blob helpers ────────────────────────────────────────────────────────────
+
+/// Decode a hex-encoded SHA-256 hash string into a [u8; 32].
+fn decode_hex_hash(hex_str: &str) -> Result<[u8; 32], String> {
+    let bytes = hex::decode(hex_str).map_err(|e| format!("invalid hex hash: {e}"))?;
+    if bytes.len() != 32 {
+        return Err(format!("hash must be 32 bytes, got {}", bytes.len()));
+    }
+    let mut hash = [0u8; 32];
+    hash.copy_from_slice(&bytes);
+    Ok(hash)
+}
+
+/// Get the BlobStore from the engine's capability router.
+fn get_blob_store(engine: &ProtocolEngine) -> Result<std::sync::Arc<BlobStore>, String> {
+    let handler = engine
+        .cap_router()
+        .handler_by_name("core.data.blob.1")
+        .ok_or_else(|| "core.data.blob.1 not registered".to_string())?;
+    let blob_handler = handler
+        .as_any()
+        .downcast_ref::<p2pcd::capabilities::blob::BlobHandler>()
+        .ok_or_else(|| "blob handler downcast failed".to_string())?;
+    Ok(blob_handler.store().clone())
+}
+
+// ── Blob handlers ───────────────────────────────────────────────────────────
+
+/// POST /p2pcd/bridge/blob/store — store a blob by hash.
+async fn handle_blob_store(
+    State(engine): State<Arc<ProtocolEngine>>,
+    Json(req): Json<BlobStoreRequest>,
+) -> impl IntoResponse {
+    let hash = match decode_hex_hash(&req.hash) {
+        Ok(h) => h,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(BlobStoreResponse {
+                    ok: false,
+                    size: None,
+                    error: Some(e),
+                }),
+            )
+        }
+    };
+
+    let data = match decode_payload(&req.data) {
+        Ok(d) => d,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(BlobStoreResponse {
+                    ok: false,
+                    size: None,
+                    error: Some(e),
+                }),
+            )
+        }
+    };
+
+    let store = match get_blob_store(&engine) {
+        Ok(s) => s,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(BlobStoreResponse {
+                    ok: false,
+                    size: None,
+                    error: Some(e),
+                }),
+            )
+        }
+    };
+
+    let mut writer = store.begin_write(hash);
+    if let Err(e) = writer.write(&data).await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(BlobStoreResponse {
+                ok: false,
+                size: None,
+                error: Some(format!("write failed: {e}")),
+            }),
+        );
+    }
+
+    match writer.finalize().await {
+        Ok(size) => (
+            StatusCode::OK,
+            Json(BlobStoreResponse {
+                ok: true,
+                size: Some(size),
+                error: None,
+            }),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(BlobStoreResponse {
+                ok: false,
+                size: None,
+                error: Some(format!("finalize failed: {e}")),
+            }),
+        ),
+    }
+}
+
+/// POST /p2pcd/bridge/blob/request — request a blob from a remote peer.
+async fn handle_blob_request(
+    State(engine): State<Arc<ProtocolEngine>>,
+    Json(req): Json<BlobRequestRequest>,
+) -> impl IntoResponse {
+    let peer_id = match decode_peer_id(&req.peer_id) {
+        Ok(id) => id,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(BlobRequestResponse {
+                    ok: false,
+                    error: Some(e),
+                }),
+            )
+        }
+    };
+
+    let hash = match decode_hex_hash(&req.hash) {
+        Ok(h) => h,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(BlobRequestResponse {
+                    ok: false,
+                    error: Some(e),
+                }),
+            )
+        }
+    };
+
+    // Build BLOB_REQ message: { 1: transfer_id, 2: blob_hash }
+    use p2pcd::cbor_helpers::{cbor_encode_map, make_capability_msg};
+    let payload = cbor_encode_map(vec![
+        (
+            1, // TRANSFER_ID
+            ciborium::value::Value::Integer(req.transfer_id.into()),
+        ),
+        (
+            2, // BLOB_HASH
+            ciborium::value::Value::Bytes(hash.to_vec()),
+        ),
+    ]);
+    let msg = make_capability_msg(p2pcd_types::message_types::BLOB_REQ, payload);
+
+    match engine.send_to_peer(&peer_id, msg).await {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(BlobRequestResponse {
+                ok: true,
+                error: None,
+            }),
+        ),
+        Err(e) => (
+            StatusCode::NOT_FOUND,
+            Json(BlobRequestResponse {
+                ok: false,
+                error: Some(e.to_string()),
+            }),
+        ),
+    }
+}
+
+/// GET /p2pcd/bridge/blob/status — check if a blob exists locally.
+async fn handle_blob_status(
+    State(engine): State<Arc<ProtocolEngine>>,
+    Query(query): Query<BlobStatusQuery>,
+) -> impl IntoResponse {
+    let hash = match decode_hex_hash(&query.hash) {
+        Ok(h) => h,
+        Err(_e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(BlobStatusResponse {
+                    exists: false,
+                    size: None,
+                }),
+            )
+        }
+    };
+
+    let store = match get_blob_store(&engine) {
+        Ok(s) => s,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(BlobStatusResponse {
+                    exists: false,
+                    size: None,
+                }),
+            )
+        }
+    };
+
+    if store.has(&hash).await {
+        let size = store.size(&hash).await;
+        (
+            StatusCode::OK,
+            Json(BlobStatusResponse { exists: true, size }),
+        )
+    } else {
+        (
+            StatusCode::OK,
+            Json(BlobStatusResponse {
+                exists: false,
+                size: None,
+            }),
+        )
+    }
+}
+
+/// GET /p2pcd/bridge/blob/data — read blob data.
+async fn handle_blob_data(
+    State(engine): State<Arc<ProtocolEngine>>,
+    Query(query): Query<BlobDataQuery>,
+) -> axum::response::Response {
+    use axum::http::header;
+
+    let hash = match decode_hex_hash(&query.hash) {
+        Ok(h) => h,
+        Err(e) => {
+            return (StatusCode::BAD_REQUEST, e).into_response();
+        }
+    };
+
+    let store = match get_blob_store(&engine) {
+        Ok(s) => s,
+        Err(e) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response();
+        }
+    };
+
+    if !store.has(&hash).await {
+        return (StatusCode::NOT_FOUND, "blob not found").into_response();
+    }
+
+    // Determine read length
+    let total_size = store.size(&hash).await.unwrap_or(0);
+    let offset = query.offset;
+    let length = if query.length == 0 {
+        total_size.saturating_sub(offset)
+    } else {
+        query.length
+    };
+
+    match store.read_chunk(&hash, offset, length).await {
+        Ok(data) => (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "application/octet-stream")],
+            data,
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("read failed: {e}"),
+        )
+            .into_response(),
+    }
 }
 
 #[cfg(test)]

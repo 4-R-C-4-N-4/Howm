@@ -56,6 +56,12 @@ impl BlobStore {
         Ok(buf)
     }
 
+    /// Read the entire blob as bytes. Returns None if not found.
+    pub async fn read_all(&self, hash: &[u8; 32]) -> Option<Vec<u8>> {
+        let path = self.path_for(hash);
+        fs::read(&path).await.ok()
+    }
+
     /// Begin writing a new blob. Returns a writer that accumulates data.
     /// Call `finalize()` to verify the hash and move to the final path.
     pub fn begin_write(&self, expected_hash: [u8; 32]) -> BlobWriter {

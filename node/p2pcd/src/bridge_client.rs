@@ -213,6 +213,123 @@ impl BridgeClient {
     pub async fn is_available(&self) -> bool {
         self.list_peers(None).await.is_ok()
     }
+
+    // ── Blob operations ──────────────────────────────────────────────────────
+
+    /// Store a blob in the daemon's blob store.
+    ///
+    /// `hash` is the SHA-256 hash (32 bytes), `data` is the raw blob content.
+    /// Returns the number of bytes stored.
+    pub async fn blob_store(&self, hash: &[u8; 32], data: &[u8]) -> Result<u64, BridgeError> {
+        let body = BlobStoreRequest {
+            hash: hex::encode(hash),
+            data: encode_b64(data),
+        };
+
+        let resp = self
+            .http
+            .post(format!("{}/blob/store", self.base_url))
+            .json(&body)
+            .send()
+            .await
+            .map_err(BridgeError::Http)?;
+
+        let status = resp.status();
+        let result: BlobStoreResponse = resp.json().await.map_err(BridgeError::Http)?;
+
+        if result.ok {
+            Ok(result.size.unwrap_or(0))
+        } else {
+            Err(BridgeError::Bridge {
+                status: status.as_u16(),
+                message: result.error.unwrap_or_else(|| "unknown error".into()),
+            })
+        }
+    }
+
+    /// Request a blob from a remote peer via the daemon.
+    pub async fn blob_request(
+        &self,
+        peer_id: &[u8; 32],
+        hash: &[u8; 32],
+        transfer_id: u64,
+    ) -> Result<(), BridgeError> {
+        let body = BlobRequestRequest {
+            peer_id: encode_b64(peer_id),
+            hash: hex::encode(hash),
+            transfer_id,
+        };
+
+        let resp = self
+            .http
+            .post(format!("{}/blob/request", self.base_url))
+            .json(&body)
+            .send()
+            .await
+            .map_err(BridgeError::Http)?;
+
+        let status = resp.status();
+        let result: BlobRequestResponse = resp.json().await.map_err(BridgeError::Http)?;
+
+        if result.ok {
+            Ok(())
+        } else {
+            Err(BridgeError::Bridge {
+                status: status.as_u16(),
+                message: result.error.unwrap_or_else(|| "unknown error".into()),
+            })
+        }
+    }
+
+    /// Check if a blob exists in the daemon's local store and get its size.
+    pub async fn blob_status(&self, hash: &[u8; 32]) -> Result<BlobStatusResponse, BridgeError> {
+        let url = format!("{}/blob/status?hash={}", self.base_url, hex::encode(hash));
+
+        let resp = self
+            .http
+            .get(&url)
+            .send()
+            .await
+            .map_err(BridgeError::Http)?;
+
+        if resp.status().is_success() {
+            resp.json().await.map_err(BridgeError::Http)
+        } else {
+            let status = resp.status().as_u16();
+            let text = resp.text().await.unwrap_or_default();
+            Err(BridgeError::Bridge {
+                status,
+                message: text,
+            })
+        }
+    }
+
+    /// Read blob data from the daemon's local store.
+    /// Returns the raw blob bytes.
+    pub async fn blob_data(&self, hash: &[u8; 32]) -> Result<Vec<u8>, BridgeError> {
+        let url = format!("{}/blob/data?hash={}", self.base_url, hex::encode(hash));
+
+        let resp = self
+            .http
+            .get(&url)
+            .send()
+            .await
+            .map_err(BridgeError::Http)?;
+
+        if resp.status().is_success() {
+            resp.bytes()
+                .await
+                .map(|b| b.to_vec())
+                .map_err(BridgeError::Http)
+        } else {
+            let status = resp.status().as_u16();
+            let text = resp.text().await.unwrap_or_default();
+            Err(BridgeError::Bridge {
+                status,
+                message: text,
+            })
+        }
+    }
 }
 
 // ── Error type ──────────────────────────────────────────────────────────────────
@@ -292,6 +409,43 @@ struct EventResponse {
     sent_to: usize,
     #[allow(dead_code)]
     error: Option<String>,
+}
+
+// ── Blob wire types ─────────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+struct BlobStoreRequest {
+    hash: String,
+    data: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct BlobStoreResponse {
+    ok: bool,
+    size: Option<u64>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct BlobRequestRequest {
+    peer_id: String,
+    hash: String,
+    transfer_id: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct BlobRequestResponse {
+    ok: bool,
+    error: Option<String>,
+}
+
+/// Blob status response — returned by `blob_status()`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct BlobStatusResponse {
+    /// Whether the blob exists in the local store.
+    pub exists: bool,
+    /// Size in bytes (present only if the blob exists).
+    pub size: Option<u64>,
 }
 
 /// Info about an active peer.

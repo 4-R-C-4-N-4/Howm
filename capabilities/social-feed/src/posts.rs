@@ -1,7 +1,25 @@
+// Post and attachment types + validation.
+//
+// All IO has moved to db.rs. This module defines the data structures and
+// validation logic only.
+
 use serde::{Deserialize, Serialize};
-use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
+
+// ── Attachment ───────────────────────────────────────────────────────────────
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Attachment {
+    /// SHA-256 hash of the blob, hex-encoded.
+    pub blob_id: String,
+    /// MIME type: image/jpeg, image/png, image/webp, image/gif, video/mp4.
+    pub mime_type: String,
+    /// Full blob size in bytes.
+    pub size: u64,
+}
+
+// ── Post ─────────────────────────────────────────────────────────────────────
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Post {
@@ -13,29 +31,124 @@ pub struct Post {
     /// Where this post came from: "local" for our own, "peer:<b64_peer_id>" for received.
     #[serde(default = "default_origin")]
     pub origin: String,
+    /// Media attachments (images, GIFs, video). Optional for backward compat.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<Attachment>,
 }
 
 fn default_origin() -> String {
     "local".to_string()
 }
 
+// ── Validation ───────────────────────────────────────────────────────────────
+
 pub const MAX_CONTENT_LEN: usize = 5000;
 
-// ── Local posts (posts we created) ──────────────────────────────────────────
+// ── Configurable media limits ────────────────────────────────────────────────
 
-pub fn load(data_dir: &Path) -> anyhow::Result<Vec<Post>> {
-    load_file(&data_dir.join("posts.json"))
+/// Default limits (used when no config override is provided).
+pub const DEFAULT_MAX_ATTACHMENTS: usize = 4;
+pub const DEFAULT_MAX_IMAGE_SIZE: u64 = 8 * 1024 * 1024; // 8 MB
+pub const DEFAULT_MAX_VIDEO_SIZE: u64 = 50 * 1024 * 1024; // 50 MB
+
+/// Allowed MIME types for attachments.
+pub const ALLOWED_IMAGE_MIMES: &[&str] = &["image/jpeg", "image/png", "image/webp", "image/gif"];
+pub const ALLOWED_VIDEO_MIMES: &[&str] = &["video/mp4", "video/webm"];
+
+/// All allowed MIME types.
+pub fn allowed_mime_types() -> Vec<&'static str> {
+    let mut v: Vec<&str> = ALLOWED_IMAGE_MIMES.to_vec();
+    v.extend_from_slice(ALLOWED_VIDEO_MIMES);
+    v
 }
 
-pub fn save(data_dir: &Path, posts: &[Post]) -> anyhow::Result<()> {
-    save_file(&data_dir.join("posts.json"), posts)
+/// Configurable media limits for the social feed.
+/// Exposed via `GET /post/limits` so the UI can enforce client-side.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MediaLimits {
+    pub max_attachments: usize,
+    pub max_image_bytes: u64,
+    pub max_video_bytes: u64,
+    pub allowed_mime_types: Vec<String>,
 }
 
-pub fn create(
-    data_dir: &Path,
+impl Default for MediaLimits {
+    fn default() -> Self {
+        Self {
+            max_attachments: DEFAULT_MAX_ATTACHMENTS,
+            max_image_bytes: DEFAULT_MAX_IMAGE_SIZE,
+            max_video_bytes: DEFAULT_MAX_VIDEO_SIZE,
+            allowed_mime_types: allowed_mime_types().into_iter().map(String::from).collect(),
+        }
+    }
+}
+
+/// Backward-compat aliases for tests that reference the old constants.
+pub const MAX_ATTACHMENTS: usize = DEFAULT_MAX_ATTACHMENTS;
+pub const MAX_IMAGE_SIZE: u64 = DEFAULT_MAX_IMAGE_SIZE;
+pub const MAX_VIDEO_SIZE: u64 = DEFAULT_MAX_VIDEO_SIZE;
+pub const ALLOWED_MIME_TYPES: &[&str] = &[
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+    "image/gif",
+    "video/mp4",
+    "video/webm",
+];
+
+#[derive(Debug, Serialize)]
+pub struct AttachmentError {
+    pub index: usize,
+    pub constraint: String,
+    pub message: String,
+}
+
+/// Validate attachment metadata. Returns a list of errors (empty = valid).
+pub fn validate_attachments(attachments: &[Attachment]) -> Vec<AttachmentError> {
+    let mut errors = Vec::new();
+
+    if attachments.len() > MAX_ATTACHMENTS {
+        errors.push(AttachmentError {
+            index: 0,
+            constraint: "max_count".to_string(),
+            message: format!("too many attachments (max {})", MAX_ATTACHMENTS),
+        });
+        return errors; // no point checking individual attachments
+    }
+
+    for (i, att) in attachments.iter().enumerate() {
+        if !ALLOWED_MIME_TYPES.contains(&att.mime_type.as_str()) {
+            errors.push(AttachmentError {
+                index: i,
+                constraint: "mime_type".to_string(),
+                message: format!("unsupported MIME type: {}", att.mime_type),
+            });
+        }
+
+        let max = if att.mime_type == "video/mp4" {
+            MAX_VIDEO_SIZE
+        } else {
+            MAX_IMAGE_SIZE
+        };
+        if att.size > max {
+            errors.push(AttachmentError {
+                index: i,
+                constraint: "max_size".to_string(),
+                message: format!("attachment too large ({} bytes, max {})", att.size, max),
+            });
+        }
+    }
+
+    errors
+}
+
+/// Build a new local post with a fresh UUID and current timestamp.
+/// Pass empty vec for text-only posts.
+pub fn new_post(
     content: String,
     author_id: String,
     author_name: String,
+    attachments: Vec<Attachment>,
 ) -> anyhow::Result<Post> {
     if content.len() > MAX_CONTENT_LEN {
         return Err(anyhow::anyhow!(
@@ -43,335 +156,269 @@ pub fn create(
             MAX_CONTENT_LEN
         ));
     }
-    let post = Post {
+    Ok(Post {
         id: Uuid::new_v4().to_string(),
         author_id,
         author_name,
         content,
         timestamp: SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs(),
         origin: "local".to_string(),
-    };
-    let mut posts = load(data_dir)?;
-    posts.push(post.clone());
-    save(data_dir, &posts)?;
-    Ok(post)
+        attachments,
+    })
 }
 
-// ── Peer posts (received from other nodes) ──────────────────────────────────
+/// Validate attachments against configurable limits.
+pub fn validate_attachments_with_limits(
+    attachments: &[Attachment],
+    limits: &MediaLimits,
+) -> Vec<AttachmentError> {
+    let mut errors = Vec::new();
 
-pub fn load_peer_posts(data_dir: &Path) -> anyhow::Result<Vec<Post>> {
-    load_file(&data_dir.join("peer_posts.json"))
-}
-
-pub fn save_peer_posts(data_dir: &Path, posts: &[Post]) -> anyhow::Result<()> {
-    save_file(&data_dir.join("peer_posts.json"), posts)
-}
-
-/// Ingest a post received from a peer. Returns true if it was new (not a duplicate).
-///
-/// Deduplication: skips if a post with the same `id` already exists.
-/// Sets origin to "peer:<peer_id_b64>" if not already set.
-pub fn ingest_peer_post(
-    data_dir: &Path,
-    mut post: Post,
-    peer_id_b64: &str,
-) -> anyhow::Result<bool> {
-    if post.content.len() > MAX_CONTENT_LEN {
-        return Err(anyhow::anyhow!("peer post too long, rejected"));
+    if attachments.len() > limits.max_attachments {
+        errors.push(AttachmentError {
+            index: 0,
+            constraint: "max_count".to_string(),
+            message: format!("too many attachments (max {})", limits.max_attachments),
+        });
+        return errors;
     }
 
-    // Ensure origin is set
-    if post.origin == "local" || post.origin.is_empty() {
-        post.origin = format!("peer:{}", peer_id_b64);
-    }
-
-    let mut posts = load_peer_posts(data_dir)?;
-
-    // Dedup by post ID — also check local posts to prevent echoes
-    if posts.iter().any(|p| p.id == post.id) {
-        return Ok(false);
-    }
-    let local = load(data_dir)?;
-    if local.iter().any(|p| p.id == post.id) {
-        return Ok(false);
-    }
-
-    posts.push(post);
-    save_peer_posts(data_dir, &posts)?;
-    Ok(true)
-}
-
-// ── Deletion ────────────────────────────────────────────────────────────────
-
-/// Delete a local post by ID. Returns true if found and removed.
-/// Only local posts can be deleted (you can't delete someone else's post).
-pub fn delete(data_dir: &Path, post_id: &str) -> anyhow::Result<bool> {
-    let mut posts = load(data_dir)?;
-    let before = posts.len();
-    posts.retain(|p| p.id != post_id);
-    if posts.len() == before {
-        return Ok(false); // not found
-    }
-    save(data_dir, &posts)?;
-    Ok(true)
-}
-
-/// Delete a peer post by ID. Used for moderation/cleanup.
-pub fn delete_peer_post(data_dir: &Path, post_id: &str) -> anyhow::Result<bool> {
-    let mut posts = load_peer_posts(data_dir)?;
-    let before = posts.len();
-    posts.retain(|p| p.id != post_id);
-    if posts.len() == before {
-        return Ok(false);
-    }
-    save_peer_posts(data_dir, &posts)?;
-    Ok(true)
-}
-
-// ── Filtered loading ────────────────────────────────────────────────────────
-
-/// Load posts from a specific peer (by peer_id base64 string).
-pub fn load_peer_feed(data_dir: &Path, peer_id: &str) -> anyhow::Result<Vec<Post>> {
-    let origin_prefix = format!("peer:{}", peer_id);
-    let mut posts: Vec<Post> = load_peer_posts(data_dir)?
-        .into_iter()
-        .filter(|p| p.origin == origin_prefix)
+    let allowed: Vec<&str> = limits
+        .allowed_mime_types
+        .iter()
+        .map(|s| s.as_str())
         .collect();
-    posts.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
-    Ok(posts)
-}
 
-/// Load only local posts (your own feed), sorted newest first.
-pub fn load_mine(data_dir: &Path) -> anyhow::Result<Vec<Post>> {
-    let mut posts = load(data_dir)?;
-    posts.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
-    Ok(posts)
-}
+    for (i, att) in attachments.iter().enumerate() {
+        if !allowed.contains(&att.mime_type.as_str()) {
+            errors.push(AttachmentError {
+                index: i,
+                constraint: "mime_type".to_string(),
+                message: format!("unsupported MIME type: {}", att.mime_type),
+            });
+        }
 
-// ── Merged feed ─────────────────────────────────────────────────────────────
-
-/// Load all posts (local + peer), deduplicated by id, sorted newest first.
-pub fn load_all(data_dir: &Path) -> anyhow::Result<Vec<Post>> {
-    let mut all = load(data_dir)?;
-    let peer = load_peer_posts(data_dir)?;
-
-    // Dedup: only add peer posts whose id doesn't already exist
-    let local_ids: std::collections::HashSet<String> = all.iter().map(|p| p.id.clone()).collect();
-    for p in peer {
-        if !local_ids.contains(&p.id) {
-            all.push(p);
+        let is_video = ALLOWED_VIDEO_MIMES.contains(&att.mime_type.as_str());
+        let max = if is_video {
+            limits.max_video_bytes
+        } else {
+            limits.max_image_bytes
+        };
+        if att.size > max {
+            errors.push(AttachmentError {
+                index: i,
+                constraint: "max_size".to_string(),
+                message: format!("attachment too large ({} bytes, max {})", att.size, max),
+            });
         }
     }
 
-    all.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
-    Ok(all)
+    errors
 }
 
-// ── File helpers ────────────────────────────────────────────────────────────
-
-fn load_file(path: &Path) -> anyhow::Result<Vec<Post>> {
-    if !path.exists() {
-        return Ok(vec![]);
+/// Prepare a peer post for ingestion: set origin if not already set,
+/// validate content length.
+pub fn prepare_peer_post(mut post: Post, peer_id_b64: &str) -> anyhow::Result<Post> {
+    if post.content.len() > MAX_CONTENT_LEN {
+        return Err(anyhow::anyhow!("peer post too long, rejected"));
     }
-    let text = std::fs::read_to_string(path)?;
-    Ok(serde_json::from_str(&text).unwrap_or_default())
-}
-
-fn save_file(path: &Path, posts: &[Post]) -> anyhow::Result<()> {
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_string_pretty(posts)?)?;
-    std::fs::rename(&tmp, path)?;
-    Ok(())
+    if post.origin == "local" || post.origin.is_empty() {
+        post.origin = format!("peer:{}", peer_id_b64);
+    }
+    Ok(post)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
 
     #[test]
-    fn create_and_load() {
-        let dir = TempDir::new().unwrap();
-        let post = create(dir.path(), "hello".into(), "alice".into(), "Alice".into()).unwrap();
+    fn new_post_basic() {
+        let post = new_post("hello".into(), "alice".into(), "Alice".into(), vec![]).unwrap();
         assert_eq!(post.origin, "local");
-
-        let posts = load(dir.path()).unwrap();
-        assert_eq!(posts.len(), 1);
-        assert_eq!(posts[0].id, post.id);
+        assert!(!post.id.is_empty());
+        assert!(post.attachments.is_empty());
     }
 
     #[test]
-    fn ingest_peer_post_dedup() {
-        let dir = TempDir::new().unwrap();
-        let post = Post {
-            id: "test-uuid-1".into(),
-            author_id: "bob".into(),
-            author_name: "Bob".into(),
-            content: "peer post".into(),
-            timestamp: 1000,
-            origin: "local".into(), // will be overwritten
-        };
-
-        // First ingest: should succeed
-        let new = ingest_peer_post(dir.path(), post.clone(), "AAAA").unwrap();
-        assert!(new);
-
-        // Second ingest: duplicate
-        let dup = ingest_peer_post(dir.path(), post.clone(), "AAAA").unwrap();
-        assert!(!dup);
-
-        // Verify origin was set
-        let peers = load_peer_posts(dir.path()).unwrap();
-        assert_eq!(peers.len(), 1);
-        assert_eq!(peers[0].origin, "peer:AAAA");
-    }
-
-    #[test]
-    fn ingest_peer_post_rejects_echo() {
-        let dir = TempDir::new().unwrap();
-        // Create a local post
-        let local = create(dir.path(), "my post".into(), "me".into(), "Me".into()).unwrap();
-
-        // Try to ingest the same post as if from a peer
-        let echo = Post {
-            id: local.id.clone(),
-            author_id: "me".into(),
-            author_name: "Me".into(),
-            content: "my post".into(),
-            timestamp: local.timestamp,
-            origin: "local".into(),
-        };
-        let new = ingest_peer_post(dir.path(), echo, "BBBB").unwrap();
-        assert!(!new); // rejected as duplicate
-    }
-
-    #[test]
-    fn load_all_merges_and_sorts() {
-        let dir = TempDir::new().unwrap();
-        // Create local post
-        let local = create(dir.path(), "local".into(), "me".into(), "Me".into()).unwrap();
-
-        // Ingest peer post with a newer timestamp
-        let peer = Post {
-            id: "peer-1".into(),
-            author_id: "bob".into(),
-            author_name: "Bob".into(),
-            content: "from peer".into(),
-            timestamp: local.timestamp + 100, // definitely newer
-            origin: "peer:CCCC".into(),
-        };
-        ingest_peer_post(dir.path(), peer, "CCCC").unwrap();
-
-        let all = load_all(dir.path()).unwrap();
-        assert_eq!(all.len(), 2);
-        // Newest first
-        assert_eq!(all[0].id, "peer-1");
-        assert!(all[0].timestamp >= all[1].timestamp);
-    }
-
-    #[test]
-    fn content_too_long_rejected() {
-        let dir = TempDir::new().unwrap();
+    fn new_post_content_too_long() {
         let long = "x".repeat(MAX_CONTENT_LEN + 1);
-        assert!(create(dir.path(), long.clone(), "a".into(), "A".into()).is_err());
-
-        let post = Post {
-            id: "long".into(),
-            author_id: "b".into(),
-            author_name: "B".into(),
-            content: long,
-            timestamp: 0,
-            origin: "peer:X".into(),
-        };
-        assert!(ingest_peer_post(dir.path(), post, "X").is_err());
+        assert!(new_post(long, "a".into(), "A".into(), vec![]).is_err());
     }
 
     #[test]
-    fn delete_local_post() {
-        let dir = TempDir::new().unwrap();
-        let post = create(dir.path(), "deleteme".into(), "a".into(), "A".into()).unwrap();
-        assert!(delete(dir.path(), &post.id).unwrap());
-        assert!(!delete(dir.path(), &post.id).unwrap()); // already gone
-        assert!(load(dir.path()).unwrap().is_empty());
-    }
-
-    #[test]
-    fn delete_peer_post_works() {
-        let dir = TempDir::new().unwrap();
+    fn prepare_peer_post_sets_origin() {
         let post = Post {
-            id: "peer-del-1".into(),
+            id: "test".into(),
             author_id: "bob".into(),
             author_name: "Bob".into(),
-            content: "removable".into(),
+            content: "hi".into(),
             timestamp: 1000,
-            origin: "peer:DDDD".into(),
+            origin: "local".into(),
+            attachments: vec![],
         };
-        ingest_peer_post(dir.path(), post, "DDDD").unwrap();
-        assert!(delete_peer_post(dir.path(), "peer-del-1").unwrap());
-        assert!(load_peer_posts(dir.path()).unwrap().is_empty());
+        let prepared = prepare_peer_post(post, "AAAA").unwrap();
+        assert_eq!(prepared.origin, "peer:AAAA");
     }
 
     #[test]
-    fn load_mine_only_local() {
-        let dir = TempDir::new().unwrap();
-        create(dir.path(), "local1".into(), "me".into(), "Me".into()).unwrap();
-        let peer = Post {
-            id: "peer-mine-test".into(),
+    fn prepare_peer_post_rejects_long() {
+        let post = Post {
+            id: "test".into(),
             author_id: "bob".into(),
             author_name: "Bob".into(),
-            content: "peer".into(),
-            timestamp: 9999,
-            origin: "peer:EEEE".into(),
+            content: "x".repeat(MAX_CONTENT_LEN + 1),
+            timestamp: 1000,
+            origin: "local".into(),
+            attachments: vec![],
         };
-        ingest_peer_post(dir.path(), peer, "EEEE").unwrap();
-
-        let mine = load_mine(dir.path()).unwrap();
-        assert_eq!(mine.len(), 1);
-        assert_eq!(mine[0].origin, "local");
+        assert!(prepare_peer_post(post, "AAAA").is_err());
     }
 
     #[test]
-    fn load_peer_feed_filters() {
-        let dir = TempDir::new().unwrap();
-        let p1 = Post {
-            id: "pf-1".into(),
+    fn validate_attachments_all_ok() {
+        let atts = vec![
+            Attachment {
+                blob_id: "aa".into(),
+                mime_type: "image/jpeg".into(),
+                size: 1000,
+            },
+            Attachment {
+                blob_id: "bb".into(),
+                mime_type: "video/mp4".into(),
+                size: MAX_VIDEO_SIZE,
+            },
+        ];
+        assert!(validate_attachments(&atts).is_empty());
+    }
+
+    #[test]
+    fn validate_attachments_too_many() {
+        let atts: Vec<Attachment> = (0..5)
+            .map(|i| Attachment {
+                blob_id: format!("{:02x}", i),
+                mime_type: "image/jpeg".into(),
+                size: 100,
+            })
+            .collect();
+        let errs = validate_attachments(&atts);
+        assert_eq!(errs.len(), 1);
+        assert_eq!(errs[0].constraint, "max_count");
+    }
+
+    #[test]
+    fn validate_attachments_bad_mime() {
+        let atts = vec![Attachment {
+            blob_id: "aa".into(),
+            mime_type: "image/bmp".into(),
+            size: 100,
+        }];
+        let errs = validate_attachments(&atts);
+        assert_eq!(errs.len(), 1);
+        assert_eq!(errs[0].constraint, "mime_type");
+        assert_eq!(errs[0].index, 0);
+    }
+
+    #[test]
+    fn validate_attachments_image_too_large() {
+        let atts = vec![Attachment {
+            blob_id: "aa".into(),
+            mime_type: "image/png".into(),
+            size: MAX_IMAGE_SIZE + 1,
+        }];
+        let errs = validate_attachments(&atts);
+        assert_eq!(errs.len(), 1);
+        assert_eq!(errs[0].constraint, "max_size");
+    }
+
+    #[test]
+    fn validate_attachments_video_boundary() {
+        // Exactly at limit — ok
+        let ok = vec![Attachment {
+            blob_id: "aa".into(),
+            mime_type: "video/mp4".into(),
+            size: MAX_VIDEO_SIZE,
+        }];
+        assert!(validate_attachments(&ok).is_empty());
+
+        // One byte over — fail
+        let fail = vec![Attachment {
+            blob_id: "aa".into(),
+            mime_type: "video/mp4".into(),
+            size: MAX_VIDEO_SIZE + 1,
+        }];
+        assert_eq!(validate_attachments(&fail).len(), 1);
+    }
+
+    #[test]
+    fn validate_attachments_image_boundary() {
+        let ok = vec![Attachment {
+            blob_id: "aa".into(),
+            mime_type: "image/jpeg".into(),
+            size: MAX_IMAGE_SIZE,
+        }];
+        assert!(validate_attachments(&ok).is_empty());
+
+        let fail = vec![Attachment {
+            blob_id: "aa".into(),
+            mime_type: "image/jpeg".into(),
+            size: MAX_IMAGE_SIZE + 1,
+        }];
+        assert_eq!(validate_attachments(&fail).len(), 1);
+    }
+
+    #[test]
+    fn backward_compat_deserialize() {
+        // Old JSON without attachments or origin fields
+        let json = r#"{"id":"old","author_id":"a","author_name":"A","content":"hi","timestamp":1}"#;
+        let post: Post = serde_json::from_str(json).unwrap();
+        assert_eq!(post.origin, "local");
+        assert!(post.attachments.is_empty());
+    }
+
+    #[test]
+    fn round_trip_with_attachments() {
+        let post = Post {
+            id: "p1".into(),
             author_id: "a".into(),
             author_name: "A".into(),
-            content: "from alice".into(),
-            timestamp: 100,
-            origin: "peer:ALICE".into(),
+            content: "media post".into(),
+            timestamp: 1000,
+            origin: "local".into(),
+            attachments: vec![
+                Attachment {
+                    blob_id: "aabb".into(),
+                    mime_type: "image/jpeg".into(),
+                    size: 1000,
+                },
+                Attachment {
+                    blob_id: "ccdd".into(),
+                    mime_type: "image/gif".into(),
+                    size: 2000,
+                },
+                Attachment {
+                    blob_id: "eeff".into(),
+                    mime_type: "image/webp".into(),
+                    size: 3000,
+                },
+                Attachment {
+                    blob_id: "0011".into(),
+                    mime_type: "video/mp4".into(),
+                    size: 4000,
+                },
+            ],
         };
-        let p2 = Post {
-            id: "pf-2".into(),
-            author_id: "b".into(),
-            author_name: "B".into(),
-            content: "from bob".into(),
-            timestamp: 200,
-            origin: "peer:BOB".into(),
-        };
-        ingest_peer_post(dir.path(), p1, "ALICE").unwrap();
-        ingest_peer_post(dir.path(), p2, "BOB").unwrap();
-
-        let alice = load_peer_feed(dir.path(), "ALICE").unwrap();
-        assert_eq!(alice.len(), 1);
-        assert_eq!(alice[0].id, "pf-1");
-
-        let bob = load_peer_feed(dir.path(), "BOB").unwrap();
-        assert_eq!(bob.len(), 1);
-        assert_eq!(bob[0].id, "pf-2");
-
-        let nobody = load_peer_feed(dir.path(), "NOBODY").unwrap();
-        assert!(nobody.is_empty());
+        let json = serde_json::to_string(&post).unwrap();
+        let back: Post = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.attachments.len(), 4);
+        assert_eq!(back.attachments[0].blob_id, "aabb");
+        assert_eq!(back.attachments[3].mime_type, "video/mp4");
     }
 
     #[test]
-    fn default_origin_compat() {
-        // Simulate old posts.json without origin field
-        let dir = TempDir::new().unwrap();
-        let json =
-            r#"[{"id":"old","author_id":"a","author_name":"A","content":"hi","timestamp":1}]"#;
-        std::fs::write(dir.path().join("posts.json"), json).unwrap();
-        let posts = load(dir.path()).unwrap();
-        assert_eq!(posts[0].origin, "local"); // default_origin kicks in
+    fn skip_serializing_empty_attachments() {
+        let post = new_post("text only".into(), "a".into(), "A".into(), vec![]).unwrap();
+        let json = serde_json::to_string(&post).unwrap();
+        assert!(!json.contains("attachments"));
     }
 }

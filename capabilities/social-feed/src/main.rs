@@ -15,6 +15,8 @@ use tracing_subscriber::EnvFilter;
 static UI_ASSETS: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/ui");
 
 mod api;
+mod blob_fetcher;
+mod db;
 mod posts;
 
 #[derive(Parser, Debug)]
@@ -29,6 +31,18 @@ struct Config {
     /// Port the Howm daemon HTTP API listens on (for P2P-CD peer queries).
     #[arg(long, default_value = "7000", env = "HOWM_DAEMON_PORT")]
     daemon_port: u16,
+
+    /// Max number of attachments per post.
+    #[arg(long, default_value = "4", env = "MAX_ATTACHMENTS")]
+    max_attachments: usize,
+
+    /// Max image size in bytes (default 8 MiB).
+    #[arg(long, default_value = "8388608", env = "MAX_IMAGE_BYTES")]
+    max_image_bytes: u64,
+
+    /// Max video size in bytes (default 50 MiB).
+    #[arg(long, default_value = "52428800", env = "MAX_VIDEO_BYTES")]
+    max_video_bytes: u64,
 }
 
 #[tokio::main]
@@ -41,13 +55,33 @@ async fn main() -> anyhow::Result<()> {
 
     std::fs::create_dir_all(&config.data_dir)?;
 
-    let state = api::FeedState::new(config.data_dir.clone(), config.daemon_port);
+    // Open SQLite database and run JSON migration if needed
+    let feed_db = db::FeedDb::open(&config.data_dir)?;
+    feed_db.migrate_from_json(&config.data_dir)?;
 
-    // Restore active peers from daemon on startup (Task 7.3)
+    let limits = posts::MediaLimits {
+        max_attachments: config.max_attachments,
+        max_image_bytes: config.max_image_bytes,
+        max_video_bytes: config.max_video_bytes,
+        ..Default::default()
+    };
+    let state = api::FeedState::new(config.data_dir.clone(), feed_db, config.daemon_port)
+        .with_limits(limits);
+
+    // Restore active peers from daemon on startup
     {
         let state_clone = state.clone();
         tokio::spawn(async move {
             api::init_peers_from_daemon(state_clone).await;
+        });
+    }
+
+    // Resume any pending blob transfers from a previous run
+    {
+        let db_clone = state.db.clone();
+        let bridge_clone = state.bridge().clone();
+        tokio::spawn(async move {
+            blob_fetcher::resume_active_transfers(db_clone, bridge_clone).await;
         });
     }
 
@@ -56,9 +90,14 @@ async fn main() -> anyhow::Result<()> {
         .route("/feed", get(api::get_feed))
         .route("/feed/mine", get(api::get_my_feed))
         .route("/feed/peer/:peer_id", get(api::get_peer_feed))
-        // Post CRUD
+        // Post CRUD — JSON for text-only, multipart for media attachments
         .route("/post", post(api::create_post))
+        .route("/post/upload", post(api::create_post_multipart))
+        .route("/post/limits", get(api::get_limits))
         .route("/post/:id", delete(api::delete_post))
+        .route("/post/:id/attachments", get(api::get_attachment_status))
+        // Blob serving (content-addressed media)
+        .route("/blob/:hash", get(api::serve_blob))
         // Utility
         .route("/health", get(api::health))
         .route("/peers", get(api::list_social_peers))
@@ -103,31 +142,25 @@ async fn serve_ui(req: Request<Body>) -> Response {
                         Body::from(index.contents()),
                     )
                         .into_response(),
-                    None => (StatusCode::NOT_FOUND, "UI not found").into_response(),
+                    None => StatusCode::NOT_FOUND.into_response(),
                 }
             } else {
-                (StatusCode::NOT_FOUND, "Not found").into_response()
+                StatusCode::NOT_FOUND.into_response()
             }
         }
     }
 }
 
 fn ui_mime(path: &str) -> &'static str {
-    if path.ends_with(".html") {
-        "text/html; charset=utf-8"
-    } else if path.ends_with(".js") || path.ends_with(".mjs") {
-        "application/javascript"
-    } else if path.ends_with(".css") {
-        "text/css"
-    } else if path.ends_with(".json") {
-        "application/json"
-    } else if path.ends_with(".svg") {
-        "image/svg+xml"
-    } else if path.ends_with(".png") {
-        "image/png"
-    } else if path.ends_with(".ico") {
-        "image/x-icon"
-    } else {
-        "application/octet-stream"
+    match path.rsplit('.').next() {
+        Some("html") => "text/html; charset=utf-8",
+        Some("css") => "text/css; charset=utf-8",
+        Some("js") => "application/javascript; charset=utf-8",
+        Some("json") => "application/json",
+        Some("png") => "image/png",
+        Some("svg") => "image/svg+xml",
+        Some("ico") => "image/x-icon",
+        Some("woff2") => "font/woff2",
+        _ => "application/octet-stream",
     }
 }
