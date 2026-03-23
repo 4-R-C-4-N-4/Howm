@@ -136,10 +136,6 @@ pub fn build_router(state: AppState, ui_dir: Option<PathBuf>) -> Router {
             "/network/matchmake/status",
             get(connection_routes::matchmake_status),
         )
-        .route(
-            "/network/matchmake/status",
-            get(connection_routes::matchmake_status),
-        )
         .layer(middleware::from_fn(local_or_wg_middleware));
 
     // ── 2b. Bridge routes — localhost-only, for out-of-process capabilities ──

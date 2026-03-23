@@ -194,19 +194,32 @@ if [[ -d "$CAP_DIR" ]] && [[ -n "$API_TOKEN" ]]; then
         cap_root="$(dirname "$cap")"
         cap_name="$(basename "$cap_root")"
 
-        # Build the capability (Cargo project)
+        # Build the capability (Cargo project) — skip if binary already exists
         if [[ -f "$cap_root/Cargo.toml" ]]; then
-            CAP_BUILD_EXIT=0
             if [[ $RELEASE_MODE -eq 1 ]]; then
-                info "Building capability '$cap_name' (release)..."
-                (cd "$cap_root" && cargo build --release 2>&1) || CAP_BUILD_EXIT=$?
+                CAP_BIN="$cap_root/target/release/$cap_name"
             else
-                info "Building capability '$cap_name' (debug)..."
-                (cd "$cap_root" && cargo build 2>&1) || CAP_BUILD_EXIT=$?
+                CAP_BIN="$cap_root/target/debug/$cap_name"
             fi
-            if [[ $CAP_BUILD_EXIT -ne 0 ]]; then
-                warn "Capability '$cap_name' build failed (exit $CAP_BUILD_EXIT) — skipping"
-                continue
+            # Also accept the release binary when running in debug mode
+            if [[ ! -x "$CAP_BIN" ]] && [[ -x "$cap_root/target/release/$cap_name" ]]; then
+                CAP_BIN="$cap_root/target/release/$cap_name"
+                info "Capability '$cap_name': using existing release binary"
+            elif [[ -x "$CAP_BIN" ]]; then
+                info "Capability '$cap_name': binary up to date"
+            else
+                CAP_BUILD_EXIT=0
+                if [[ $RELEASE_MODE -eq 1 ]]; then
+                    info "Building capability '$cap_name' (release)..."
+                    (cd "$cap_root" && cargo build --release 2>&1) || CAP_BUILD_EXIT=$?
+                else
+                    info "Building capability '$cap_name' (debug)..."
+                    (cd "$cap_root" && cargo build 2>&1) || CAP_BUILD_EXIT=$?
+                fi
+                if [[ $CAP_BUILD_EXIT -ne 0 ]]; then
+                    warn "Capability '$cap_name' build failed (exit $CAP_BUILD_EXIT) — skipping"
+                    continue
+                fi
             fi
         fi
 
