@@ -1,18 +1,27 @@
 'use strict';
 
 // ── State ──────────────────────────────────────────────────────────────────────
-var apiToken = null;
+var apiToken=***
 var trustFilter = null;
 var pendingFiles = []; // files queued for upload
 var mediaLimits = null; // fetched from /post/limits
 
+// ── Base path detection ────────────────────────────────────────────────────────
+// When served through the daemon proxy: /cap/social/ui/ → base = /cap/social
+// When accessed directly on capability port: /ui/ → base = ''
+var BASE = (function () {
+  var path = window.location.pathname; // e.g. /cap/social/ui/ or /ui/
+  var uiIdx = path.indexOf('/ui');
+  return uiIdx > 0 ? path.substring(0, uiIdx) : '';
+})();
+
 // ── Initialise ─────────────────────────────────────────────────────────────────
 (function init() {
-  // 1. Try URL param first (simplest path — shell passes ?token=…)
+  // 1. Try URL param first (simplest path — shell passes ?token=***
   var params = new URLSearchParams(window.location.search);
-  var tokenParam = params.get('token');
+  var tokenParam=params...n');
   if (tokenParam) {
-    apiToken = tokenParam;
+    apiToken=***
     startup();
   } else {
     // 2. Ask parent shell via postMessage
@@ -24,7 +33,7 @@ var mediaLimits = null; // fetched from /post/limits
   window.addEventListener('message', function (e) {
     if (e.origin !== window.location.origin) return;
     if (e.data && e.data.type === 'howm:token:reply') {
-      apiToken = e.data.payload && e.data.payload.token;
+      apiToken=*** && e.data.payload.token;
       startup();
     }
   });
@@ -45,7 +54,7 @@ function startup() {
 // ── Limits ──────────────────────────────────────────────────────────────────────
 async function fetchLimits() {
   try {
-    var resp = await fetch('/cap/social/post/limits');
+    var resp = await fetch(BASE + '/post/limits');
     if (resp.ok) {
       var data = await resp.json();
       mediaLimits = data.limits;
@@ -132,7 +141,7 @@ async function loadFeed() {
   errDiv.innerHTML = '';
 
   try {
-    var url = trustFilter ? '/network/feed?trust=' + trustFilter : '/network/feed';
+    var url = trustFilter ? BASE + '/feed?trust=' + trustFilter : BASE + '/feed';
     var resp = await fetch(url);
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     var data = await resp.json();
@@ -189,7 +198,7 @@ function renderAttachments(post) {
 
   for (var i = 0; i < post.attachments.length; i++) {
     var att = post.attachments[i];
-    var blobUrl = '/cap/social/blob/' + att.blob_id;
+    var blobUrl = BASE + '/blob/' + att.blob_id;
     var isVideo = att.mime_type.startsWith('video/');
 
     if (isPeer) {
@@ -225,7 +234,7 @@ function pollAttachmentStatus(postId) {
 
   var interval = setInterval(async function () {
     try {
-      var resp = await fetch('/cap/social/post/' + postId + '/attachments');
+      var resp = await fetch(BASE + '/post/' + postId + '/attachments');
       if (!resp.ok) { clearInterval(interval); delete pollingPosts[postId]; return; }
       var data = await resp.json();
 
@@ -245,7 +254,7 @@ function pollAttachmentStatus(postId) {
 
         if (t.status === 'complete') {
           // Replace placeholder with actual media
-          var blobUrl = '/cap/social/blob/' + t.blob_id;
+          var blobUrl = BASE + '/blob/' + t.blob_id;
           var isVideo = t.mime_type.startsWith('video/');
           if (isVideo) {
             el.innerHTML = '<video controls preload="metadata" muted>' +
@@ -304,7 +313,7 @@ async function submitPost() {
       for (var i = 0; i < pendingFiles.length; i++) {
         form.append('file', pendingFiles[i]);
       }
-      resp = await fetch('/cap/social/post/upload', {
+      resp = await fetch(BASE + '/post/upload', {
         method: 'POST',
         headers: headers,
         body: form,
@@ -312,7 +321,7 @@ async function submitPost() {
     } else {
       // JSON text-only
       headers['Content-Type'] = 'application/json';
-      resp = await fetch('/cap/social/post', {
+      resp = await fetch(BASE + '/post', {
         method: 'POST',
         headers: headers,
         body: JSON.stringify({ content: content }),
@@ -353,7 +362,7 @@ async function deletePost(postId) {
   try {
     var headers = {};
     if (apiToken) headers['Authorization'] = 'Bearer ' + apiToken;
-    var resp = await fetch('/cap/social/post/' + postId, {
+    var resp = await fetch(BASE + '/post/' + postId, {
       method: 'DELETE',
       headers: headers,
     });
