@@ -36,6 +36,7 @@ pub struct DecodedAccept {
 }
 
 /// Generate an accept token.
+#[allow(clippy::too_many_arguments)]
 pub fn generate(
     inviter_pubkey: &str,
     our_pubkey: &str,

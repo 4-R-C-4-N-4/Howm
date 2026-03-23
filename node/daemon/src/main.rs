@@ -226,38 +226,36 @@ async fn main() -> anyhow::Result<()> {
                 let mm_counter = Arc::clone(&state.matchmake_counter);
                 tokio::spawn(async move {
                     while let Some(event) = rx.recv().await {
-                        match event {
-                            ::p2pcd::capabilities::relay::CircuitEvent::Data {
-                                circuit_id,
-                                data,
-                                ..
-                            } => {
-                                match matchmake::decode_message(&data) {
-                                    Ok(matchmake::MatchmakeMessage::Request(req)) => {
-                                        let s = mm_state.clone();
-                                        let c = Arc::clone(&mm_counter);
-                                        tokio::spawn(async move {
-                                            if let Err(e) = matchmake::handle_incoming_matchmake(
-                                                &s, circuit_id, req, c,
-                                            )
-                                            .await
-                                            {
-                                                tracing::warn!("matchmake handler error: {}", e);
-                                            }
-                                        });
-                                    }
-                                    Ok(_) => {
-                                        tracing::debug!(
-                                            "matchmake: ignoring non-request on circuit {}",
-                                            circuit_id
-                                        );
-                                    }
-                                    Err(_) => {
-                                        // Not a matchmake message — ignore
-                                    }
+                        if let ::p2pcd::capabilities::relay::CircuitEvent::Data {
+                            circuit_id,
+                            data,
+                            ..
+                        } = event
+                        {
+                            match matchmake::decode_message(&data) {
+                                Ok(matchmake::MatchmakeMessage::Request(req)) => {
+                                    let s = mm_state.clone();
+                                    let c = Arc::clone(&mm_counter);
+                                    tokio::spawn(async move {
+                                        if let Err(e) = matchmake::handle_incoming_matchmake(
+                                            &s, circuit_id, req, c,
+                                        )
+                                        .await
+                                        {
+                                            tracing::warn!("matchmake handler error: {}", e);
+                                        }
+                                    });
+                                }
+                                Ok(_) => {
+                                    tracing::debug!(
+                                        "matchmake: ignoring non-request on circuit {}",
+                                        circuit_id
+                                    );
+                                }
+                                Err(_) => {
+                                    // Not a matchmake message — ignore
                                 }
                             }
-                            _ => {}
                         }
                     }
                     tracing::debug!("matchmake: circuit event channel closed");

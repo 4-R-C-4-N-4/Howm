@@ -253,7 +253,7 @@ mod tests {
         // Use a high ephemeral port unlikely to be in use
         let port = find_available_wg_port(49999);
         // Should get 49999 or very close to it
-        assert!(port >= 49999 && port <= 49999 + PORT_FALLBACK_RANGE);
+        assert!((49999..=49999 + PORT_FALLBACK_RANGE).contains(&port));
     }
 
     #[test]

@@ -9,12 +9,13 @@
 //! There is no custom probe protocol — WireGuard's handshake IS the probe.
 
 use std::time::{Duration, Instant};
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use crate::stun::NatType;
 
 /// Configuration for a hole punch attempt.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct PunchConfig {
     /// Peer's WG public key (base64).
     pub peer_pubkey: String,

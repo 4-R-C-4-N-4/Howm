@@ -275,11 +275,7 @@ pub async fn collect_relay_candidate_pubkeys(state: &AppState) -> Vec<String> {
             sessions
                 .iter()
                 .filter(|s| s.active_set.iter().any(|c| c == "core.network.relay.1"))
-                .filter_map(|s| {
-                    // SessionSummary has peer_id as PeerId ([u8; 32])
-                    // Encode as base64 for the invite token
-                    Some(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(s.peer_id))
-                })
+                .map(|s| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(s.peer_id))
                 .collect()
         }
         None => vec![],

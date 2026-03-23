@@ -35,6 +35,7 @@ const FAMILY_IPV6: u8 = 0x02;
 
 /// Result of a single STUN binding request.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct StunMapping {
     /// Our external IP as seen by the STUN server.
     pub external_ip: std::net::IpAddr,

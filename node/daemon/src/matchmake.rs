@@ -59,6 +59,7 @@ pub struct EndpointInfo {
 
 /// A decoded matchmake request (initiator's info arriving at the target).
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct MatchmakeRequest {
     pub wg_pubkey: String,
     pub external_ip: String,
@@ -74,6 +75,7 @@ pub struct MatchmakeRequest {
 
 /// A decoded matchmake exchange (target's response to the initiator).
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct MatchmakeExchangeMsg {
     pub wg_pubkey: String,
     pub external_ip: String,
@@ -422,6 +424,7 @@ pub async fn gather_endpoint_info(state: &AppState) -> Result<EndpointInfo, Matc
 ///
 /// Called by the initiator after receiving the target's MatchmakeExchangeMsg,
 /// and by the target after receiving the initiator's MatchmakeRequest.
+#[allow(clippy::too_many_arguments)]
 pub fn build_punch_config_from_exchange(
     peer_pubkey: &str,
     peer_external_ip: &str,
@@ -552,9 +555,9 @@ async fn do_initiate_matchmake(
 
     // Parse peer IDs
     let relay_peer = p2pcd_types::config::parse_wg_pubkey(relay_pubkey)
-        .ok_or_else(|| MatchmakeError::CircuitFailed(format!("bad relay pubkey")))?;
+        .ok_or_else(|| MatchmakeError::CircuitFailed("bad relay pubkey".to_string()))?;
     let target_peer = p2pcd_types::config::parse_wg_pubkey(target_pubkey)
-        .ok_or_else(|| MatchmakeError::CircuitFailed(format!("bad target pubkey")))?;
+        .ok_or_else(|| MatchmakeError::CircuitFailed("bad target pubkey".to_string()))?;
 
     // Set up event channel
     let (tx, mut rx) = tokio::sync::mpsc::channel(16);
@@ -566,7 +569,7 @@ async fn do_initiate_matchmake(
         .await;
 
     // Wait for circuit to open
-    let _opened = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
         while let Some(ev) = rx.recv().await {
             if let ::p2pcd::capabilities::relay::CircuitEvent::Opened {
                 circuit_id: cid, ..

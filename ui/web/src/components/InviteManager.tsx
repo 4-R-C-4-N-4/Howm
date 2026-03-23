@@ -295,8 +295,9 @@ function PendingRow({ exchange }: { exchange: PendingExchange }) {
 
   useEffect(() => {
     if (exchange.status !== 'waiting') return;
-    setNow(Math.floor(Date.now() / 1000));
-    const interval = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 1000);
+    const tick = () => setNow(Math.floor(Date.now() / 1000));
+    tick();
+    const interval = setInterval(tick, 1000);
     return () => clearInterval(interval);
   }, [exchange.status]);
 

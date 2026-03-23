@@ -24,6 +24,7 @@ pub struct PendingInvite {
 }
 
 /// Decoded invite fields (from the invite code).
+#[allow(dead_code)]
 pub struct DecodedInvite {
     pub their_pubkey: String,
     pub their_endpoint: String, // WG endpoint (public IPv4 addr:port)
@@ -48,6 +49,7 @@ pub struct DecodedInvite {
 /// Fields 8-9 added in v2 (IPv6, WG port). Fields 10-12 added in v3 (NAT info,
 /// relay candidates). Older parsers that split on `|` and take fewer fields
 /// will still work — new fields are trailing.
+#[allow(clippy::too_many_arguments)]
 pub fn generate(
     data_dir: &Path,
     identity: &NodeIdentity,
