@@ -15,7 +15,6 @@ use anyhow::{bail, Context, Result};
 
 use p2pcd_types::{
     compute_intersection, CloseReason, DiscoveryManifest, PeerId, ProtocolMessage, ScopeParams,
-    TrustPolicy,
 };
 
 use crate::transport::P2pcdTransport;
@@ -154,10 +153,10 @@ impl Session {
 ///   4. Send our CONFIRM
 ///   5. Receive remote CONFIRM
 ///   6. Reconcile final active_set
-pub async fn run_initiator_exchange(
-    session: &mut Session,
-    trust_policies: &std::collections::HashMap<String, TrustPolicy>,
-) -> Result<()> {
+pub async fn run_initiator_exchange<F>(session: &mut Session, trust_gate: &F) -> Result<()>
+where
+    F: Fn(&str, &PeerId) -> bool + Send + Sync,
+{
     // Transition state (no transport borrow active yet)
     session.transition(SessionState::Handshake)?;
     session.transition(SessionState::CapabilityExchange)?;
@@ -184,8 +183,7 @@ pub async fn run_initiator_exchange(
         let remote_manifest = recv_offer(transport).await?;
 
         // Step 3: compute intersection
-        let our_active_set =
-            compute_intersection(&local_manifest, &remote_manifest, trust_policies);
+        let our_active_set = compute_intersection(&local_manifest, &remote_manifest, trust_gate);
         let our_params = reconcile_params(&our_active_set, &local_manifest, &remote_manifest);
 
         // Step 4: send our CONFIRM
@@ -250,10 +248,10 @@ pub async fn run_initiator_exchange(
 ///   4. Compute intersection + trust gates → our CONFIRM
 ///   5. Send our CONFIRM
 ///   6. Reconcile final active_set
-pub async fn run_responder_exchange(
-    session: &mut Session,
-    trust_policies: &std::collections::HashMap<String, TrustPolicy>,
-) -> Result<()> {
+pub async fn run_responder_exchange<F>(session: &mut Session, trust_gate: &F) -> Result<()>
+where
+    F: Fn(&str, &PeerId) -> bool + Send + Sync,
+{
     session.transition(SessionState::Handshake)?;
     session.transition(SessionState::CapabilityExchange)?;
 
@@ -305,8 +303,7 @@ pub async fn run_responder_exchange(
             };
 
         // Step 4: compute our intersection
-        let our_active_set =
-            compute_intersection(&local_manifest, &remote_manifest, trust_policies);
+        let our_active_set = compute_intersection(&local_manifest, &remote_manifest, trust_gate);
         let our_params = reconcile_params(&our_active_set, &local_manifest, &remote_manifest);
 
         // Step 5: send our CONFIRM
@@ -578,7 +575,7 @@ mod tests {
             let (transport, _) = listener.accept().await.unwrap();
             let mut session = Session::new([1u8; 32], rm);
             session.transport = Some(transport);
-            run_responder_exchange(&mut session, &HashMap::new())
+            run_responder_exchange(&mut session, &|_: &str, _: &PeerId| true)
                 .await
                 .unwrap();
             session.state.clone()
@@ -588,7 +585,7 @@ mod tests {
         let transport = connect(addr).await.unwrap();
         let mut session = Session::new([2u8; 32], lm);
         session.transport = Some(transport);
-        run_initiator_exchange(&mut session, &HashMap::new())
+        run_initiator_exchange(&mut session, &|_: &str, _: &PeerId| true)
             .await
             .unwrap();
 
@@ -640,7 +637,7 @@ mod tests {
             let (transport, _) = listener.accept().await.unwrap();
             let mut session = Session::new([3u8; 32], rm);
             session.transport = Some(transport);
-            run_responder_exchange(&mut session, &HashMap::new())
+            run_responder_exchange(&mut session, &|_: &str, _: &PeerId| true)
                 .await
                 .unwrap();
             (session.state.clone(), session.active_set.clone())
@@ -649,7 +646,7 @@ mod tests {
         let transport = connect(addr).await.unwrap();
         let mut session = Session::new([4u8; 32], local_manifest);
         session.transport = Some(transport);
-        run_initiator_exchange(&mut session, &HashMap::new())
+        run_initiator_exchange(&mut session, &|_: &str, _: &PeerId| true)
             .await
             .unwrap();
 
@@ -700,7 +697,7 @@ mod tests {
             let (transport, _) = listener.accept().await.unwrap();
             let mut session = Session::new([5u8; 32], rm);
             session.transport = Some(transport);
-            run_responder_exchange(&mut session, &HashMap::new())
+            run_responder_exchange(&mut session, &|_: &str, _: &PeerId| true)
                 .await
                 .unwrap();
             session.state.clone()
@@ -709,7 +706,7 @@ mod tests {
         let transport = connect(addr).await.unwrap();
         let mut session = Session::new([6u8; 32], local_manifest);
         session.transport = Some(transport);
-        run_initiator_exchange(&mut session, &HashMap::new())
+        run_initiator_exchange(&mut session, &|_: &str, _: &PeerId| true)
             .await
             .unwrap();
 

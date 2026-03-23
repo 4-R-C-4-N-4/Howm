@@ -313,6 +313,19 @@ impl AccessDb {
         Ok(result)
     }
 
+    /// List all peer IDs that are members of a specific group.
+    pub fn list_group_member_ids(&self, group_id: &Uuid) -> rusqlite::Result<Vec<Vec<u8>>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT peer_id FROM peer_group_memberships WHERE group_id = ?1 ORDER BY assigned_at",
+        )?;
+        let members: Vec<Vec<u8>> = stmt
+            .query_map(params![group_id.to_string()], |row| row.get(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(members)
+    }
+
     /// Assign a peer to a group. No-op if already assigned.
     pub fn assign_peer_to_group(
         &self,

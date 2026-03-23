@@ -16,7 +16,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result};
 use tokio::sync::{mpsc, Mutex, RwLock};
 
-use p2pcd_types::{config::PeerConfig, CloseReason, DiscoveryManifest, PeerId, TrustPolicy};
+use howm_access::AccessDb;
+use p2pcd_types::{config::PeerConfig, CloseReason, DiscoveryManifest, PeerId};
 
 use super::cap_notify::CapabilityNotifier;
 use crate::wireguard::{WgPeerEvent, WgPeerMonitor};
@@ -70,9 +71,10 @@ pub struct SessionSummary {
 pub struct ProtocolEngine {
     config: RwLock<PeerConfig>,
     local_manifest: RwLock<DiscoveryManifest>,
-    trust_policies: RwLock<HashMap<String, TrustPolicy>>,
+    access_db: Arc<AccessDb>,
     local_peer_id: PeerId,
     /// sequence_num — incremented on each rebroadcast.
+    #[allow(dead_code)]
     sequence_num: Mutex<u64>,
 
     /// All sessions indexed by remote peer_id.
@@ -105,17 +107,17 @@ impl ProtocolEngine {
         local_peer_id: PeerId,
         notifier: Arc<CapabilityNotifier>,
         data_dir: std::path::PathBuf,
+        access_db: Arc<AccessDb>,
     ) -> Self {
         let seq = 1u64;
         let local_manifest = config.to_manifest(local_peer_id, seq);
-        let trust_policies = config.trust_policies();
         // Placeholder channel — replaced by run() before any sessions start.
         let (hb_event_tx, _) = mpsc::channel(1);
 
         Self {
             config: RwLock::new(config),
             local_manifest: RwLock::new(local_manifest),
-            trust_policies: RwLock::new(trust_policies),
+            access_db,
             local_peer_id,
             sequence_num: Mutex::new(seq),
             sessions: Arc::new(RwLock::new(HashMap::new())),
@@ -373,11 +375,14 @@ impl ProtocolEngine {
             .with_context(|| format!("connect to {}", short(peer_id)))?;
 
         let manifest = self.local_manifest.read().await.clone();
-        let policies = self.trust_policies.read().await.clone();
+        let access_db = Arc::clone(&self.access_db);
+        let trust_gate = move |cap_name: &str, peer_id: &PeerId| -> bool {
+            access_db.resolve_permission(peer_id, cap_name).is_allowed()
+        };
 
         let mut s = Session::new(peer_id, manifest);
         s.transport = Some(transport);
-        session::run_initiator_exchange(&mut s, &policies).await?;
+        session::run_initiator_exchange(&mut s, &trust_gate).await?;
 
         // §4.1 replay detection: reject stale sequence_num
         if let Some(remote) = &s.remote_manifest {
@@ -445,11 +450,14 @@ impl ProtocolEngine {
         }
 
         let manifest = self.local_manifest.read().await.clone();
-        let policies = self.trust_policies.read().await.clone();
+        let access_db = Arc::clone(&self.access_db);
+        let trust_gate = move |cap_name: &str, peer_id: &PeerId| -> bool {
+            access_db.resolve_permission(peer_id, cap_name).is_allowed()
+        };
 
         let mut s = Session::new(peer_id, manifest);
         s.transport = Some(transport);
-        session::run_responder_exchange(&mut s, &policies).await?;
+        session::run_responder_exchange(&mut s, &trust_gate).await?;
 
         // §4.1 replay detection: reject stale sequence_num
         if let Some(remote) = &s.remote_manifest {
@@ -728,52 +736,70 @@ impl ProtocolEngine {
         self.peer_cache.lock().await.remove(peer_id);
     }
 
-    // ── Phase 5.1: Friends list management ───────────────────────────────────
+    // ── Friends management (AccessDb-backed) ───────────────────────────────────
 
-    /// Add a peer (by base64 WG pubkey) to the friends list and trigger rebroadcast.
+    /// Add a peer (by base64 WG pubkey) to the howm.friends group and trigger rebroadcast.
     pub async fn add_friend(&self, pubkey_b64: &str) -> Result<()> {
         use base64::{engine::general_purpose::STANDARD, Engine as _};
 
-        // Validate it decodes to a 32-byte key
         let bytes = STANDARD
             .decode(pubkey_b64)
             .map_err(|_| anyhow::anyhow!("invalid base64 pubkey"))?;
         anyhow::ensure!(bytes.len() == 32, "pubkey must be 32 bytes");
 
-        {
-            let mut cfg = self.config.write().await;
-            if !cfg.friends.list.contains(&pubkey_b64.to_string()) {
-                cfg.friends.list.push(pubkey_b64.to_string());
-            }
-        }
-        self.refresh_trust_and_manifest().await;
+        self.access_db
+            .assign_peer_to_group(&bytes, &howm_access::GROUP_FRIENDS)
+            .map_err(|e| anyhow::anyhow!("assign to friends group: {}", e))?;
+
+        // Invalidate cache so next exchange uses updated permissions
+        let mut peer_id = [0u8; 32];
+        peer_id.copy_from_slice(&bytes);
+        self.invalidate_cache(&peer_id).await;
         self.rebroadcast().await;
         Ok(())
     }
 
-    /// Remove a peer from the friends list and trigger rebroadcast.
+    /// Remove a peer from the howm.friends group and trigger rebroadcast.
     pub async fn remove_friend(&self, pubkey_b64: &str) -> Result<()> {
-        {
-            let mut cfg = self.config.write().await;
-            cfg.friends.list.retain(|k| k != pubkey_b64);
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
+
+        let bytes = STANDARD
+            .decode(pubkey_b64)
+            .map_err(|_| anyhow::anyhow!("invalid base64 pubkey"))?;
+
+        self.access_db
+            .remove_peer_from_group(&bytes, &howm_access::GROUP_FRIENDS)
+            .map_err(|e| anyhow::anyhow!("remove from friends group: {}", e))?;
+
+        if bytes.len() == 32 {
+            let mut peer_id = [0u8; 32];
+            peer_id.copy_from_slice(&bytes);
+            self.invalidate_cache(&peer_id).await;
         }
-        self.refresh_trust_and_manifest().await;
         self.rebroadcast().await;
         Ok(())
     }
 
-    /// Return the current friends list (base64 WG pubkeys).
+    /// Return the current friends list as base64 WG pubkeys (from AccessDb).
     pub async fn list_friends(&self) -> Vec<String> {
-        self.config.read().await.friends.list.clone()
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
+        match self
+            .access_db
+            .list_group_member_ids(&howm_access::GROUP_FRIENDS)
+        {
+            Ok(members) => members.iter().map(|m| STANDARD.encode(m)).collect(),
+            Err(_) => vec![],
+        }
     }
 
     // ── Phase 6.1: Rebroadcast on capability/trust change ────────────────────
 
-    /// Rebuild trust policies and increment sequence_num + recompute manifest.
+    /// Increment sequence_num and recompute manifest.
+    /// Trust policies are now resolved from AccessDb at intersection time —
+    /// no need to rebuild them here.
+    #[allow(dead_code)]
     async fn refresh_trust_and_manifest(&self) {
         let cfg = self.config.read().await.clone();
-        let new_policies = cfg.trust_policies();
-        *self.trust_policies.write().await = new_policies;
 
         let mut seq = self.sequence_num.lock().await;
         *seq += 1;
@@ -796,7 +822,6 @@ impl ProtocolEngine {
         tracing::info!("engine: rebroadcast to {} active peers", active_peers.len());
 
         let manifest = self.local_manifest.read().await.clone();
-        let policies = self.trust_policies.read().await.clone();
 
         for peer_id in active_peers {
             // §8.4 Active-set continuity: keep old active set alive during re-exchange.
@@ -814,7 +839,12 @@ impl ProtocolEngine {
             new_s.transport = transport;
             new_s.state = SessionState::PeerVisible;
 
-            if let Err(e) = session::run_initiator_exchange(&mut new_s, &policies).await {
+            let access_db = Arc::clone(&self.access_db);
+            let trust_gate = move |cap_name: &str, peer_id: &PeerId| -> bool {
+                access_db.resolve_permission(peer_id, cap_name).is_allowed()
+            };
+
+            if let Err(e) = session::run_initiator_exchange(&mut new_s, &trust_gate).await {
                 tracing::warn!("engine: rebroadcast to {} failed: {:?}", short(peer_id), e);
                 // On failure, restore the old session's transport and keep active set
                 self.sessions.write().await.entry(peer_id).and_modify(|s| {
@@ -1017,7 +1047,7 @@ mod tests {
             let (transport, _) = listener.accept().await.unwrap();
             let mut s = Session::new([1u8; 32], b_manifest);
             s.transport = Some(transport);
-            run_responder_exchange(&mut s, &HashMap::new())
+            run_responder_exchange(&mut s, &|_: &str, _: &PeerId| true)
                 .await
                 .unwrap();
             (s.state.clone(), s.active_set.clone())
@@ -1025,7 +1055,7 @@ mod tests {
 
         let mut a = Session::new([2u8; 32], make_manifest(1));
         a.transport = Some(connect(addr).await.unwrap());
-        run_initiator_exchange(&mut a, &HashMap::new())
+        run_initiator_exchange(&mut a, &|_: &str, _: &PeerId| true)
             .await
             .unwrap();
 
@@ -1044,6 +1074,68 @@ mod tests {
     // Alice dials Bob; both should reach Active and fire HTTP callbacks.
 
     /// Build a minimal PeerConfig for tests: one `howm.social.feed.1` capability.
+    fn test_access_db() -> Arc<AccessDb> {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("access.db");
+        let db = AccessDb::open(&db_path).unwrap();
+        // For engine tests: create a custom group that allows all capabilities
+        // so the trust gate doesn't block anything (tests focus on protocol, not access).
+        let all_caps = vec![
+            howm_access::CapabilityRule {
+                capability_name: "howm.social.feed.1".into(),
+                allow: true,
+                rate_limit: None,
+                ttl: None,
+            },
+            howm_access::CapabilityRule {
+                capability_name: "howm.social.messaging.1".into(),
+                allow: true,
+                rate_limit: None,
+                ttl: None,
+            },
+            howm_access::CapabilityRule {
+                capability_name: "howm.social.files.1".into(),
+                allow: true,
+                rate_limit: None,
+                ttl: None,
+            },
+            howm_access::CapabilityRule {
+                capability_name: "howm.world.room.1".into(),
+                allow: true,
+                rate_limit: None,
+                ttl: None,
+            },
+            howm_access::CapabilityRule {
+                capability_name: "core.network.peerexchange.1".into(),
+                allow: true,
+                rate_limit: None,
+                ttl: None,
+            },
+            howm_access::CapabilityRule {
+                capability_name: "core.network.relay.1".into(),
+                allow: true,
+                rate_limit: None,
+                ttl: None,
+            },
+        ];
+        // Add these rules to howm.default so ALL peers (even unassigned) get full access in tests
+        // We do this via a custom "test-allow-all" group
+        let group = db.create_group("test-allow-all", None, &all_caps).unwrap();
+        // Assign common test peer IDs to this group.
+        // Tests use uniform-byte IDs like [0xAA; 32], [0xBB; 32], etc.
+        for byte in [
+            0x00u8, 0x01, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC,
+            0xDD, 0xEE, 0xF1, 0xF2, 0xFF, 0xD1, 0xD2, 0xE1, 0xE2,
+        ] {
+            let pid = vec![byte; 32];
+            let _ = db.assign_peer_to_group(&pid, &group.group_id);
+        }
+        // Leak the TempDir so it persists for the test duration
+        std::mem::forget(dir);
+        Arc::new(db)
+    }
+
+    #[allow(deprecated)]
     fn make_peer_config(listen_port: u16) -> p2pcd_types::config::PeerConfig {
         use p2pcd_types::config::*;
         PeerConfig {
@@ -1174,6 +1266,7 @@ mod tests {
             alice_id,
             Arc::clone(&alice_notifier),
             std::env::temp_dir(),
+            test_access_db(),
         ));
         // Tell Alice where Bob's P2P-CD port is
         alice_engine.set_peer_addr(bob_id, bob_p2pcd_addr).await;
@@ -1195,6 +1288,7 @@ mod tests {
             bob_id,
             Arc::clone(&bob_notifier),
             std::env::temp_dir(),
+            test_access_db(),
         ));
         bob_engine.set_peer_addr(alice_id, alice_p2pcd_addr).await;
 
@@ -1309,6 +1403,7 @@ mod tests {
             alice_id,
             Arc::clone(&alice_notifier),
             std::env::temp_dir(),
+            test_access_db(),
         ));
         alice_engine.set_peer_addr(bob_id, bob_p2pcd_addr).await;
 
@@ -1323,6 +1418,7 @@ mod tests {
             bob_id,
             Arc::clone(&bob_notifier),
             std::env::temp_dir(),
+            test_access_db(),
         ));
         bob_engine.set_peer_addr(alice_id, alice_p2pcd_addr).await;
 
@@ -1463,6 +1559,7 @@ mod tests {
             alice_id,
             Arc::clone(&alice_notifier),
             std::env::temp_dir(),
+            test_access_db(),
         ));
         alice_engine.set_peer_addr(bob_id, bob_p2pcd_addr).await;
 
@@ -1477,6 +1574,7 @@ mod tests {
             bob_id,
             Arc::clone(&bob_notifier),
             std::env::temp_dir(),
+            test_access_db(),
         ));
         bob_engine.set_peer_addr(alice_id, alice_p2pcd_addr).await;
 
@@ -1564,6 +1662,7 @@ mod tests {
             alice_id,
             Arc::clone(&alice_notifier),
             std::env::temp_dir(),
+            test_access_db(),
         ));
         alice_engine.set_peer_addr(bob_id, bob_p2pcd_addr).await;
 
@@ -1577,6 +1676,7 @@ mod tests {
             bob_id,
             Arc::clone(&bob_notifier),
             std::env::temp_dir(),
+            test_access_db(),
         ));
         bob_engine
             .set_peer_addr(alice_id, alice_listener.local_addr)
@@ -1664,6 +1764,7 @@ mod tests {
             alice_id,
             Arc::clone(&alice_notifier),
             std::env::temp_dir(),
+            test_access_db(),
         ));
         alice_engine.set_peer_addr(bob_id, bob_p2pcd_addr).await;
 
@@ -1677,6 +1778,7 @@ mod tests {
             bob_id,
             Arc::clone(&bob_notifier),
             std::env::temp_dir(),
+            test_access_db(),
         ));
         bob_engine
             .set_peer_addr(alice_id, alice_listener.local_addr)
@@ -1782,6 +1884,7 @@ mod tests {
             alice_id,
             Arc::clone(&notifier),
             std::path::PathBuf::from("/tmp/howm-test"),
+            test_access_db(),
         ));
 
         // Manually insert a fresh "None" cache entry for Bob

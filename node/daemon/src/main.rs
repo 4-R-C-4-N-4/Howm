@@ -175,7 +175,7 @@ async fn main() -> anyhow::Result<()> {
         capabilities,
         config.clone(),
         api_token,
-        access_db,
+        Arc::clone(&access_db),
     );
 
     // Build capability notifier and register running capabilities
@@ -192,7 +192,13 @@ async fn main() -> anyhow::Result<()> {
 
     // Construct P2P-CD protocol engine (only when WG is active)
     let p2pcd_engine = if wg_state.tunnel_handle.is_some() {
-        match build_p2pcd_engine(&config, &identity, &wg_state, Arc::clone(&cap_notifier)) {
+        match build_p2pcd_engine(
+            &config,
+            &identity,
+            &wg_state,
+            Arc::clone(&cap_notifier),
+            Arc::clone(&access_db),
+        ) {
             Ok(engine) => {
                 info!("P2P-CD engine initialised");
                 Some(engine)
@@ -345,6 +351,7 @@ fn build_p2pcd_engine(
     identity: &identity::NodeIdentity,
     wg_state: &wireguard::WgState,
     notifier: Arc<p2pcd::cap_notify::CapabilityNotifier>,
+    access_db: Arc<howm_access::AccessDb>,
 ) -> anyhow::Result<Arc<p2pcd::engine::ProtocolEngine>> {
     use base64::{engine::general_purpose::STANDARD, Engine as _};
 
@@ -387,6 +394,7 @@ fn build_p2pcd_engine(
         peer_id,
         notifier,
         config.data_dir.clone(),
+        access_db,
     )))
 }
 
