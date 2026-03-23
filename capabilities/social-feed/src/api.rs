@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Multipart, Path, Query, State},
     http::{HeaderMap, StatusCode},
     Json,
 };
@@ -10,10 +10,13 @@ use p2pcd::capability_sdk::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 use tracing::info;
 
+use crate::db::FeedDb;
 use crate::posts;
+use crate::posts::MediaLimits;
 
 /// P2P-CD social capability name as declared in p2pcd-peer.toml.
 pub const SOCIAL_CAP: &str = "howm.social.feed.1";
@@ -26,16 +29,26 @@ pub const MSG_TYPE_POST_BROADCAST: u64 = 100;
 #[derive(Clone)]
 pub struct FeedState {
     pub data_dir: PathBuf,
+    pub db: FeedDb,
     /// Capability runtime: bridge client + peer tracker.
     pub runtime: CapabilityRuntime,
+    /// Configurable media upload limits.
+    pub limits: MediaLimits,
 }
 
 impl FeedState {
-    pub fn new(data_dir: PathBuf, daemon_port: u16) -> Self {
+    pub fn new(data_dir: PathBuf, db: FeedDb, daemon_port: u16) -> Self {
         Self {
             data_dir,
+            db,
             runtime: CapabilityRuntime::new(SOCIAL_CAP, daemon_port),
+            limits: MediaLimits::default(),
         }
+    }
+
+    pub fn with_limits(mut self, limits: MediaLimits) -> Self {
+        self.limits = limits;
+        self
     }
 
     /// Bridge client shortcut.
@@ -65,13 +78,11 @@ fn default_limit() -> usize {
     50
 }
 
-/// Apply pagination to a sorted vec of posts. Returns the page + total count.
-fn paginate(posts: Vec<posts::Post>, q: &FeedQuery) -> Value {
-    let total = posts.len();
-    let page: Vec<_> = posts.into_iter().skip(q.offset).take(q.limit).collect();
-    let has_more = q.offset + page.len() < total;
+/// Build a paginated JSON response from a query result.
+fn paginated_response(posts: Vec<posts::Post>, total: usize, q: &FeedQuery) -> Value {
+    let has_more = q.offset + posts.len() < total;
     json!({
-        "posts": page,
+        "posts": posts,
         "total": total,
         "offset": q.offset,
         "limit": q.limit,
@@ -83,8 +94,8 @@ fn paginate(posts: Vec<posts::Post>, q: &FeedQuery) -> Value {
 
 /// GET /feed — all posts (local + peer), paginated, newest first.
 pub async fn get_feed(State(state): State<FeedState>, Query(q): Query<FeedQuery>) -> Json<Value> {
-    let posts = posts::load_all(&state.data_dir).unwrap_or_default();
-    Json(paginate(posts, &q))
+    let (posts, total) = state.db.load_all(q.limit, q.offset).unwrap_or_default();
+    Json(paginated_response(posts, total, &q))
 }
 
 /// GET /feed/mine — only your own posts, paginated, newest first.
@@ -92,8 +103,8 @@ pub async fn get_my_feed(
     State(state): State<FeedState>,
     Query(q): Query<FeedQuery>,
 ) -> Json<Value> {
-    let posts = posts::load_mine(&state.data_dir).unwrap_or_default();
-    Json(paginate(posts, &q))
+    let (posts, total) = state.db.load_mine(q.limit, q.offset).unwrap_or_default();
+    Json(paginated_response(posts, total, &q))
 }
 
 /// GET /feed/peer/:peer_id — posts from a specific peer, paginated.
@@ -103,10 +114,14 @@ pub async fn get_peer_feed(
     Path(peer_id): Path<String>,
     Query(q): Query<FeedQuery>,
 ) -> Json<Value> {
-    let posts = posts::load_peer_feed(&state.data_dir, &peer_id).unwrap_or_default();
-    Json(paginate(posts, &q))
+    let (posts, total) = state
+        .db
+        .load_peer_feed(&peer_id, q.limit, q.offset)
+        .unwrap_or_default();
+    Json(paginated_response(posts, total, &q))
 }
 
+/// JSON-only create request (no file attachments).
 #[derive(Deserialize)]
 pub struct CreatePostRequest {
     pub content: String,
@@ -114,13 +129,147 @@ pub struct CreatePostRequest {
     pub author_name: Option<String>,
 }
 
+/// JSON create (text-only, no media).
 pub async fn create_post(
     State(state): State<FeedState>,
     headers: HeaderMap,
     Json(req): Json<CreatePostRequest>,
 ) -> Result<(StatusCode, Json<Value>), (StatusCode, Json<Value>)> {
-    let author_id = req
-        .author_id
+    let (author_id, author_name) = resolve_author(&headers, req.author_id, req.author_name);
+    create_and_broadcast(state, req.content, author_id, author_name, vec![]).await
+}
+
+/// Multipart create (with optional file attachments).
+///
+/// Expected multipart fields:
+///   - `content` (text): post content
+///   - `author_id` (text, optional): author ID
+///   - `author_name` (text, optional): author display name
+///   - `file` (binary, repeated): media attachments
+///
+/// Each file field should have a Content-Type header (MIME) set by the client.
+pub async fn create_post_multipart(
+    State(state): State<FeedState>,
+    headers: HeaderMap,
+    mut multipart: Multipart,
+) -> Result<(StatusCode, Json<Value>), (StatusCode, Json<Value>)> {
+    let mut content = String::new();
+    let mut author_id: Option<String> = None;
+    let mut author_name: Option<String> = None;
+    let mut file_parts: Vec<(String, Vec<u8>)> = Vec::new(); // (mime_type, data)
+
+    // Parse multipart fields
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| bad_request(&format!("multipart error: {e}")))?
+    {
+        let name = field.name().unwrap_or("").to_string();
+        match name.as_str() {
+            "content" => {
+                content = field
+                    .text()
+                    .await
+                    .map_err(|e| bad_request(&format!("content field error: {e}")))?;
+            }
+            "author_id" => {
+                author_id = Some(
+                    field
+                        .text()
+                        .await
+                        .map_err(|e| bad_request(&format!("author_id error: {e}")))?,
+                );
+            }
+            "author_name" => {
+                author_name = Some(
+                    field
+                        .text()
+                        .await
+                        .map_err(|e| bad_request(&format!("author_name error: {e}")))?,
+                );
+            }
+            "file" => {
+                let mime = field
+                    .content_type()
+                    .unwrap_or("application/octet-stream")
+                    .to_string();
+                let data = field
+                    .bytes()
+                    .await
+                    .map_err(|e| bad_request(&format!("file read error: {e}")))?
+                    .to_vec();
+                file_parts.push((mime, data));
+            }
+            _ => {} // ignore unknown fields
+        }
+    }
+
+    let (author_id, author_name) = resolve_author(&headers, author_id, author_name);
+
+    // Build attachment metadata + register blobs
+    let mut attachments = Vec::new();
+    for (mime, data) in &file_parts {
+        // SHA-256 hash the content
+        let hash: [u8; 32] = Sha256::digest(data).into();
+        let hex_hash = hex::encode(hash);
+
+        // Build attachment for validation
+        attachments.push(posts::Attachment {
+            blob_id: hex_hash,
+            mime_type: mime.clone(),
+            size: data.len() as u64,
+        });
+    }
+
+    // Validate against configured limits
+    let errors = posts::validate_attachments_with_limits(&attachments, &state.limits);
+    if !errors.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "attachment validation failed", "details": errors })),
+        ));
+    }
+
+    // Register blobs with the daemon
+    for (i, (_, data)) in file_parts.iter().enumerate() {
+        let hash: [u8; 32] = Sha256::digest(data).into();
+        state
+            .bridge()
+            .blob_store(&hash, data)
+            .await
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({
+                        "error": format!("blob registration failed for attachment {}: {}", i, e)
+                    })),
+                )
+            })?;
+    }
+
+    create_and_broadcast(state, content, author_id, author_name, attachments).await
+}
+
+/// GET /post/limits — return configured upload limits for the UI.
+pub async fn get_limits(State(state): State<FeedState>) -> Json<Value> {
+    Json(json!({ "limits": state.limits }))
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+fn bad_request(msg: &str) -> (StatusCode, Json<Value>) {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(json!({ "error": msg })),
+    )
+}
+
+fn resolve_author(
+    headers: &HeaderMap,
+    author_id: Option<String>,
+    author_name: Option<String>,
+) -> (String, String) {
+    let id = author_id
         .filter(|s| !s.is_empty())
         .or_else(|| {
             headers
@@ -130,8 +279,7 @@ pub async fn create_post(
         })
         .unwrap_or_else(|| "anonymous".to_string());
 
-    let author_name = req
-        .author_name
+    let name = author_name
         .filter(|s| !s.is_empty())
         .or_else(|| {
             headers
@@ -141,47 +289,63 @@ pub async fn create_post(
         })
         .unwrap_or_else(|| "Anonymous".to_string());
 
-    match posts::create(&state.data_dir, req.content, author_id, author_name) {
-        Ok(post) => {
-            info!("Created post: {}", post.id);
+    (id, name)
+}
 
-            // Broadcast the new post to all social peers via the bridge
-            let runtime = state.runtime.clone();
-            let post_id = post.id.clone();
-            let post_json = serde_json::to_vec(&post).unwrap_or_default();
-            tokio::spawn(async move {
-                match runtime.broadcast(MSG_TYPE_POST_BROADCAST, &post_json).await {
-                    Ok(n) => {
-                        if n > 0 {
-                            info!("Broadcast post {} to {} peers", post_id, n);
-                        }
-                    }
-                    Err(e) => tracing::warn!("Failed to broadcast post: {e}"),
-                }
-            });
-
-            Ok((StatusCode::CREATED, Json(json!({ "post": post }))))
-        }
-        Err(e) => Err((
+async fn create_and_broadcast(
+    state: FeedState,
+    content: String,
+    author_id: String,
+    author_name: String,
+    attachments: Vec<posts::Attachment>,
+) -> Result<(StatusCode, Json<Value>), (StatusCode, Json<Value>)> {
+    let post = posts::new_post(content, author_id, author_name, attachments).map_err(|e| {
+        (
             StatusCode::BAD_REQUEST,
             Json(json!({ "error": e.to_string() })),
-        )),
-    }
+        )
+    })?;
+
+    state.db.insert_post(&post).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e.to_string() })),
+        )
+    })?;
+
+    info!("Created post: {} ({} attachments)", post.id, post.attachments.len());
+
+    // Broadcast the new post to all social peers via the bridge
+    let runtime = state.runtime.clone();
+    let post_id = post.id.clone();
+    let post_json = serde_json::to_vec(&post).unwrap_or_default();
+    tokio::spawn(async move {
+        match runtime.broadcast(MSG_TYPE_POST_BROADCAST, &post_json).await {
+            Ok(n) => {
+                if n > 0 {
+                    info!("Broadcast post {} to {} peers", post_id, n);
+                }
+            }
+            Err(e) => tracing::warn!("Failed to broadcast post: {e}"),
+        }
+    });
+
+    Ok((StatusCode::CREATED, Json(json!({ "post": post }))))
 }
 
 /// DELETE /post/:id — delete a post by ID.
-/// Checks local posts first, then peer posts.
+/// Tries local first, then peer posts.
 pub async fn delete_post(
     State(state): State<FeedState>,
     Path(post_id): Path<String>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     // Try local first
-    match posts::delete(&state.data_dir, &post_id) {
+    match state.db.delete_post(&post_id, Some("local")) {
         Ok(true) => {
             info!("Deleted local post: {}", post_id);
             return Ok(Json(json!({ "deleted": true, "id": post_id })));
         }
-        Ok(false) => {} // not in local, try peer
+        Ok(false) => {} // not local, try peer
         Err(e) => {
             return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -191,7 +355,7 @@ pub async fn delete_post(
     }
 
     // Try peer posts
-    match posts::delete_peer_post(&state.data_dir, &post_id) {
+    match state.db.delete_post(&post_id, Some("peer:")) {
         Ok(true) => {
             info!("Deleted peer post: {}", post_id);
             Ok(Json(json!({ "deleted": true, "id": post_id })))
@@ -276,7 +440,15 @@ pub async fn p2pcd_inbound(
                 )
             })?;
 
-            match posts::ingest_peer_post(&state.data_dir, post, &body.peer_id) {
+            // Prepare for ingestion (set origin, validate)
+            let post = posts::prepare_peer_post(post, &body.peer_id).map_err(|e| {
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": e.to_string() })),
+                )
+            })?;
+
+            match state.db.insert_post(&post) {
                 Ok(true) => {
                     info!(
                         "Ingested post from peer {}",
@@ -289,7 +461,7 @@ pub async fn p2pcd_inbound(
                     Ok(StatusCode::OK)
                 }
                 Err(e) => Err((
-                    StatusCode::BAD_REQUEST,
+                    StatusCode::INTERNAL_SERVER_ERROR,
                     Json(json!({ "error": e.to_string() })),
                 )),
             }

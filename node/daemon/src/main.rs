@@ -372,5 +372,6 @@ fn build_p2pcd_engine(
         peer_config,
         peer_id,
         notifier,
+        config.data_dir.clone(),
     )))
 }

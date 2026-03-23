@@ -104,6 +104,7 @@ impl ProtocolEngine {
         config: PeerConfig,
         local_peer_id: PeerId,
         notifier: Arc<CapabilityNotifier>,
+        data_dir: std::path::PathBuf,
     ) -> Self {
         let seq = 1u64;
         let local_manifest = config.to_manifest(local_peer_id, seq);
@@ -124,7 +125,7 @@ impl ProtocolEngine {
             hb_event_tx,
             peer_addr_overrides: Arc::new(RwLock::new(HashMap::new())),
             last_seen_sequence: Arc::new(Mutex::new(HashMap::new())),
-            cap_router: Arc::new(CapabilityRouter::with_core_handlers()),
+            cap_router: Arc::new(CapabilityRouter::with_core_handlers_at(data_dir)),
             peer_senders: Arc::new(Mutex::new(HashMap::new())),
             mux_handles: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -1770,6 +1771,7 @@ mod tests {
             make_peer_config(0),
             alice_id,
             Arc::clone(&notifier),
+            std::path::PathBuf::from("/tmp/howm-test"),
         ));
 
         // Manually insert a fresh "None" cache entry for Bob

@@ -136,6 +136,11 @@ impl BlobHandler {
         }
     }
 
+    /// Access the underlying blob store (for bridge endpoints).
+    pub fn store(&self) -> &Arc<BlobStore> {
+        &self.store
+    }
+
     pub async fn set_sender(&self, tx: tokio::sync::mpsc::Sender<ProtocolMessage>) {
         *self.send_tx.write().await = Some(tx);
     }
