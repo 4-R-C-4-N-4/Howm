@@ -1,7 +1,7 @@
-import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { getPeers, removePeer, generateInvite, redeemInvite, updatePeerTrust } from '../api/nodes';
+import { getPeers, removePeer, updatePeerTrust } from '../api/nodes';
 import type { Peer, TrustLevel } from '../api/nodes';
+import { Link } from 'react-router-dom';
 
 function formatLastSeen(ts: number, now: number) {
   if (!ts) return 'never';
@@ -10,16 +10,6 @@ function formatLastSeen(ts: number, now: number) {
   if (delta < 3600) return `${Math.floor(delta / 60)}m ago`;
   if (delta < 86400) return `${Math.floor(delta / 3600)}h ago`;
   return `${Math.floor(delta / 86400)}d ago`;
-}
-
-function extractErrorMessage(err: unknown): string {
-  if (err && typeof err === 'object' && 'response' in err) {
-    const res = (err as { response?: { data?: { error?: string; message?: string } } }).response;
-    if (res?.data?.error) return res.data.error;
-    if (res?.data?.message) return res.data.message;
-  }
-  if (err instanceof Error) return err.message;
-  return String(err);
 }
 
 const trustBadge: Record<TrustLevel, { label: string; color: string; bg: string }> = {
@@ -37,27 +27,9 @@ export function PeerList() {
   });
   const now = dataUpdatedAt;
 
-  const [showRedeemForm, setShowRedeemForm] = useState(false);
-  const [inviteCode, setInviteCode] = useState('');
-  const [generatedInvite, setGeneratedInvite] = useState<string | null>(null);
-
   const removeMutation = useMutation({
     mutationFn: removePeer,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['peers'] }),
-  });
-
-  const inviteMutation = useMutation({
-    mutationFn: () => generateInvite(),
-    onSuccess: (data) => setGeneratedInvite(data.invite_code),
-  });
-
-  const redeemMutation = useMutation({
-    mutationFn: () => redeemInvite(inviteCode),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['peers'] });
-      setShowRedeemForm(false);
-      setInviteCode('');
-    },
   });
 
   const trustMutation = useMutation({
@@ -70,59 +42,16 @@ export function PeerList() {
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
         <h3 style={{ margin: 0 }}>Peers ({peers.length})</h3>
-        <div style={{ display: 'flex', gap: '8px' }}>
-          <button onClick={() => inviteMutation.mutate()} style={btnStyle}>
-            {inviteMutation.isPending ? 'Generating…' : 'Generate Invite'}
-          </button>
-          <button onClick={() => setShowRedeemForm(!showRedeemForm)} style={btnStyle}>
-            Redeem Invite
-          </button>
-        </div>
       </div>
-
-      {/* Task 2: show real error messages */}
-      {inviteMutation.isError && (
-        <div style={errorStyle}>
-          {extractErrorMessage(inviteMutation.error)}
-        </div>
-      )}
-
-      {generatedInvite && (
-        <div style={inviteBoxStyle}>
-          <strong style={{ fontSize: '0.875rem' }}>Invite Code:</strong>
-          <div style={{ wordBreak: 'break-all', marginTop: '6px', fontFamily: 'var(--howm-font-mono, monospace)', fontSize: '0.8em', color: 'var(--howm-text-primary, #e1e4eb)' }}>
-            {generatedInvite}
-          </div>
-          <div style={{ display: 'flex', gap: '8px', marginTop: '10px' }}>
-            <button onClick={() => navigator.clipboard?.writeText(generatedInvite)} style={btnStyle}>Copy</button>
-            <button onClick={() => setGeneratedInvite(null)} style={btnStyle}>Dismiss</button>
-          </div>
-        </div>
-      )}
-
-      {showRedeemForm && (
-        <div style={formStyle}>
-          <input
-            placeholder="howm://invite/... or howm://open/..."
-            value={inviteCode}
-            onChange={e => setInviteCode(e.target.value)}
-            style={{ ...inputStyle, flex: 1 }}
-          />
-          <button onClick={() => redeemMutation.mutate()} disabled={!inviteCode.trim()} style={accentBtnStyle}>
-            {redeemMutation.isPending ? 'Redeeming…' : 'Redeem'}
-          </button>
-          {redeemMutation.isError && (
-            <span style={{ color: 'var(--howm-error, #f87171)', fontSize: '0.875em' }}>
-              {extractErrorMessage(redeemMutation.error)}
-            </span>
-          )}
-        </div>
-      )}
 
       {isLoading ? (
         <p style={mutedStyle}>Loading peers…</p>
       ) : peers.length === 0 ? (
-        <p style={mutedStyle}>No peers yet. Generate an invite or redeem one from a friend.</p>
+        <p style={mutedStyle}>
+          No peers yet. Go to{' '}
+          <Link to="/connection" style={linkStyle}>Connection</Link>
+          {' '}to create or redeem an invite.
+        </p>
       ) : (
         <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
           {peers.map((peer: Peer) => {
@@ -179,49 +108,8 @@ const trustBtnStyle = (variant: 'success' | 'warning' | 'error'): React.CSSPrope
   return { background: colors.bg, color: colors.color, border: `1px solid ${colors.border}`, borderRadius: '4px', padding: '3px 8px', cursor: 'pointer', fontSize: '0.8em' };
 };
 
-const btnStyle: React.CSSProperties = {
-  padding: '6px 14px',
-  background: 'var(--howm-bg-elevated, #2a2e3d)',
-  border: '1px solid var(--howm-border, #2e3341)',
-  borderRadius: 'var(--howm-radius-sm, 4px)',
-  color: 'var(--howm-text-primary, #e1e4eb)',
-  cursor: 'pointer', fontSize: '0.875em',
-};
-const accentBtnStyle: React.CSSProperties = {
-  padding: '6px 14px',
-  background: 'var(--howm-accent, #6c8cff)',
-  border: 'none',
-  borderRadius: 'var(--howm-radius-sm, 4px)',
-  color: '#fff', cursor: 'pointer', fontSize: '0.875em',
-};
-const formStyle: React.CSSProperties = {
-  display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '12px',
-  padding: '10px 12px', background: 'var(--howm-bg-secondary, #1a1d27)',
-  border: '1px solid var(--howm-border, #2e3341)',
-  borderRadius: 'var(--howm-radius-sm, 4px)', flexWrap: 'wrap',
-};
-const inputStyle: React.CSSProperties = {
-  padding: '6px 10px',
-  background: 'var(--howm-bg-primary, #0f1117)',
-  border: '1px solid var(--howm-border, #2e3341)',
-  borderRadius: 'var(--howm-radius-sm, 4px)',
-  color: 'var(--howm-text-primary, #e1e4eb)',
-  fontSize: '0.875em',
-};
-const inviteBoxStyle: React.CSSProperties = {
-  background: 'var(--howm-accent-dim, rgba(108,140,255,0.1))',
-  border: '1px solid var(--howm-accent, #6c8cff)',
-  borderRadius: 'var(--howm-radius-sm, 4px)',
-  padding: '12px', marginBottom: '12px',
-};
-const errorStyle: React.CSSProperties = {
-  background: 'rgba(248,113,113,0.1)',
-  border: '1px solid var(--howm-error, #f87171)',
-  borderRadius: 'var(--howm-radius-sm, 4px)',
-  padding: '8px 12px', marginBottom: '10px',
-  fontSize: '0.875em', color: 'var(--howm-error, #f87171)',
-};
 const mutedStyle: React.CSSProperties = { color: 'var(--howm-text-muted, #5c6170)', margin: 0 };
+const linkStyle: React.CSSProperties = { color: 'var(--howm-accent, #6c8cff)', textDecoration: 'none' };
 const peerRowStyle: React.CSSProperties = {
   display: 'flex', justifyContent: 'space-between', alignItems: 'center',
   padding: '10px 12px',
