@@ -29,12 +29,13 @@ flat friends list + per-peer overrides at OFFER intersection time. The trust
 gate runs inside `compute_intersection()` — if a peer is blocked for a
 capability, it's excluded from the active set.
 
-BRD REQUIRES: The trust gate concept remains, but the evaluation source
-changes from TOML config + friends list to SQLite group membership. The
-`ClassificationTier` enum needs to be replaced or extended with the new
-three-tier model (default/friends/trusted). Critically, the BRD also
-requires per-peer OFFERs (§5.3 FR-3.3) — today a single manifest is built
-for all peers.
+BRD REQUIRES: The trust gate concept remains and stays in
+`compute_intersection()`. The change is the data source: instead of
+evaluating `TrustPolicy` from TOML config + friends list, the gate calls
+`resolve_permission()` from howm-access backed by SQLite group membership.
+The `ClassificationTier` enum is deprecated but kept for backward compat.
+A single manifest is still built for all peers — filtering happens at
+intersection time, not at OFFER generation time.
 
 ### 0.3 Session / Engine (engine.rs)
 
@@ -43,9 +44,11 @@ for all peers. Trust policies filter at intersection time. Rebroadcast exists
 (`rebroadcast()` method) but is triggered by config changes, not group
 membership changes.
 
-BRD REQUIRES: Per-peer manifests (FR-3.3 — omit capabilities the peer can't
-access). Rebroadcast on group membership change (FR-5.3). Session close on
-deny (FR-5.2).
+BRD REQUIRES: Single manifest stays — no per-peer manifests needed. The
+trust gate in `compute_intersection()` already filters per-peer; we just
+swap its data source from TOML to AccessDb. Rebroadcast on group membership
+change (FR-5.3) triggers re-exchange, which recomputes intersection with
+the new permissions. Session close on deny (FR-5.2).
 
 ### 0.4 Capability Request Routing (proxy.rs)
 
@@ -134,32 +137,38 @@ BRD REQUIRES: Full `/access/*` CRUD API (§5.4).
          membership record (FR-5.1)
        - Hook into `open_invite.rs` and `invite.rs` completion paths
 
-### Phase 3: Per-Peer Offer Filtering
+### Phase 3: Trust Gate Data Source Swap
 
-  3.1  Replace single `local_manifest` with per-peer manifest generation:
-       - New method: `build_manifest_for_peer(peer_id) -> DiscoveryManifest`
-       - Resolve peer's effective permissions
-       - Include only capabilities the peer is allowed to access
+  3.1  Swap trust gate data source in `compute_intersection()`:
+       - The trust gate already evaluates per-peer at intersection time
+       - Replace: `TrustPolicy` evaluation (TOML config + friends list)
+       - With: `resolve_permission(db, peer_id, cap_name)` from howm-access
+       - For each capability in the intersection, call resolve_permission()
+       - Exclude capabilities where result is Deny
        - Always include `core.session.heartbeat.1` (FR-3.4)
-       - Set `classification` field to highest-privilege built-in group UUID
+       - Pass `Arc<AccessDb>` into ProtocolEngine (or into the closure
+         that compute_intersection uses)
 
-  3.2  Modify `ProtocolEngine`:
-       - `start_session()` calls `build_manifest_for_peer()` instead of
-         using the shared `local_manifest`
-       - `handle_inbound()` does the same for responder sessions
+  3.2  Single manifest unchanged:
+       - `local_manifest` stays as-is — one manifest for all peers
+       - `personal_hash` stays singular (hash of what we advertise)
+       - No per-peer hash complexity
+       - The intersection result varies per-peer because the trust gate
+         filters differently based on each peer's group membership
 
-  3.3  Replace `TrustPolicy` usage:
-       - Remove trust gate evaluation from `compute_intersection()`
-       - Trust filtering now happens BEFORE the OFFER is sent (by omitting
-         capabilities) rather than at intersection time
-       - The `TrustPolicy` struct and `ClassificationTier` enum in
-         p2pcd-types become obsolete for the new flow
-       - Keep them temporarily for backward compat, mark deprecated
+  3.3  Deprecate TrustPolicy / ClassificationTier:
+       - Mark `TrustPolicy`, `ClassificationTier`, `ClassificationConfig`
+         as `#[deprecated]` in p2pcd-types
+       - Keep compiled for backward compat — do NOT remove yet
+       - Remove usage from engine.rs trust gate (replaced by AccessDb)
+       - `FriendsConfig` and `[friends]` TOML section: stop reading,
+         keep in schema for one version cycle
 
   3.4  Wire `classification` field in OFFER:
-       - Use highest-privilege built-in group UUID as the `group_ref`
-       - For peers in only custom groups, use string "custom" (per OQ-3
-         current recommendation, though see QUESTION Q-3)
+       - Encode as optional CBOR field (key 4) when present
+       - For built-in group peers: use highest-privilege built-in group UUID
+       - For custom-group-only peers: use the custom group's UUID
+       - Skip field when absent (backward compat with old peers)
 
 ### Phase 4: Enforcement at Capability Handlers
 
@@ -197,9 +206,11 @@ BRD REQUIRES: Full `/access/*` CRUD API (§5.4).
   5.2  Rebroadcast on membership change (FR-5.3):
        - When any PeerGroupMembership is created/deleted, trigger
          rebroadcast for the affected peer
-       - Recompute personal_hash (now per-peer since manifests differ)
+       - personal_hash unchanged (single manifest for all peers)
        - Increment sequence_num
        - Send new OFFER to the affected peer's active session
+       - The intersection result changes because resolve_permission()
+         now returns different results for that peer
        - The active set remains operational during re-exchange (§8.4)
 
   5.3  Default group assignment on invite completion (FR-5.1):
@@ -307,16 +318,17 @@ scope_overrides using most-permissive values). Otherwise Deny.
 ```
 p2pcd-types  (no change)
      |
-  p2pcd      (no change to library, deprecate TrustPolicy usage)
+  p2pcd      (add howm-access dep for trust gate in compute_intersection)
      |
 howm-access  (NEW — rusqlite, uuid, serde)
-   /    \
+  /    \
 daemon   social-feed (and future capabilities)
 ```
 
 howm-access has no dependency on p2pcd or p2pcd-types. It's a pure
 application-layer library. It takes `peer_id: &[u8]` and
-`capability_name: &str` — no protocol types.
+`capability_name: &str` — no protocol types. p2pcd gains a dependency
+on howm-access so that compute_intersection() can call resolve_permission().
 
 ---
 
@@ -329,10 +341,12 @@ system in p2pcd-types/config.rs needs a deprecation path:
    group model. TrustPolicy still compiled but unused at runtime once
    Phase 3 lands.
 
-2. Phase 3: Engine stops using `trust_policies` for offer filtering.
-   Replace with AccessDb-driven per-peer manifest generation.
+2. Phase 3: Engine swaps trust gate data source. `compute_intersection()`
+   calls `resolve_permission()` instead of evaluating `TrustPolicy`.
+   Single manifest stays — no per-peer manifest generation needed.
+   `TrustPolicy` / `ClassificationTier` marked `#[deprecated]`.
 
-3. Cleanup: Remove `TrustPolicy`, `ClassificationTier`,
+3. Cleanup (future): Remove `TrustPolicy`, `ClassificationTier`,
    `ClassificationConfig`, `FriendsConfig` from p2pcd-types and config.
    Remove `[capabilities.*.classification]` and `[friends]` from TOML
    config schema. Bump config version.
@@ -353,13 +367,10 @@ over the WireGuard tunnel" (NFR-4). However, the current API architecture
 uses `is_local_or_wg()` which ALLOWS requests from the WG subnet
 (100.222.0.0/16). For the access API, we need LOCALHOST ONLY — not WG peers.
 
-QUESTION: Should `/access/*` routes use a stricter `is_localhost_only()`
-guard that rejects WG-subnet IPs? This is a deviation from the rest of the
-authenticated API which allows WG access. The BRD is explicit that remote
-peers must not reach this API.
-
-RECOMMENDATION: Yes. Add `is_localhost_only()` that only allows
-127.0.0.0/8 and ::1. Apply to `/access/*` routes only.
+DECISION: Yes. Add `is_localhost_only()` that only allows 127.0.0.0/8
+and ::1. Apply to `/access/*` routes only. This deviates from the rest
+of the authenticated API which allows WG access, but the BRD is explicit
+that remote peers must not reach this API. (closed)
 
 
 ### Q-2: Peer Identity in Proxied Capability Requests
@@ -369,25 +380,16 @@ API calls (operator using the UI), there is no peer_id — the operator is
 not a peer. For P2P-CD routed requests (remote peer → daemon bridge →
 capability), the daemon knows the peer_id from the session.
 
-QUESTION: How do remote peer requests currently reach capability processes?
-Looking at the code, it appears the P2P-CD bridge notifies capabilities
-of peer-active/peer-inactive via HTTP callbacks, and inbound P2P-CD
-messages are delivered as HTTP posts. The peer_id is already in the
-`InboundMessage` payload.
-
-But for direct HTTP requests from peers over the WG tunnel (not via P2P-CD
-message routing), the capability process receives a request from a WG IP.
-The daemon could resolve WG IP → peer_id from its peer list and inject
-`X-Peer-Id`.
-
-RECOMMENDATION: Two enforcement points:
+DECISION: Two enforcement points:
   (a) P2P-CD message path: peer_id is already known from the session.
-      Resolve permission in the daemon bridge before forwarding.
+     Trust gate at intersection time filters the active capability set.
+     This is the primary enforcement — capabilities not in the
+     intersection are never reachable via P2P-CD.
   (b) Direct HTTP over WG: proxy resolves WG source IP → peer_id,
-      injects `X-Peer-Id`, capability checks permission.
-
-Clarification needed from IV on whether (b) is a real path or if all
-remote capability access goes through P2P-CD.
+     injects `X-Peer-Id`, capability handler calls resolve_permission()
+     and returns 403 on Deny. This is defense-in-depth.
+Both paths enforce access control. The trust gate is the primary gate;
+the capability handler 403 is the secondary safety net. (closed)
 
 
 ### Q-3: classification Field for Custom-Group-Only Peers (OQ-3)
@@ -396,9 +398,10 @@ The BRD leaves this open. Using the string "custom" leaks that the peer
 is NOT in any built-in tier. Using the custom group's UUID is more opaque
 but means the peer sees a different UUID than built-in-tier peers.
 
-RECOMMENDATION: Use the custom group's UUID. It's maximally opaque — the
+DECISION: Use the custom group's UUID. It's maximally opaque — the
 peer can't distinguish it from a built-in UUID without prior knowledge.
 "custom" is a string that conveys semantic meaning; a UUID conveys nothing.
+(closed)
 
 
 ### Q-4: Capability Declaration Classification Field on Wire
@@ -408,37 +411,25 @@ The p2pcd-types CBOR encoding currently OMITS the classification field
 wire (spec §5.3 note)". The BRD wants it populated with the group UUID
 as an advisory signal (FR-3.1, FR-3.2).
 
-QUESTION: Should we start encoding classification on the wire? This is a
-wire format change that could affect interop with other P2P-CD
-implementations (if any exist). The BRD says it's "advisory and
-informational" but the spec note says it's omitted.
-
-RECOMMENDATION: Add it as an optional field. Encode when present, skip
+DECISION: Add it as an optional field. Encode when present, skip
 when absent. Receiving side ignores it for enforcement but may log it.
-This preserves backward compat — old peers ignore unknown fields.
+This preserves backward compat — old peers ignore unknown CBOR keys.
+(closed)
 
 
 ### Q-5: Per-Peer Manifests and Personal Hash
 
-Today: one manifest, one personal_hash, shared across all peers.
-BRD requires: per-peer manifests (different capability sets per peer).
-
-This means personal_hash becomes per-peer too. When a peer's group
-membership changes, only THAT peer's manifest changes — other peers'
-sessions are unaffected.
-
-QUESTION: Does the P2P-CD spec allow per-peer manifests? The spec says
-"A peer's discovery_manifest represents its current capability profile"
-(singular). If our manifest varies by who we're talking to, we have
-multiple personal_hashes. The peer cache (keyed by personal_hash) would
-need adjustment.
-
-RECOMMENDATION: This is fine. The spec says the manifest represents what
-we OFFER to a specific peer. The personal_hash is a hash of what we
-sent to THAT peer. The cache already keys by (peer_id, personal_hash).
-Per-peer manifests just mean different peers see different hashes, which
-is the intended behavior — when we change a peer's group, their hash
-changes, invalidating their cache entry and triggering re-exchange.
+NOT NEEDED. We chose Option C: single manifest for all peers, with
+trust gate filtering at intersection time. This means:
+  - One manifest, one personal_hash — no per-peer complexity
+  - The trust gate in compute_intersection() calls resolve_permission()
+    per-peer, so the intersection result varies by peer
+  - Group membership change → rebroadcast → re-exchange → new
+    intersection computed with updated permissions
+  - personal_hash only changes when the LOCAL manifest changes (new
+    capability installed/removed), not when a peer's group changes
+  - No peer cache adjustment needed
+(closed)
 
 
 ### Q-6: Scope Override Interaction with P2P-CD Negotiation
@@ -447,15 +438,9 @@ BRD §4.2 says scope_overrides "take effect in the CONFIRM accepted_params
 field ... within the bounds already negotiated by both peers' OFFERs
 (most-restrictive-wins per §7.3)".
 
-QUESTION: How do group-level scope_overrides interact with the existing
-per-capability scope config in p2pcd-peer.toml? The TOML scope values
-go into the OFFER. The group scope_overrides would need to be applied
-at CONFIRM time — but the CONFIRM is computed by `compute_intersection()`
-which only has access to both OFFERs.
-
-RECOMMENDATION: Phase 1 should NOT implement scope_overrides. The BRD
-marks them as optional (`ScopeOverride?`). Focus on allow/deny first.
-Scope overrides can be Phase 2 when the interaction model is clearer.
+DECISION: Skip scope_overrides for Phase 1. The BRD marks them as
+optional (`ScopeOverride?`). Focus on allow/deny first. Scope overrides
+can be a later phase when the interaction model is clearer. (closed)
 
 
 ### Q-7: peers.json Coexistence
@@ -464,10 +449,10 @@ After migration, should `peers.json` still be the source of truth for
 peer metadata (name, WG key, endpoint, etc.)? The access system only
 manages group membership — it doesn't replace the peer registry.
 
-RECOMMENDATION: Yes, keep peers.json for peer metadata. access.db only
+DECISION: Yes, keep peers.json for peer metadata. access.db only
 stores group membership. The two are linked by peer_id (WG public key).
 Long-term, peers.json should probably move to SQLite too, but that's
-a separate effort.
+a separate effort. (closed)
 
 ---
 
@@ -475,11 +460,11 @@ a separate effort.
 
   Phase 1 (access crate + DB + types + tests)     ~2-3 days
   Phase 2 (daemon integration + API + migration)   ~3-4 days
-  Phase 3 (per-peer offers + engine changes)        ~3-4 days
+  Phase 3 (trust gate data source swap)             ~2-3 days
   Phase 4 (capability enforcement)                  ~2-3 days
   Phase 5 (session lifecycle hooks)                 ~2-3 days
 
-  Total: ~12-17 days of implementation work
+  Total: ~11-16 days of implementation work
 
   Phase 6 (UI) is out of scope for this spec.
 
@@ -499,7 +484,7 @@ a separate effort.
   - Invite → default group assignment
   - Deny → session close
   - Group change → rebroadcast trigger
-  - Per-peer manifest generation correctness
+  - Trust gate filtering correctness (same manifest, different intersections)
 
 - End-to-end:
   - Two-node test: peer in howm.default cannot access social feed
@@ -523,7 +508,7 @@ a separate effort.
   node/daemon/src/main.rs         — init AccessDb on startup
   node/daemon/src/state.rs        — add Arc<AccessDb> to AppState
   node/daemon/src/api/mod.rs      — wire access_routes
-  node/daemon/src/p2pcd/engine.rs — per-peer manifest, rebroadcast hooks
+  node/daemon/src/p2pcd/engine.rs — swap trust gate source to AccessDb, rebroadcast hooks
   node/daemon/src/proxy.rs        — inject X-Peer-Id header
   node/daemon/src/invite.rs       — default group on invite complete
   node/daemon/src/open_invite.rs  — default group on open invite complete

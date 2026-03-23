@@ -32,6 +32,7 @@ sha2 = "0.10"
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 p2pcd = { path = "../p2pcd" }
 p2pcd-types = { path = "../p2pcd-types" }
+howm-access = { path = "../access" }
 ciborium = "0.2"
 include_dir = "0.7"
 hostname = "0.3"

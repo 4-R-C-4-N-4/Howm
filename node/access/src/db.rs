@@ -1,6 +1,7 @@
 use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, warn};
 use uuid::Uuid;
@@ -10,10 +11,10 @@ use crate::types::*;
 
 /// Handle to the access control database.
 ///
-/// The daemon holds the writer instance; capability processes open read-only
-/// handles via `open_readonly()`. WAL mode allows concurrent reads.
+/// Uses `Mutex<Connection>` so the struct is `Send + Sync` and can live
+/// inside `Arc<AccessDb>` in an async runtime (tokio AppState).
 pub struct AccessDb {
-    conn: Connection,
+    conn: Mutex<Connection>,
 }
 
 impl AccessDb {
@@ -24,7 +25,9 @@ impl AccessDb {
         create_tables(&conn)?;
         seed_built_in_groups(&conn)?;
         debug!("access.db opened at {}", path.display());
-        Ok(Self { conn })
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
     }
 
     /// Open a read-only handle (for capability processes).
@@ -34,7 +37,9 @@ impl AccessDb {
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )?;
         conn.execute_batch("PRAGMA journal_mode = WAL;")?;
-        Ok(Self { conn })
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
     }
 
     // ── Permission resolution (hot path) ─────────────────────────────────
@@ -47,9 +52,8 @@ impl AccessDb {
     /// 3. If ANY group has allow=true for the capability → Allow.
     /// 4. Otherwise → Deny.
     pub fn resolve_permission(&self, peer_id: &[u8], capability_name: &str) -> PermissionResult {
-        // Single query: join memberships → capability_rules, plus always
-        // include howm.default rules.
-        let result = self.conn.query_row(
+        let conn = self.conn.lock().unwrap();
+        let result = conn.query_row(
             "SELECT MAX(cr.allow), cr.rate_limit, cr.ttl
              FROM capability_rules cr
              JOIN groups g ON cr.group_id = g.group_id
@@ -78,7 +82,6 @@ impl AccessDb {
     }
 
     /// Resolve permissions for multiple capabilities in one pass.
-    /// Returns a map of capability_name → PermissionResult.
     pub fn resolve_all_permissions(
         &self,
         peer_id: &[u8],
@@ -95,14 +98,14 @@ impl AccessDb {
         &self,
         peer_id: &[u8],
     ) -> rusqlite::Result<HashMap<String, PermissionResult>> {
-        // Get all distinct capability names from the rules table
-        let mut stmt = self
-            .conn
-            .prepare("SELECT DISTINCT capability_name FROM capability_rules")?;
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT DISTINCT capability_name FROM capability_rules")?;
         let cap_names: Vec<String> = stmt
             .query_map([], |row| row.get(0))?
             .filter_map(|r| r.ok())
             .collect();
+        drop(stmt);
+        drop(conn);
 
         let refs: Vec<&str> = cap_names.iter().map(|s| s.as_str()).collect();
         Ok(self.resolve_all_permissions(peer_id, &refs))
@@ -112,25 +115,27 @@ impl AccessDb {
 
     /// List all groups (built-in and custom).
     pub fn list_groups(&self) -> rusqlite::Result<Vec<Group>> {
-        let mut stmt = self.conn.prepare(
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
             "SELECT group_id, name, built_in, created_at, description FROM groups ORDER BY built_in DESC, name",
         )?;
-        let groups = stmt
+        let groups: Vec<Group> = stmt
             .query_map([], |row| {
                 let group_id_str: String = row.get(0)?;
                 Ok(Group {
                     group_id: Uuid::parse_str(&group_id_str).unwrap_or(Uuid::nil()),
                     name: row.get(1)?,
                     built_in: row.get::<_, i32>(2)? != 0,
-                    capabilities: Vec::new(), // filled below
+                    capabilities: Vec::new(),
                     created_at: row.get(3)?,
                     description: row.get(4)?,
                 })
             })?
             .filter_map(|r| r.ok())
-            .collect::<Vec<_>>();
+            .collect();
+        drop(stmt);
+        drop(conn);
 
-        // Fill capability rules for each group
         let mut result = Vec::with_capacity(groups.len());
         for mut group in groups {
             group.capabilities = self.get_capability_rules(&group.group_id)?;
@@ -141,9 +146,9 @@ impl AccessDb {
 
     /// Get a single group by ID, or None if not found.
     pub fn get_group(&self, group_id: &Uuid) -> rusqlite::Result<Option<Group>> {
-        let group = self
-            .conn
-            .query_row(
+        let group: Option<Group> = {
+            let conn = self.conn.lock().unwrap();
+            conn.query_row(
                 "SELECT group_id, name, built_in, created_at, description FROM groups WHERE group_id = ?1",
                 params![group_id.to_string()],
                 |row| {
@@ -158,7 +163,8 @@ impl AccessDb {
                     })
                 },
             )
-            .optional()?;
+            .optional()?
+        };
 
         match group {
             Some(mut g) => {
@@ -169,7 +175,7 @@ impl AccessDb {
         }
     }
 
-    /// Create a custom group. Returns error if name is empty or too long.
+    /// Create a custom group.
     pub fn create_group(
         &self,
         name: &str,
@@ -179,14 +185,17 @@ impl AccessDb {
         let group_id = Uuid::new_v4();
         let now = epoch_secs();
 
-        self.conn.execute(
-            "INSERT INTO groups (group_id, name, built_in, created_at, description)
-             VALUES (?1, ?2, 0, ?3, ?4)",
-            params![group_id.to_string(), name, now, description],
-        )?;
+        {
+            let conn = self.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO groups (group_id, name, built_in, created_at, description)
+                 VALUES (?1, ?2, 0, ?3, ?4)",
+                params![group_id.to_string(), name, now, description],
+            )?;
 
-        for rule in capability_rules {
-            self.insert_capability_rule(&group_id, rule)?;
+            for rule in capability_rules {
+                insert_capability_rule(&conn, &group_id, rule)?;
+            }
         }
 
         debug!("created custom group '{}' ({})", name, group_id);
@@ -194,7 +203,6 @@ impl AccessDb {
     }
 
     /// Update a custom group's name, description, or capability rules.
-    /// Returns error if the group is built-in and capability rules are changed.
     pub fn update_group(
         &self,
         group_id: &Uuid,
@@ -207,37 +215,39 @@ impl AccessDb {
             None => return Ok(None),
         };
 
-        // Built-in groups: can update name/description, but NOT capability rules in phase 1
         if group.built_in && capability_rules.is_some() {
             warn!(
                 "attempted to modify capability rules of built-in group '{}'",
                 group.name
             );
-            return Err(rusqlite::Error::QueryReturnedNoRows); // TODO: proper error type
+            return Err(rusqlite::Error::QueryReturnedNoRows);
         }
 
-        if let Some(new_name) = name {
-            self.conn.execute(
-                "UPDATE groups SET name = ?1 WHERE group_id = ?2",
-                params![new_name, group_id.to_string()],
-            )?;
-        }
+        {
+            let conn = self.conn.lock().unwrap();
 
-        if let Some(new_desc) = description {
-            self.conn.execute(
-                "UPDATE groups SET description = ?1 WHERE group_id = ?2",
-                params![new_desc, group_id.to_string()],
-            )?;
-        }
+            if let Some(new_name) = name {
+                conn.execute(
+                    "UPDATE groups SET name = ?1 WHERE group_id = ?2",
+                    params![new_name, group_id.to_string()],
+                )?;
+            }
 
-        if let Some(rules) = capability_rules {
-            // Replace all rules for this group
-            self.conn.execute(
-                "DELETE FROM capability_rules WHERE group_id = ?1",
-                params![group_id.to_string()],
-            )?;
-            for rule in rules {
-                self.insert_capability_rule(group_id, rule)?;
+            if let Some(new_desc) = description {
+                conn.execute(
+                    "UPDATE groups SET description = ?1 WHERE group_id = ?2",
+                    params![new_desc, group_id.to_string()],
+                )?;
+            }
+
+            if let Some(rules) = capability_rules {
+                conn.execute(
+                    "DELETE FROM capability_rules WHERE group_id = ?1",
+                    params![group_id.to_string()],
+                )?;
+                for rule in rules {
+                    insert_capability_rule(&conn, group_id, rule)?;
+                }
             }
         }
 
@@ -253,11 +263,11 @@ impl AccessDb {
 
         if group.built_in {
             warn!("attempted to delete built-in group '{}'", group.name);
-            return Err(rusqlite::Error::QueryReturnedNoRows); // TODO: proper error type
+            return Err(rusqlite::Error::QueryReturnedNoRows);
         }
 
-        // CASCADE deletes capability_rules and peer_group_memberships
-        self.conn.execute(
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
             "DELETE FROM groups WHERE group_id = ?1",
             params![group_id.to_string()],
         )?;
@@ -270,14 +280,15 @@ impl AccessDb {
 
     /// List all groups a peer belongs to (explicit memberships only).
     pub fn list_peer_groups(&self, peer_id: &[u8]) -> rusqlite::Result<Vec<Group>> {
-        let mut stmt = self.conn.prepare(
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
             "SELECT g.group_id, g.name, g.built_in, g.created_at, g.description
              FROM groups g
              JOIN peer_group_memberships pgm ON g.group_id = pgm.group_id
              WHERE pgm.peer_id = ?1
              ORDER BY g.built_in DESC, g.name",
         )?;
-        let groups = stmt
+        let groups: Vec<Group> = stmt
             .query_map(params![peer_id], |row| {
                 let group_id_str: String = row.get(0)?;
                 Ok(Group {
@@ -290,7 +301,9 @@ impl AccessDb {
                 })
             })?
             .filter_map(|r| r.ok())
-            .collect::<Vec<_>>();
+            .collect();
+        drop(stmt);
+        drop(conn);
 
         let mut result = Vec::with_capacity(groups.len());
         for mut group in groups {
@@ -307,7 +320,8 @@ impl AccessDb {
         group_id: &Uuid,
     ) -> rusqlite::Result<PeerGroupMembership> {
         let now = epoch_secs();
-        self.conn.execute(
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
             "INSERT OR IGNORE INTO peer_group_memberships (peer_id, group_id, assigned_at, assigned_by)
              VALUES (?1, ?2, ?3, 'local')",
             params![peer_id, group_id.to_string(), now],
@@ -332,7 +346,8 @@ impl AccessDb {
         peer_id: &[u8],
         group_id: &Uuid,
     ) -> rusqlite::Result<bool> {
-        let deleted = self.conn.execute(
+        let conn = self.conn.lock().unwrap();
+        let deleted = conn.execute(
             "DELETE FROM peer_group_memberships WHERE peer_id = ?1 AND group_id = ?2",
             params![peer_id, group_id.to_string()],
         )?;
@@ -348,7 +363,8 @@ impl AccessDb {
 
     /// Remove a peer from ALL groups (used by deny flow).
     pub fn remove_peer_from_all_groups(&self, peer_id: &[u8]) -> rusqlite::Result<usize> {
-        let deleted = self.conn.execute(
+        let conn = self.conn.lock().unwrap();
+        let deleted = conn.execute(
             "DELETE FROM peer_group_memberships WHERE peer_id = ?1",
             params![peer_id],
         )?;
@@ -364,7 +380,8 @@ impl AccessDb {
 
     /// Check if a peer has any explicit group memberships.
     pub fn peer_has_memberships(&self, peer_id: &[u8]) -> rusqlite::Result<bool> {
-        let count: i64 = self.conn.query_row(
+        let conn = self.conn.lock().unwrap();
+        let count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM peer_group_memberships WHERE peer_id = ?1",
             params![peer_id],
             |row| row.get(0),
@@ -375,14 +392,16 @@ impl AccessDb {
     // ── Internal helpers ─────────────────────────────────────────────────
 
     fn get_capability_rules(&self, group_id: &Uuid) -> rusqlite::Result<Vec<CapabilityRule>> {
-        let mut stmt = self.conn.prepare(
+        let conn = self.conn.lock().unwrap();
+        let group_id_str = group_id.to_string();
+        let mut stmt = conn.prepare(
             "SELECT capability_name, allow, rate_limit, ttl
              FROM capability_rules
              WHERE group_id = ?1
              ORDER BY capability_name",
         )?;
-        let rules = stmt
-            .query_map(params![group_id.to_string()], |row| {
+        let rules: Vec<CapabilityRule> = stmt
+            .query_map(params![group_id_str], |row| {
                 Ok(CapabilityRule {
                     capability_name: row.get(0)?,
                     allow: row.get::<_, i32>(1)? != 0,
@@ -394,25 +413,25 @@ impl AccessDb {
             .collect();
         Ok(rules)
     }
+}
 
-    fn insert_capability_rule(
-        &self,
-        group_id: &Uuid,
-        rule: &CapabilityRule,
-    ) -> rusqlite::Result<()> {
-        self.conn.execute(
-            "INSERT INTO capability_rules (group_id, capability_name, allow, rate_limit, ttl)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![
-                group_id.to_string(),
-                rule.capability_name,
-                rule.allow as i32,
-                rule.rate_limit,
-                rule.ttl,
-            ],
-        )?;
-        Ok(())
-    }
+fn insert_capability_rule(
+    conn: &Connection,
+    group_id: &Uuid,
+    rule: &CapabilityRule,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO capability_rules (group_id, capability_name, allow, rate_limit, ttl)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![
+            group_id.to_string(),
+            rule.capability_name,
+            rule.allow as i32,
+            rule.rate_limit,
+            rule.ttl,
+        ],
+    )?;
+    Ok(())
 }
 
 fn epoch_secs() -> u64 {

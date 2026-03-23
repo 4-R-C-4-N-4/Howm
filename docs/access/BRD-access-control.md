@@ -3,7 +3,7 @@
 **Author:** Ivy Darling
 **Project:** Howm
 **Status:** Draft
-**Version:** 0.1
+**Version:** 0.2
 **Date:** 2026-03-23
 **Capability path:** `capabilities/access/` (or integrated into daemon — see OQ-1)
 **P2P-CD name:** N/A — this BRD defines application-layer policy; it does not introduce a new P2P-CD capability
@@ -14,7 +14,7 @@
 
 The P2P-CD spec (§6) defines two built-in classification tiers — UNRESTRICTED and DENIED — and explicitly leaves everything between as implementation-defined. It provides the `classification` field in capability declarations for carrying a `group_ref` or credential, and the trust gate mechanism for per-capability access decisions. However, the spec makes clear that the receiving peer evaluates the sender's classification against local policy — not the other way around.
 
-Howm's access control requirement is the inverse: an operator wants to control what their own capabilities expose to a given peer, based on operator-defined group membership. This is an application-layer policy problem. The P2P-CD machinery (classification field, trust gate) is useful as a signalling channel but is not the enforcement point. Enforcement happens in the HTTP handlers of each capability process — a request either gets a response or it doesn't, based on the requesting peer's group membership as evaluated locally by the operator's node.
+Howm's access control requirement is the inverse: an operator wants to control what their own capabilities expose to a given peer, based on operator-defined group membership. This is an application-layer policy problem. The P2P-CD machinery (classification field, trust gate) provides both the signalling channel and the first enforcement point: the trust gate in `compute_intersection()` filters capabilities per-peer at CONFIRM time, preventing denied capabilities from entering the active set. Defense in depth is provided by the capability handler layer — each capability process independently verifies the requesting peer's group membership and returns 403 on mismatch.
 
 This BRD defines:
 - A fixed set of three named built-in tiers that sit between DENIED and UNRESTRICTED
@@ -195,10 +195,12 @@ All capability processes evaluate incoming requests against the access system vi
 
 ### 5.3 P2P-CD Integration
 
-- **FR-3.1** When constructing an OFFER manifest for a session with a specific peer, the daemon SHALL resolve that peer's effective group (the highest-privilege built-in group they are a member of, or `"custom"` if they are only in custom groups) and write the corresponding `group_id` UUID as the `classification` field (`group_ref` variant) in each relevant capability declaration.
+- **FR-3.1** When constructing the OFFER manifest, the daemon SHALL include all locally-registered capabilities regardless of the receiving peer's group membership. The daemon SHALL resolve the peer's effective group (the highest-privilege built-in group they are a member of, or the custom group's UUID if they are only in custom groups) and write the corresponding `group_id` UUID as the `classification` field (`group_ref` variant) in each capability declaration.
 - **FR-3.2** The `classification` field is advisory and informational. The receiving peer sees an opaque UUID. It is not used for enforcement on the sending side — enforcement is at the capability handler (§5.2).
-- **FR-3.3** Capabilities that the requesting peer is not permitted to access SHALL be **omitted from the OFFER manifest entirely** rather than included with a DENY classification. A peer should not learn what capabilities exist on a node they cannot access.
-- **FR-3.4** `core.session.heartbeat.1` SHALL always be included in every OFFER regardless of group membership, as required by P2P-CD §D.1.
+- **FR-3.3** The OFFER manifest is a single, shared manifest — the same capability names are sent to all peers. Access filtering is performed by the **trust gate** in `compute_intersection()` at CONFIRM time: when evaluating the intersection, the trust gate queries the peer's group membership and excludes any capability the peer is not permitted to access. The peer sees capability names in the OFFER but denied capabilities are excluded from the active set in the CONFIRM. This approach avoids per-peer manifest construction, eliminates per-peer hash/cache complexity, and leverages the trust gate mechanism that already exists in P2P-CD for exactly this purpose. Information leak of capability names in the OFFER is acceptable because capability names are defined in public specifications.
+- **FR-3.4** `core.session.heartbeat.1` SHALL always be included in every OFFER regardless of group membership, as required by P2P-CD §D.1. The trust gate SHALL unconditionally pass this capability for all peers.
+
+> **Design note — single manifest + trust gate filtering (Option C).** The daemon constructs one OFFER manifest and sends it to all peers. Per-peer access control is enforced at two layers: (1) the trust gate in `compute_intersection()` excludes denied capabilities from the active set during CONFIRM, and (2) each capability handler independently checks group membership and returns 403 on unauthorized requests. This design was chosen over per-peer manifest construction (which would require maintaining separate manifest hashes per peer, invalidating the P2P-CD personal-hash cache on any group change, and complicating the rebroadcast logic in §8.1) and over handler-only enforcement (which would leave denied capabilities in the active set). The trust gate data source is the same `access.db` used by capability handlers — the only difference is the evaluation point (p2pcd session layer vs. HTTP handler layer).
 
 ### 5.4 Access Management HTTP API
 
@@ -222,9 +224,23 @@ The access management API is exposed by the daemon (or a dedicated access capabi
 - **FR-5.1** When a new peer completes an invite exchange and their first session enters ACTIVE, the daemon SHALL ensure a `PeerGroupMembership` record for `howm.default` is present for that peer if no other group assignment exists. The `howm.default` implicit fallback (§4.4) means this record is optional for correctness, but explicit record creation aids auditability.
 - **FR-5.2** When an operator calls `POST /access/peers/{peer_id}/deny`, the daemon SHALL send a P2P-CD CLOSE message with `reason_code: 2` (auth-failure) to the peer if a session is currently ACTIVE, then cache the outcome as NONE per §9.1 of the spec.
 - **FR-5.3** When a peer's group membership changes, the daemon SHALL treat this as a classification change and MUST rebroadcast per P2P-CD §8.1: recompute the personal hash, increment `sequence_num`, and send a new OFFER to all active sessions. The active set remains operational during re-exchange per §8.4, but re-evaluation of the affected peer's capabilities against the new group membership MUST complete before the CONFIRM for the new exchange is sent. A peer who loses access to a capability will have it removed from the active set in the new exchange; a peer who gains access will have it added.
+
+### 5.6 Defense in Depth
+
+Access control is enforced at two independent layers. Both layers query the same `access.db` group membership data; neither layer trusts the other's outcome.
+
+| Layer | Enforcement point | Mechanism | Effect of denial |
+|-------|-------------------|-----------|------------------|
+| **Trust gate** (p2pcd) | `compute_intersection()` during CONFIRM | Trust gate callback queries `resolve_permission()` for the peer; denied capabilities are excluded from the intersection result | Capability never enters the active set; peer cannot invoke it via the session |
+| **Capability handler** (HTTP) | Each capability process, per-request | `resolve_permission()` check before handling | HTTP 403; capability is in the active set but the request is rejected |
+
+The trust gate is the primary gate — it prevents denied capabilities from becoming active. The capability handler gate is the safety net — it catches cases where the active set is stale (e.g., group membership changed after CONFIRM but before the next re-exchange completes per FR-5.3), or where a bug in the trust gate allows a capability through.
+
+- **FR-7.1** The trust gate callback used by `compute_intersection()` SHALL call `resolve_permission(peer_id, capability_name)` for each candidate capability and exclude any capability that returns `Deny`.
+- **FR-7.2** Capability handlers SHALL continue to enforce access control via `resolve_permission()` per FR-2.1, independently of the trust gate. A capability handler MUST NOT assume that presence in the active set implies authorization.
 - **FR-5.4** The access management HTTP API (§5.4) is a thin wrapper around the same shared library used by capability processes. It is hosted by the daemon and is not a separate process.
 
-### 5.6 UI
+### 5.7 UI
 
 - **FR-6.1** The main Howm UI SHALL display each connected peer's current group assignment(s).
 - **FR-6.2** The UI SHALL allow the operator to drag/assign peers between groups.
@@ -262,10 +278,10 @@ Custom group UUIDs are generated as UUIDv4 at creation time and are node-local.
 | # | Question | Status |
 |---|----------|--------|
 | OQ-1 | Should access management live as a standalone capability process or integrated into the daemon as a shared library? | Partially closed — the permission resolution path (FR-2.1) is on the hot path for every capability request from every peer. A standalone process would require an IPC call per request, adding latency on paths like messaging ACK where every millisecond counts. The **recommended approach** is a shared Rust library (`p2pcd-access` or similar) that all capability processes link against directly, reading from `access.db` via WAL mode with no network or socket hop. The library exposes a single synchronous function: `resolve_permission(peer_id, capability_name) -> PermissionResult`. The access management HTTP API (FR-5.4) remains a thin wrapper around the same library, hosted by the daemon. Specific library name, crate structure, and linking strategy are left to the implementing engineer. |
-| OQ-2 | Phase 1 makes built-in group capability rules read-only. Should phase 2 allow operators to modify built-in tier rules, or should built-in tiers be permanently fixed and custom groups be the only customisation surface? | Open |
-| OQ-3 | The `classification` field in the OFFER (FR-3.1) uses the highest-privilege built-in group UUID. For a peer who is only in custom groups, it uses `"custom"`. Should this instead use the custom group's own UUID, accepting that the receiving peer sees an opaque value they cannot interpret? | Open |
+| OQ-2 | Phase 1 makes built-in group capability rules read-only. Should phase 2 allow operators to modify built-in tier rules, or should built-in tiers be permanently fixed and custom groups be the only customisation surface? | Open — deferred to phase 2. Custom groups are the primary customization surface; operators who need different capability sets create custom groups rather than modifying built-in tiers. |
+| OQ-3 | The `classification` field in the OFFER (FR-3.1) uses the highest-privilege built-in group UUID. For a peer who is only in custom groups, what value should the classification field carry? | **Closed — use the custom group's own UUID.** The classification field carries the custom group's UUIDv4. The receiving peer sees an opaque identifier they cannot interpret, which is the intended behavior (§2, "Groups are local"). If the peer is in multiple custom groups, the group with the broadest capability access is selected (most capabilities with `allow: true`). |
 | OQ-4 | Active session behaviour on membership change. | Closed — P2P-CD §8.1 is unambiguous: a classification change MUST trigger an immediate rebroadcast and re-exchange. FR-5.3 reflects this. Active set continuity during re-exchange is provided by §8.4. No open question remains. |
-| OQ-5 | Layering between group-level capability gate and per-offering access gate in `howm.social.files.1`. | Closed — the two gates are orthogonal and operate independently. Gate 1 (P2P-CD session layer): does this peer have `howm.social.files.1` in their active set at all? Determined entirely by the OFFER/CONFIRM handshake — if the peer's group does not grant the capability, it is absent from the OFFER and they never know it exists. Gate 2 (application layer): given that the capability is active, which offerings can this peer see? Determined by each offering's access policy — peer_id explicit or group-level (`friends`, `trusted`). Neither gate depends on the other's logic; they share only vocabulary (group names and peer_ids). BRD-003 should document that offering access policies reference the same group system defined here. |
+| OQ-5 | Layering between group-level capability gate and per-offering access gate in `howm.social.files.1`. | Closed — the two gates are orthogonal and operate independently. Gate 1 (P2P-CD session layer): does this peer have `howm.social.files.1` in their active set at all? Determined by the trust gate in `compute_intersection()` — if the peer's group does not grant the capability, the trust gate excludes it from the active set during CONFIRM. The capability name is visible in the OFFER but not actionable. Gate 2 (application layer): given that the capability is active, which offerings can this peer see? Determined by each offering's access policy — peer_id explicit or group-level (`friends`, `trusted`). Neither gate depends on the other's logic; they share only vocabulary (group names and peer_ids). BRD-003 should document that offering access policies reference the same group system defined here. |
 
 ---
 

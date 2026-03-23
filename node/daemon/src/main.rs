@@ -155,6 +155,19 @@ async fn main() -> anyhow::Result<()> {
     let api_token = api::auth_layer::load_or_create_token(&config.data_dir)?;
     info!("API bearer token: {}", api_token);
 
+    // Initialise access control database (group-based permissions)
+    let access_db = {
+        let db_path = config.data_dir.join("access.db");
+        let db = howm_access::AccessDb::open(&db_path)
+            .map_err(|e| anyhow::anyhow!("failed to open access.db: {}", e))?;
+
+        // One-time migration: map peers.json TrustLevel → access.db groups
+        migrate_trust_levels(&db, &peers);
+
+        Arc::new(db)
+    };
+    info!("Access control database initialised");
+
     // Build app state
     let mut state = state::AppState::new(
         identity.clone(),
@@ -162,6 +175,7 @@ async fn main() -> anyhow::Result<()> {
         capabilities,
         config.clone(),
         api_token,
+        access_db,
     );
 
     // Build capability notifier and register running capabilities
@@ -374,4 +388,57 @@ fn build_p2pcd_engine(
         notifier,
         config.data_dir.clone(),
     )))
+}
+
+/// One-time migration: map peers.json TrustLevel to access.db group memberships.
+/// Runs only when the access database has no existing memberships (first startup).
+fn migrate_trust_levels(db: &howm_access::AccessDb, peers: &[peers::Peer]) {
+    use howm_access::{GROUP_DEFAULT, GROUP_FRIENDS};
+
+    // Skip if there are already memberships (migration already ran)
+    if peers.is_empty() {
+        return;
+    }
+
+    // Check if any memberships exist
+    let has_any = peers.iter().any(|p| {
+        let peer_id = hex::decode(&p.wg_pubkey).unwrap_or_default();
+        db.peer_has_memberships(&peer_id).unwrap_or(false)
+    });
+
+    if has_any {
+        return; // Already migrated
+    }
+
+    let mut migrated = 0u32;
+    for peer in peers {
+        let peer_id = match hex::decode(&peer.wg_pubkey) {
+            Ok(id) if id.len() == 32 => id,
+            _ => {
+                tracing::warn!(
+                    "skipping migration for peer '{}': invalid WG pubkey",
+                    peer.name
+                );
+                continue;
+            }
+        };
+
+        let group = match peer.trust {
+            peers::TrustLevel::Friend => GROUP_FRIENDS,
+            peers::TrustLevel::Public | peers::TrustLevel::Restricted => GROUP_DEFAULT,
+        };
+
+        if let Err(e) = db.assign_peer_to_group(&peer_id, &group) {
+            tracing::warn!("failed to migrate peer '{}' to access.db: {}", peer.name, e);
+        } else {
+            migrated += 1;
+        }
+    }
+
+    if migrated > 0 {
+        tracing::info!(
+            "Migrated {} peers from peers.json trust levels to access.db groups",
+            migrated
+        );
+    }
 }

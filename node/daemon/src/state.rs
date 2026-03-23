@@ -2,6 +2,7 @@ use crate::{
     api::auth_layer::RateLimiter, capabilities::CapabilityEntry, config::Config,
     identity::NodeIdentity, p2pcd::engine::ProtocolEngine, peers::Peer,
 };
+use howm_access::AccessDb;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -27,6 +28,8 @@ pub struct AppState {
     pub allow_relay: Arc<RwLock<bool>>,
     /// Number of active matchmake relay exchanges in progress
     pub matchmake_counter: Arc<RwLock<u64>>,
+    /// Access control database (group-based peer permissions)
+    pub access_db: Arc<AccessDb>,
 }
 
 impl AppState {
@@ -36,6 +39,7 @@ impl AppState {
         capabilities: Vec<CapabilityEntry>,
         config: Config,
         api_token: String,
+        access_db: Arc<AccessDb>,
     ) -> Self {
         let open_join_rate_limiter =
             Arc::new(RateLimiter::new(config.open_invite_rate_limit, 3600));
@@ -53,6 +57,7 @@ impl AppState {
             p2pcd_engine: None,
             allow_relay: Arc::new(RwLock::new(allow_relay)),
             matchmake_counter: Arc::new(RwLock::new(0)),
+            access_db,
         }
     }
 }
