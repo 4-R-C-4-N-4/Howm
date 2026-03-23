@@ -9,7 +9,24 @@ use std::sync::{Arc, Mutex};
 
 use rusqlite::{params, Connection, OptionalExtension};
 
+use serde::Serialize;
+
 use crate::posts::{Attachment, Post};
+
+/// A blob transfer record — tracks download progress for inbound post attachments.
+#[derive(Debug, Clone, Serialize)]
+pub struct BlobTransfer {
+    pub post_id: String,
+    pub blob_id: String,
+    /// One of: pending, fetching, complete, failed.
+    pub status: String,
+    pub bytes_received: u64,
+    pub updated_at: u64,
+    /// MIME type from the attachment record.
+    pub mime_type: String,
+    /// Total expected size from the attachment record.
+    pub total_size: u64,
+}
 
 // ── Database ─────────────────────────────────────────────────────────────────
 
@@ -141,8 +158,7 @@ impl FeedDb {
     /// Load all posts (local + peer), sorted newest first, with pagination.
     pub fn load_all(&self, limit: usize, offset: usize) -> anyhow::Result<(Vec<Post>, usize)> {
         let conn = self.conn.lock().unwrap();
-        let total: usize =
-            conn.query_row("SELECT COUNT(*) FROM posts", [], |r| r.get(0))?;
+        let total: usize = conn.query_row("SELECT COUNT(*) FROM posts", [], |r| r.get(0))?;
         let posts = Self::query_posts(
             &conn,
             "SELECT id, author_id, author_name, content, timestamp, origin
@@ -198,12 +214,11 @@ impl FeedDb {
     /// Check if a post ID exists.
     pub fn post_exists(&self, post_id: &str) -> anyhow::Result<bool> {
         let conn = self.conn.lock().unwrap();
-        let exists: bool = conn
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM posts WHERE id = ?1)",
-                params![post_id],
-                |r| r.get(0),
-            )?;
+        let exists: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM posts WHERE id = ?1)",
+            params![post_id],
+            |r| r.get(0),
+        )?;
         Ok(exists)
     }
 
@@ -232,13 +247,124 @@ impl FeedDb {
                 self.insert_post(post)?;
             }
             std::fs::rename(&peer_path, data_dir.join("peer_posts.json.migrated"))?;
-            tracing::info!(
-                "migrated {} peer posts from peer_posts.json",
-                posts.len()
-            );
+            tracing::info!("migrated {} peer posts from peer_posts.json", posts.len());
         }
 
         Ok(())
+    }
+
+    // ── Blob transfers ────────────────────────────────────────────────────────
+
+    /// Insert a pending blob transfer record for an inbound post attachment.
+    pub fn insert_blob_transfer(&self, post_id: &str, blob_id: &str) -> anyhow::Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR IGNORE INTO blob_transfers (post_id, blob_id, status, bytes_received, updated_at)
+             VALUES (?1, ?2, 'pending', 0, strftime('%s','now'))",
+            params![post_id, blob_id],
+        )?;
+        Ok(())
+    }
+
+    /// Update the status of a blob transfer.
+    /// Valid statuses: pending, fetching, complete, failed.
+    pub fn update_blob_transfer(
+        &self,
+        post_id: &str,
+        blob_id: &str,
+        status: &str,
+        bytes_received: u64,
+    ) -> anyhow::Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE blob_transfers SET status = ?3, bytes_received = ?4,
+             updated_at = strftime('%s','now')
+             WHERE post_id = ?1 AND blob_id = ?2",
+            params![post_id, blob_id, status, bytes_received],
+        )?;
+        Ok(())
+    }
+
+    /// Get all blob transfer records for a post.
+    pub fn get_post_transfers(&self, post_id: &str) -> anyhow::Result<Vec<BlobTransfer>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT bt.post_id, bt.blob_id, bt.status, bt.bytes_received, bt.updated_at,
+                    a.mime_type, a.size
+             FROM blob_transfers bt
+             JOIN attachments a ON bt.post_id = a.post_id AND bt.blob_id = a.blob_id
+             WHERE bt.post_id = ?1
+             ORDER BY a.position ASC",
+        )?;
+        let rows = stmt.query_map(params![post_id], |row| {
+            Ok(BlobTransfer {
+                post_id: row.get(0)?,
+                blob_id: row.get(1)?,
+                status: row.get(2)?,
+                bytes_received: row.get(3)?,
+                updated_at: row.get(4)?,
+                mime_type: row.get(5)?,
+                total_size: row.get(6)?,
+            })
+        })?;
+        let mut transfers = Vec::new();
+        for row in rows {
+            transfers.push(row?);
+        }
+        Ok(transfers)
+    }
+
+    /// Get all pending or fetching transfers (for startup recovery / polling).
+    pub fn get_active_transfers(&self) -> anyhow::Result<Vec<BlobTransfer>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT bt.post_id, bt.blob_id, bt.status, bt.bytes_received, bt.updated_at,
+                    a.mime_type, a.size
+             FROM blob_transfers bt
+             JOIN attachments a ON bt.post_id = a.post_id AND bt.blob_id = a.blob_id
+             WHERE bt.status IN ('pending', 'fetching')
+             ORDER BY bt.updated_at ASC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(BlobTransfer {
+                post_id: row.get(0)?,
+                blob_id: row.get(1)?,
+                status: row.get(2)?,
+                bytes_received: row.get(3)?,
+                updated_at: row.get(4)?,
+                mime_type: row.get(5)?,
+                total_size: row.get(6)?,
+            })
+        })?;
+        let mut transfers = Vec::new();
+        for row in rows {
+            transfers.push(row?);
+        }
+        Ok(transfers)
+    }
+
+    /// Check if all blob transfers for a post are complete.
+    pub fn are_all_transfers_complete(&self, post_id: &str) -> anyhow::Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let incomplete: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM blob_transfers WHERE post_id = ?1 AND status != 'complete'",
+            params![post_id],
+            |r| r.get(0),
+        )?;
+        Ok(incomplete == 0)
+    }
+
+    /// Get the origin (peer_id) for a post. Returns the raw origin string.
+    pub fn get_post_origin(&self, post_id: &str) -> anyhow::Result<Option<String>> {
+        let conn = self.conn.lock().unwrap();
+        let origin: Option<String> = conn
+            .query_row(
+                "SELECT origin FROM posts WHERE id = ?1",
+                params![post_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(origin)
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────
@@ -562,5 +688,176 @@ mod tests {
         let (posts, _) = db.load_all(50, 0).unwrap();
         assert_eq!(posts[0].content, "hi");
         assert!(posts[0].attachments.is_empty());
+    }
+
+    // ── Blob transfer tests ────────────────────────────────────────────────
+
+    fn make_post_with_attachments(id: &str, origin: &str) -> Post {
+        Post {
+            id: id.to_string(),
+            author_id: "alice".to_string(),
+            author_name: "Alice".to_string(),
+            content: "media post".to_string(),
+            timestamp: 1000,
+            origin: origin.to_string(),
+            attachments: vec![
+                Attachment {
+                    blob_id: "aabb0011".to_string(),
+                    mime_type: "image/jpeg".to_string(),
+                    size: 100_000,
+                },
+                Attachment {
+                    blob_id: "ccdd2233".to_string(),
+                    mime_type: "image/png".to_string(),
+                    size: 200_000,
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn blob_transfer_insert_and_query() {
+        let db = FeedDb::open_memory().unwrap();
+        let post = make_post_with_attachments("p1", "peer:AAAA");
+        db.insert_post(&post).unwrap();
+
+        // Insert transfer records
+        db.insert_blob_transfer("p1", "aabb0011").unwrap();
+        db.insert_blob_transfer("p1", "ccdd2233").unwrap();
+
+        // Query transfers
+        let transfers = db.get_post_transfers("p1").unwrap();
+        assert_eq!(transfers.len(), 2);
+        assert_eq!(transfers[0].blob_id, "aabb0011");
+        assert_eq!(transfers[0].status, "pending");
+        assert_eq!(transfers[0].bytes_received, 0);
+        assert_eq!(transfers[0].mime_type, "image/jpeg");
+        assert_eq!(transfers[0].total_size, 100_000);
+        assert_eq!(transfers[1].blob_id, "ccdd2233");
+    }
+
+    #[test]
+    fn blob_transfer_update_status() {
+        let db = FeedDb::open_memory().unwrap();
+        let post = make_post_with_attachments("p1", "peer:BBBB");
+        db.insert_post(&post).unwrap();
+
+        db.insert_blob_transfer("p1", "aabb0011").unwrap();
+        db.update_blob_transfer("p1", "aabb0011", "fetching", 50_000)
+            .unwrap();
+
+        let transfers = db.get_post_transfers("p1").unwrap();
+        assert_eq!(transfers[0].status, "fetching");
+        assert_eq!(transfers[0].bytes_received, 50_000);
+    }
+
+    #[test]
+    fn blob_transfer_are_all_complete() {
+        let db = FeedDb::open_memory().unwrap();
+        let post = make_post_with_attachments("p1", "peer:CCCC");
+        db.insert_post(&post).unwrap();
+
+        db.insert_blob_transfer("p1", "aabb0011").unwrap();
+        db.insert_blob_transfer("p1", "ccdd2233").unwrap();
+
+        // Not all complete yet
+        assert!(!db.are_all_transfers_complete("p1").unwrap());
+
+        // Complete one
+        db.update_blob_transfer("p1", "aabb0011", "complete", 100_000)
+            .unwrap();
+        assert!(!db.are_all_transfers_complete("p1").unwrap());
+
+        // Complete both
+        db.update_blob_transfer("p1", "ccdd2233", "complete", 200_000)
+            .unwrap();
+        assert!(db.are_all_transfers_complete("p1").unwrap());
+    }
+
+    #[test]
+    fn blob_transfer_get_active() {
+        let db = FeedDb::open_memory().unwrap();
+        let post = make_post_with_attachments("p1", "peer:DDDD");
+        db.insert_post(&post).unwrap();
+
+        db.insert_blob_transfer("p1", "aabb0011").unwrap();
+        db.insert_blob_transfer("p1", "ccdd2233").unwrap();
+
+        // Both pending — both active
+        let active = db.get_active_transfers().unwrap();
+        assert_eq!(active.len(), 2);
+
+        // Complete one, mark other fetching
+        db.update_blob_transfer("p1", "aabb0011", "complete", 100_000)
+            .unwrap();
+        db.update_blob_transfer("p1", "ccdd2233", "fetching", 50_000)
+            .unwrap();
+
+        let active = db.get_active_transfers().unwrap();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].blob_id, "ccdd2233");
+
+        // Complete the last one
+        db.update_blob_transfer("p1", "ccdd2233", "complete", 200_000)
+            .unwrap();
+        let active = db.get_active_transfers().unwrap();
+        assert!(active.is_empty());
+    }
+
+    #[test]
+    fn blob_transfer_failed_not_active() {
+        let db = FeedDb::open_memory().unwrap();
+        let post = make_post_with_attachments("p1", "peer:EEEE");
+        db.insert_post(&post).unwrap();
+
+        db.insert_blob_transfer("p1", "aabb0011").unwrap();
+        db.update_blob_transfer("p1", "aabb0011", "failed", 0)
+            .unwrap();
+
+        let active = db.get_active_transfers().unwrap();
+        assert!(active.is_empty());
+    }
+
+    #[test]
+    fn blob_transfer_dedup_insert() {
+        let db = FeedDb::open_memory().unwrap();
+        let post = make_post_with_attachments("p1", "peer:FFFF");
+        db.insert_post(&post).unwrap();
+
+        db.insert_blob_transfer("p1", "aabb0011").unwrap();
+        db.update_blob_transfer("p1", "aabb0011", "fetching", 50_000)
+            .unwrap();
+
+        // Re-insert should be ignored (INSERT OR IGNORE)
+        db.insert_blob_transfer("p1", "aabb0011").unwrap();
+        let transfers = db.get_post_transfers("p1").unwrap();
+        assert_eq!(transfers.len(), 1);
+        assert_eq!(transfers[0].status, "fetching"); // not reset to pending
+    }
+
+    #[test]
+    fn get_post_origin() {
+        let db = FeedDb::open_memory().unwrap();
+        db.insert_post(&make_post("p1", "peer:GGGG")).unwrap();
+
+        assert_eq!(
+            db.get_post_origin("p1").unwrap(),
+            Some("peer:GGGG".to_string())
+        );
+        assert_eq!(db.get_post_origin("nonexistent").unwrap(), None);
+    }
+
+    #[test]
+    fn blob_transfer_cascades_on_post_delete() {
+        let db = FeedDb::open_memory().unwrap();
+        let post = make_post_with_attachments("p1", "peer:HHHH");
+        db.insert_post(&post).unwrap();
+        db.insert_blob_transfer("p1", "aabb0011").unwrap();
+
+        db.delete_post("p1", None).unwrap();
+
+        // Transfer record should be gone (cascade via attachment FK)
+        let transfers = db.get_post_transfers("p1").unwrap();
+        assert!(transfers.is_empty());
     }
 }

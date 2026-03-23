@@ -233,18 +233,14 @@ pub async fn create_post_multipart(
     // Register blobs with the daemon
     for (i, (_, data)) in file_parts.iter().enumerate() {
         let hash: [u8; 32] = Sha256::digest(data).into();
-        state
-            .bridge()
-            .blob_store(&hash, data)
-            .await
-            .map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({
-                        "error": format!("blob registration failed for attachment {}: {}", i, e)
-                    })),
-                )
-            })?;
+        state.bridge().blob_store(&hash, data).await.map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": format!("blob registration failed for attachment {}: {}", i, e)
+                })),
+            )
+        })?;
     }
 
     create_and_broadcast(state, content, author_id, author_name, attachments).await
@@ -255,13 +251,56 @@ pub async fn get_limits(State(state): State<FeedState>) -> Json<Value> {
     Json(json!({ "limits": state.limits }))
 }
 
+/// GET /post/:id/attachments — blob transfer status for a post's attachments.
+pub async fn get_attachment_status(
+    State(state): State<FeedState>,
+    Path(post_id): Path<String>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    // Check post exists
+    if !state.db.post_exists(&post_id).unwrap_or(false) {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "post not found" })),
+        ));
+    }
+
+    let transfers = state.db.get_post_transfers(&post_id).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e.to_string() })),
+        )
+    })?;
+
+    // If no transfer records, the post is local (blobs are already here)
+    if transfers.is_empty() {
+        return Ok(Json(json!({
+            "post_id": post_id,
+            "status": "local",
+            "attachments": [],
+        })));
+    }
+
+    let all_complete = transfers.iter().all(|t| t.status == "complete");
+    let any_failed = transfers.iter().any(|t| t.status == "failed");
+    let overall = if all_complete {
+        "complete"
+    } else if any_failed {
+        "partial"
+    } else {
+        "fetching"
+    };
+
+    Ok(Json(json!({
+        "post_id": post_id,
+        "status": overall,
+        "attachments": transfers,
+    })))
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 fn bad_request(msg: &str) -> (StatusCode, Json<Value>) {
-    (
-        StatusCode::BAD_REQUEST,
-        Json(json!({ "error": msg })),
-    )
+    (StatusCode::BAD_REQUEST, Json(json!({ "error": msg })))
 }
 
 fn resolve_author(
@@ -313,7 +352,11 @@ async fn create_and_broadcast(
         )
     })?;
 
-    info!("Created post: {} ({} attachments)", post.id, post.attachments.len());
+    info!(
+        "Created post: {} ({} attachments)",
+        post.id,
+        post.attachments.len()
+    );
 
     // Broadcast the new post to all social peers via the bridge
     let runtime = state.runtime.clone();
@@ -454,6 +497,17 @@ pub async fn p2pcd_inbound(
                         "Ingested post from peer {}",
                         &body.peer_id[..8.min(body.peer_id.len())]
                     );
+
+                    // Trigger blob fetches for any attachments
+                    if !post.attachments.is_empty() {
+                        let db = state.db.clone();
+                        let bridge = state.bridge().clone();
+                        let post_clone = post.clone();
+                        tokio::spawn(async move {
+                            crate::blob_fetcher::fetch_post_blobs(db, bridge, &post_clone).await;
+                        });
+                    }
+
                     Ok(StatusCode::CREATED)
                 }
                 Ok(false) => {

@@ -15,6 +15,7 @@ use tracing_subscriber::EnvFilter;
 static UI_ASSETS: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/ui");
 
 mod api;
+mod blob_fetcher;
 mod db;
 mod posts;
 
@@ -64,14 +65,23 @@ async fn main() -> anyhow::Result<()> {
         max_video_bytes: config.max_video_bytes,
         ..Default::default()
     };
-    let state =
-        api::FeedState::new(config.data_dir.clone(), feed_db, config.daemon_port).with_limits(limits);
+    let state = api::FeedState::new(config.data_dir.clone(), feed_db, config.daemon_port)
+        .with_limits(limits);
 
     // Restore active peers from daemon on startup
     {
         let state_clone = state.clone();
         tokio::spawn(async move {
             api::init_peers_from_daemon(state_clone).await;
+        });
+    }
+
+    // Resume any pending blob transfers from a previous run
+    {
+        let db_clone = state.db.clone();
+        let bridge_clone = state.bridge().clone();
+        tokio::spawn(async move {
+            blob_fetcher::resume_active_transfers(db_clone, bridge_clone).await;
         });
     }
 
@@ -85,6 +95,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/post/upload", post(api::create_post_multipart))
         .route("/post/limits", get(api::get_limits))
         .route("/post/:id", delete(api::delete_post))
+        .route("/post/:id/attachments", get(api::get_attachment_status))
         // Utility
         .route("/health", get(api::health))
         .route("/peers", get(api::list_social_peers))

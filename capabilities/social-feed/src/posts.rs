@@ -134,10 +134,7 @@ pub fn validate_attachments(attachments: &[Attachment]) -> Vec<AttachmentError> 
             errors.push(AttachmentError {
                 index: i,
                 constraint: "max_size".to_string(),
-                message: format!(
-                    "attachment too large ({} bytes, max {})",
-                    att.size, max
-                ),
+                message: format!("attachment too large ({} bytes, max {})", att.size, max),
             });
         }
     }
@@ -186,7 +183,11 @@ pub fn validate_attachments_with_limits(
         return errors;
     }
 
-    let allowed: Vec<&str> = limits.allowed_mime_types.iter().map(|s| s.as_str()).collect();
+    let allowed: Vec<&str> = limits
+        .allowed_mime_types
+        .iter()
+        .map(|s| s.as_str())
+        .collect();
 
     for (i, att) in attachments.iter().enumerate() {
         if !allowed.contains(&att.mime_type.as_str()) {
@@ -369,8 +370,7 @@ mod tests {
     #[test]
     fn backward_compat_deserialize() {
         // Old JSON without attachments or origin fields
-        let json =
-            r#"{"id":"old","author_id":"a","author_name":"A","content":"hi","timestamp":1}"#;
+        let json = r#"{"id":"old","author_id":"a","author_name":"A","content":"hi","timestamp":1}"#;
         let post: Post = serde_json::from_str(json).unwrap();
         assert_eq!(post.origin, "local");
         assert!(post.attachments.is_empty());

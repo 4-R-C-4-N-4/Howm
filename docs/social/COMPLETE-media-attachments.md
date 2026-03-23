@@ -14,10 +14,11 @@ SHA-256, registered with the daemon's blob store, and broadcast to peers
 over P2P-CD.
 
 Completed: Phase 0 (blob bridge), Phase 1 (schema), Phase 2 (multipart
-upload + blob registration + configurable limits + limits endpoint).
+upload + blob registration + configurable limits + limits endpoint),
+Phase 4 (blob fetch on post receipt + status endpoint).
 
-Deferred to future work: Phase 3 (thumbnails), Phase 4 (blob fetch on
-receipt), Phase 5 (UI media rendering).
+Skipped: Phase 3 (thumbnails — deferred until UI needs it).
+Remaining: Phase 5 (UI media rendering).
 
 ---
 
@@ -102,6 +103,46 @@ Files changed:
 - `capabilities/social-feed/src/main.rs` — CLI config for limits, route registration
 - `capabilities/social-feed/Cargo.toml` — added `sha2`, `hex` dependencies
 
+### Phase 4 — Blob Fetch on Post Receipt
+
+When an inbound peer post has attachments, the social-feed capability
+automatically fetches the blobs from the posting peer.
+
+**blob_fetcher.rs** (new module):
+- `fetch_post_blobs()` — called from the inbound handler after a peer post
+  with attachments is ingested. Inserts `blob_transfer` records (pending),
+  then spawns an async task per attachment.
+- Each task: checks if blob exists locally → if not, calls
+  `bridge.blob_request(peer_id, hash)` → polls `bridge.blob_status(hash)`
+  every 2s until the blob appears (or 5-minute timeout).
+- Status progression: `pending` → `fetching` → `complete` / `failed`.
+- When all blobs for a post complete, logs "all blobs complete" (event
+  emission for the UI is a TODO).
+- `resume_active_transfers()` — called on startup, picks up any
+  pending/fetching transfers from the DB after a crash or restart.
+
+**db.rs additions**:
+- `BlobTransfer` struct — serializable record with status, bytes_received,
+  mime_type, total_size.
+- `insert_blob_transfer()` — INSERT OR IGNORE (idempotent).
+- `update_blob_transfer()` — set status + bytes_received.
+- `get_post_transfers()` — all transfers for a post (joined with attachments).
+- `get_active_transfers()` — all pending/fetching transfers (for resume).
+- `are_all_transfers_complete()` — check if a post's media is fully downloaded.
+- `get_post_origin()` — look up which peer a post came from.
+
+**api.rs additions**:
+- `GET /post/:id/attachments` — returns per-blob transfer status with an
+  overall status field: `local` (own post, no transfers), `fetching`,
+  `partial` (some failed), or `complete`.
+- Inbound handler now spawns blob fetches when a peer post has attachments.
+
+Files changed:
+- `capabilities/social-feed/src/blob_fetcher.rs` (new — fetch orchestration)
+- `capabilities/social-feed/src/db.rs` — BlobTransfer struct + 6 CRUD methods
+- `capabilities/social-feed/src/api.rs` — attachment status endpoint + inbound wiring
+- `capabilities/social-feed/src/main.rs` — resume_active_transfers on startup
+
 ---
 
 ## Design Decisions
@@ -155,13 +196,16 @@ addressed storage model. Deduplication is free — uploading the same image twic
 just overwrites the same blob. The hash is computed client-side (in the capability
 process) before registration with the daemon.
 
-### D6: No attachment status tracking yet
+### D6: Poll-based blob fetch (no push notifications yet)
 
-**Decision:** Skip the `blob_transfers` table and per-attachment status endpoint.
+**Decision:** Blob fetches use a poll loop (2s interval, 5min timeout) against
+`blob_status` rather than push-based event delivery.
 
-**Rationale:** That's Phase 4 (blob fetch on receipt) — tracking download
-progress for inbound post attachments. The outbound path (Phase 2) doesn't
-need status tracking because blob registration is synchronous and fails fast.
+**Rationale:** The daemon's blob capability doesn't yet emit completion events
+to out-of-process capabilities. Polling is simple, reliable, and good enough
+for v1. When all blobs for a post complete, the fetcher logs it — a
+`post.media_ready` bridge event can be added later when the UI needs real-time
+updates.
 
 ---
 
@@ -175,6 +219,7 @@ need status tracking because blob registration is synchronous and fails fast.
 | POST | /post | `create_post` | Text-only (JSON) |
 | POST | /post/upload | `create_post_multipart` | With file attachments (multipart) |
 | GET | /post/limits | `get_limits` | Configured upload limits |
+| GET | /post/:id/attachments | `get_attachment_status` | Blob transfer status per attachment |
 | DELETE | /post/:id | `delete_post` | Delete a post |
 | GET | /health | `health` | Health check |
 | GET | /peers | `list_social_peers` | Active social peers |
@@ -187,13 +232,14 @@ need status tracking because blob registration is synchronous and fails fast.
 ## Test Results
 
 ```
-social-feed:  27 passed, 0 failed
+social-feed:  35 passed, 0 failed
 node workspace: cargo check clean (zero warnings)
 ```
 
 Tests cover: post CRUD, pagination, attachment validation (count, MIME,
 size boundaries), backward-compat deserialization, round-trip serialization,
-peer post preparation, SQLite migration from JSON.
+peer post preparation, SQLite migration from JSON, blob transfer CRUD
+(insert, update, query, completeness check, dedup, cascade delete, origin lookup).
 
 ---
 
@@ -202,8 +248,10 @@ peer post preparation, SQLite migration from JSON.
 ```
 capabilities/social-feed/Cargo.toml           |   5 +-
 capabilities/social-feed/Cargo.lock           | 115 ++
-capabilities/social-feed/src/api.rs           | 266 +++++++--
-capabilities/social-feed/src/main.rs          |  62 +-
+capabilities/social-feed/src/api.rs           | 320 +++++++--
+capabilities/social-feed/src/blob_fetcher.rs  | 260 ++++++++  (new)
+capabilities/social-feed/src/db.rs            | 870 ++++++++++++
+capabilities/social-feed/src/main.rs          |  75 +-
 capabilities/social-feed/src/posts.rs         | 591 +++++++++-------
 node/daemon/src/main.rs                       |   1 +
 node/daemon/src/p2pcd/bridge.rs               | 336 +++++++++
@@ -213,7 +261,7 @@ node/p2pcd/src/bridge_client.rs               | 154 +++++
 node/p2pcd/src/capabilities/blob.rs           |   5 +
 node/p2pcd/src/capabilities/mod.rs            |  10 +-
 ────────────────────────────────────────────────────
-                                    12 files, +1210 / -345
+                                    14 files, +1900 / -345
 ```
 
 ---
@@ -225,11 +273,11 @@ node/p2pcd/src/capabilities/mod.rs            |  10 +-
 | Phase 0 | Blob bridge endpoints | DONE |
 | Phase 1 | Post schema + validation | DONE |
 | Phase 2 | Multipart upload + blob registration | DONE |
-| Phase 3 | Thumbnail generation | DEFERRED (add when UI needs it) |
-| Phase 4 | Blob fetch on post receipt | TODO (inbound attachment download) |
-| Phase 5 | UI media rendering | TODO (depends on Phase 3 + 4) |
+| Phase 3 | Thumbnail generation | SKIPPED (add when UI needs blur-up) |
+| Phase 4 | Blob fetch on post receipt | DONE |
+| Phase 5 | UI media rendering | TODO |
 
-Phase 4 is the next logical step — when a peer post arrives with attachments,
-the social-feed capability needs to trigger blob fetches from the posting peer
-and track download progress. This enables the UI to show download state and
-swap placeholders for real media.
+Phase 5 is next — React components to render media attachments inline,
+show download progress for peer post blobs, and handle error/unavailable
+states. The backend now supports the full lifecycle: upload → broadcast →
+fetch → status query.
