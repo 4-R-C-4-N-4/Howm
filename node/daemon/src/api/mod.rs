@@ -4,7 +4,7 @@ use axum::{
     http::{Request, StatusCode},
     middleware::{self, Next},
     response::Response,
-    routing::{any, delete, get, post},
+    routing::{any, delete, get, post, put},
     Router,
 };
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -14,6 +14,7 @@ use tower_http::services::{ServeDir, ServeFile};
 
 pub mod auth_layer;
 pub mod capability_routes;
+pub mod connection_routes;
 pub mod network_routes;
 pub mod node_routes;
 pub mod p2pcd_routes;
@@ -85,6 +86,11 @@ pub fn build_router(state: AppState, ui_dir: Option<PathBuf>) -> Router {
             axum::routing::put(settings_routes::update_p2pcd_config),
         )
         .route("/settings/nat-detect", post(settings_routes::detect_nat))
+        .route("/network/detect", post(connection_routes::network_detect))
+        .route(
+            "/network/relay",
+            put(connection_routes::network_relay_update),
+        )
         .layer(middleware::from_fn_with_state(
             state.clone(),
             bearer_auth_middleware,
@@ -120,6 +126,17 @@ pub fn build_router(state: AppState, ui_dir: Option<PathBuf>) -> Router {
         .route("/settings/identity", get(settings_routes::get_identity))
         .route("/settings/p2pcd", get(settings_routes::get_p2pcd_config))
         .route("/settings/nat", get(settings_routes::get_nat_profile))
+        .route("/network/status", get(connection_routes::network_status))
+        .route(
+            "/network/nat-profile",
+            get(connection_routes::network_nat_profile),
+        )
+        .route("/network/pending", get(connection_routes::network_pending))
+        .route("/network/matchmake/status", get(connection_routes::matchmake_status))
+        .route(
+            "/network/matchmake/status",
+            get(connection_routes::matchmake_status),
+        )
         .layer(middleware::from_fn(local_or_wg_middleware));
 
     // ── 2b. Bridge routes — localhost-only, for out-of-process capabilities ──

@@ -109,6 +109,10 @@ pub async fn create_invite(
         .wg_listen_port
         .unwrap_or(state.config.wg_port);
 
+    // Load NAT profile and relay candidates for v3 invite token
+    let nat_profile = crate::stun::load_nat_profile(&state.config.data_dir);
+    let relay_candidates = crate::api::connection_routes::collect_relay_candidate_pubkeys(&state).await;
+
     let invite_code = invite::generate(
         &state.config.data_dir,
         &state.identity,
@@ -117,6 +121,8 @@ pub async fn create_invite(
         state.config.invite_ttl_s,
         &ipv6_guas,
         wg_port,
+        nat_profile.as_ref(),
+        &relay_candidates,
     )
     .map_err(|e| AppError::Internal(e.to_string()))?;
 
@@ -938,10 +944,73 @@ pub async fn redeem_accept(
                 info!("Hole punch succeeded in {:.1}s", elapsed.as_secs_f64());
             }
             crate::punch::PunchResult::Timeout { elapsed } => {
-                return Err(AppError::PeerUnreachable(format!(
-                    "hole punch timed out after {:.1}s — peer may be behind symmetric NAT",
+                info!(
+                    "Hole punch timed out after {:.1}s — trying Tier 3 matchmake relay",
                     elapsed.as_secs_f64()
-                )));
+                );
+
+                // Tier 3: Matchmake relay fallback
+                // Re-collect our relay-capable peers (we're the inviter, these
+                // are our peers that can relay for us).
+                let relay_candidates =
+                    crate::api::connection_routes::collect_relay_candidate_pubkeys(&state).await;
+                let our_peers: std::collections::HashSet<String> = relay_candidates
+                    .iter()
+                    .cloned()
+                    .collect();
+
+                // The joiner's relay candidates came from the original invite we
+                // created, which listed our relay-capable peers. Since both sides
+                // share those peers, pass our current list as "their" candidates.
+                if !relay_candidates.is_empty() {
+                    // find_mutual_relay picks the first overlap — since we're
+                    // checking our own list against itself, just use the first.
+                    if let Ok(relay) = crate::matchmake::find_mutual_relay(
+                        &relay_candidates,
+                        &our_peers,
+                    ) {
+                        let counter = state.matchmake_counter.clone();
+                        match crate::matchmake::initiate_matchmake(
+                            &state,
+                            &relay,
+                            &decoded.pubkey,
+                            &decoded.psk,
+                            &_invite.assigned_ip,
+                            counter,
+                        )
+                        .await
+                        {
+                            Ok(crate::matchmake::MatchmakeResult::Connected) => {
+                                info!("Tier 3 matchmake relay succeeded");
+                                used_endpoint = format!("matchmake-relay:{}", relay);
+                                // Fall through to peer registration below
+                            }
+                            Ok(crate::matchmake::MatchmakeResult::PunchFailed) => {
+                                return Err(AppError::PeerUnreachable(format!(
+                                    "hole punch timed out after {:.1}s, matchmake relay                                      exchange succeeded but direct punch still failed",
+                                    elapsed.as_secs_f64()
+                                )));
+                            }
+                            Err(e) => {
+                                return Err(AppError::PeerUnreachable(format!(
+                                    "hole punch timed out after {:.1}s, matchmake failed: {}",
+                                    elapsed.as_secs_f64(),
+                                    e,
+                                )));
+                            }
+                        }
+                    } else {
+                        return Err(AppError::PeerUnreachable(format!(
+                            "hole punch timed out after {:.1}s — no mutual relay peer available",
+                            elapsed.as_secs_f64()
+                        )));
+                    }
+                } else {
+                    return Err(AppError::PeerUnreachable(format!(
+                        "hole punch timed out after {:.1}s — no relay-capable peers available",
+                        elapsed.as_secs_f64()
+                    )));
+                }
             }
             crate::punch::PunchResult::Error(e) => {
                 return Err(AppError::Internal(format!("hole punch error: {}", e)));

@@ -5,6 +5,7 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::identity::NodeIdentity;
+use crate::stun::{NatProfile, NatType};
 use crate::wireguard;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -33,15 +34,20 @@ pub struct DecodedInvite {
     pub expires_at: u64,
     pub their_ipv6_candidates: Vec<Ipv6Addr>, // GUA IPv6 addresses
     pub their_wg_port: u16,                   // peer's WG listen port
+    // v3 fields (NAT traversal)
+    pub their_nat_type: Option<NatType>, // peer's NAT classification
+    pub their_stride: i32,               // peer's port allocation stride
+    pub their_relay_candidates: Vec<String>, // base64 WG pubkeys of relay-capable peers
 }
 
 /// Generate a new invite code.
 ///
-/// Format v2 (pipe-delimited, base64url):
-/// `howm://invite/<base64(pubkey|endpoint|wg_addr|psk|assigned_ip|daemon_port|expiry|ipv6_csv|wg_port)>`
+/// Format v3 (pipe-delimited, base64url):
+/// `howm://invite/<base64(pubkey|endpoint|wg_addr|psk|assigned_ip|daemon_port|expiry|ipv6_csv|wg_port|nat_type|stride|relay_csv)>`
 ///
-/// Fields 8-9 are new (IPv6 candidates and WG port). Older parsers that split
-/// on `|` and take the first 7 will still work — new fields are trailing.
+/// Fields 8-9 added in v2 (IPv6, WG port). Fields 10-12 added in v3 (NAT info,
+/// relay candidates). Older parsers that split on `|` and take fewer fields
+/// will still work — new fields are trailing.
 pub fn generate(
     data_dir: &Path,
     identity: &NodeIdentity,
@@ -50,6 +56,8 @@ pub fn generate(
     ttl_s: u64,
     ipv6_guas: &[Ipv6Addr],
     wg_port: u16,
+    nat_profile: Option<&NatProfile>,
+    relay_candidates: &[String],
 ) -> anyhow::Result<String> {
     let our_pubkey = identity
         .wg_pubkey
@@ -99,10 +107,19 @@ pub fn generate(
     invites.push(invite);
     save_pending(data_dir, &invites)?;
 
+    // v3 NAT fields (empty string if not applicable)
+    let nat_type_str = nat_profile
+        .map(|p| p.nat_type.to_string())
+        .unwrap_or_default();
+    let stride_str = nat_profile
+        .map(|p| p.observed_stride.to_string())
+        .unwrap_or_else(|| "0".to_string());
+    let relay_csv = relay_candidates.join(",");
+
     // Encode with | delimiter (endpoints contain colons)
-    // v2 format: 9 fields (appended ipv6_csv and wg_port)
+    // v3 format: 12 fields
     let payload = format!(
-        "{}|{}|{}|{}|{}|{}|{}|{}|{}",
+        "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
         our_pubkey,
         our_endpoint,
         our_wg_address,
@@ -112,20 +129,23 @@ pub fn generate(
         expires_at,
         ipv6_csv,
         wg_port,
+        nat_type_str,
+        stride_str,
+        relay_csv,
     );
     let encoded = URL_SAFE_NO_PAD.encode(payload.as_bytes());
     Ok(format!("howm://invite/{}", encoded))
 }
 
 /// Decode an invite code into its constituent fields.
-/// Supports both v1 (7 fields) and v2 (9 fields) formats.
+/// Supports v1 (7 fields), v2 (9 fields), and v3 (12 fields) formats.
 pub fn decode(invite_code: &str) -> anyhow::Result<DecodedInvite> {
     let stripped = invite_code
         .strip_prefix("howm://invite/")
         .ok_or_else(|| anyhow::anyhow!("invalid invite code format"))?;
     let bytes = URL_SAFE_NO_PAD.decode(stripped)?;
     let payload = String::from_utf8(bytes)?;
-    let parts: Vec<&str> = payload.splitn(9, '|').collect();
+    let parts: Vec<&str> = payload.splitn(12, '|').collect();
     if parts.len() < 7 {
         return Err(anyhow::anyhow!(
             "invalid invite payload — expected at least 7 fields, got {}",
@@ -145,12 +165,36 @@ pub fn decode(invite_code: &str) -> anyhow::Result<DecodedInvite> {
 
     // Parse WG port (field 9, index 8) — default to parsed from endpoint if missing
     let wg_port = if parts.len() > 8 {
-        parts[8].parse::<u16>().unwrap_or_else(|_| {
-            // Fall back to port from endpoint
-            extract_port_from_endpoint(parts[1]).unwrap_or(41641)
-        })
+        parts[8]
+            .parse::<u16>()
+            .unwrap_or_else(|_| extract_port_from_endpoint(parts[1]).unwrap_or(41641))
     } else {
         extract_port_from_endpoint(parts[1]).unwrap_or(41641)
+    };
+
+    // v3 fields (index 9-11)
+    let their_nat_type = if parts.len() > 9 && !parts[9].is_empty() {
+        match parts[9] {
+            "open" => Some(NatType::Open),
+            "cone" => Some(NatType::Cone),
+            "symmetric" => Some(NatType::Symmetric),
+            "unknown" => Some(NatType::Unknown),
+            _ => None,
+        }
+    } else {
+        None
+    };
+
+    let their_stride = if parts.len() > 10 {
+        parts[10].parse::<i32>().unwrap_or(0)
+    } else {
+        0
+    };
+
+    let their_relay_candidates = if parts.len() > 11 && !parts[11].is_empty() {
+        parts[11].split(',').map(|s| s.to_string()).collect()
+    } else {
+        vec![]
     };
 
     Ok(DecodedInvite {
@@ -163,6 +207,9 @@ pub fn decode(invite_code: &str) -> anyhow::Result<DecodedInvite> {
         expires_at: parts[6].parse()?,
         their_ipv6_candidates: ipv6_candidates,
         their_wg_port: wg_port,
+        their_nat_type,
+        their_stride,
+        their_relay_candidates,
     })
 }
 
@@ -296,6 +343,9 @@ mod tests {
             expires_at: u64::MAX,
             their_ipv6_candidates: vec!["2001:db8::1".parse().unwrap()],
             their_wg_port: 41641,
+            their_nat_type: None,
+            their_stride: 0,
+            their_relay_candidates: vec![],
         };
 
         let candidates = connection_candidates(&decoded);
@@ -316,6 +366,9 @@ mod tests {
             expires_at: u64::MAX,
             their_ipv6_candidates: vec![],
             their_wg_port: 41641,
+            their_nat_type: None,
+            their_stride: 0,
+            their_relay_candidates: vec![],
         };
 
         let candidates = connection_candidates(&decoded);
@@ -335,6 +388,9 @@ mod tests {
             expires_at: u64::MAX,
             their_ipv6_candidates: vec!["2001:db8::1".parse().unwrap()],
             their_wg_port: 41641,
+            their_nat_type: None,
+            their_stride: 0,
+            their_relay_candidates: vec![],
         };
 
         let candidates = connection_candidates(&decoded);
@@ -347,5 +403,150 @@ mod tests {
         assert_eq!(extract_port_from_endpoint("1.2.3.4:51820"), Some(51820));
         assert_eq!(extract_port_from_endpoint("[::1]:41641"), Some(41641));
         assert_eq!(extract_port_from_endpoint("garbage"), None);
+    }
+
+    #[test]
+    fn test_roundtrip_v3_full() {
+        // Build a v3 payload with all 12 fields
+        let payload = format!(
+            "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+            "pubkey_v3",
+            "203.0.113.5:41641",
+            "100.222.0.1",
+            "psk_v3",
+            "100.222.0.2",
+            7000,
+            9999999999u64,
+            "2001:db8::1,2001:db8::2",
+            41641,
+            "cone",
+            4,
+            "relay_peer_a,relay_peer_b",
+        );
+        let encoded = URL_SAFE_NO_PAD.encode(payload.as_bytes());
+        let invite_code = format!("howm://invite/{}", encoded);
+
+        let decoded = decode(&invite_code).unwrap();
+        assert_eq!(decoded.their_pubkey, "pubkey_v3");
+        assert_eq!(decoded.their_endpoint, "203.0.113.5:41641");
+        assert_eq!(decoded.their_wg_address, "100.222.0.1");
+        assert_eq!(decoded.psk, "psk_v3");
+        assert_eq!(decoded.my_assigned_ip, "100.222.0.2");
+        assert_eq!(decoded.their_daemon_port, 7000);
+        assert_eq!(decoded.their_ipv6_candidates.len(), 2);
+        assert_eq!(decoded.their_wg_port, 41641);
+        assert_eq!(decoded.their_nat_type, Some(NatType::Cone));
+        assert_eq!(decoded.their_stride, 4);
+        assert_eq!(
+            decoded.their_relay_candidates,
+            vec!["relay_peer_a", "relay_peer_b"]
+        );
+    }
+
+    #[test]
+    fn test_v3_symmetric_nat_and_negative_stride() {
+        let payload = format!(
+            "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+            "sym_peer",
+            "198.51.100.1:41641",
+            "100.222.0.5",
+            "psk_sym",
+            "100.222.0.6",
+            7000,
+            9999999999u64,
+            "",
+            41641,
+            "symmetric",
+            -3,
+            "relay_carol",
+        );
+        let encoded = URL_SAFE_NO_PAD.encode(payload.as_bytes());
+        let invite_code = format!("howm://invite/{}", encoded);
+
+        let decoded = decode(&invite_code).unwrap();
+        assert_eq!(decoded.their_nat_type, Some(NatType::Symmetric));
+        assert_eq!(decoded.their_stride, -3);
+        assert_eq!(decoded.their_relay_candidates, vec!["relay_carol"]);
+        assert!(decoded.their_ipv6_candidates.is_empty());
+    }
+
+    #[test]
+    fn test_v3_no_nat_no_relay() {
+        // v3 format but empty NAT and relay fields
+        let payload = format!(
+            "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+            "pk",
+            "1.2.3.4:41641",
+            "100.222.0.1",
+            "psk",
+            "100.222.0.2",
+            7000,
+            9999999999u64,
+            "",
+            41641,
+            "",  // no nat type
+            "0",
+            "",  // no relay candidates
+        );
+        let encoded = URL_SAFE_NO_PAD.encode(payload.as_bytes());
+        let invite_code = format!("howm://invite/{}", encoded);
+
+        let decoded = decode(&invite_code).unwrap();
+        assert_eq!(decoded.their_nat_type, None);
+        assert_eq!(decoded.their_stride, 0);
+        assert!(decoded.their_relay_candidates.is_empty());
+    }
+
+    #[test]
+    fn test_v2_backward_compat_no_nat_fields() {
+        // v2 format: only 9 fields (no NAT type, stride, or relay)
+        let payload = format!(
+            "{}|{}|{}|{}|{}|{}|{}|{}|{}",
+            "pubkey_v2",
+            "1.2.3.4:41641",
+            "100.222.0.1",
+            "psk_v2",
+            "100.222.0.2",
+            7000,
+            9999999999u64,
+            "2001:db8::1",
+            41641,
+        );
+        let encoded = URL_SAFE_NO_PAD.encode(payload.as_bytes());
+        let invite_code = format!("howm://invite/{}", encoded);
+
+        let decoded = decode(&invite_code).unwrap();
+        assert_eq!(decoded.their_pubkey, "pubkey_v2");
+        assert_eq!(decoded.their_ipv6_candidates.len(), 1);
+        assert_eq!(decoded.their_wg_port, 41641);
+        // v3 fields should default gracefully
+        assert_eq!(decoded.their_nat_type, None);
+        assert_eq!(decoded.their_stride, 0);
+        assert!(decoded.their_relay_candidates.is_empty());
+    }
+
+    #[test]
+    fn test_v1_backward_compat_no_v3_fields() {
+        // v1: 7 fields only — no IPv6, no WG port, no NAT
+        let payload = format!(
+            "{}|{}|{}|{}|{}|{}|{}",
+            "pubkey_v1",
+            "10.0.0.1:51820",
+            "100.222.0.1",
+            "psk_v1",
+            "100.222.0.2",
+            7000,
+            9999999999u64,
+        );
+        let encoded = URL_SAFE_NO_PAD.encode(payload.as_bytes());
+        let invite_code = format!("howm://invite/{}", encoded);
+
+        let decoded = decode(&invite_code).unwrap();
+        assert_eq!(decoded.their_pubkey, "pubkey_v1");
+        assert!(decoded.their_ipv6_candidates.is_empty());
+        assert_eq!(decoded.their_wg_port, 51820); // extracted from endpoint
+        assert_eq!(decoded.their_nat_type, None);
+        assert_eq!(decoded.their_stride, 0);
+        assert!(decoded.their_relay_candidates.is_empty());
     }
 }

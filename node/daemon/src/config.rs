@@ -51,6 +51,12 @@ pub struct Config {
     #[arg(long, default_value = "5", env = "HOWM_OPEN_PRUNE_DAYS")]
     pub open_invite_prune_days: u64,
 
+    /// Allow this node to relay signaling between peers for NAT traversal.
+    /// When enabled, peers can use this node as a relay to exchange endpoint
+    /// info so they can establish direct WG connections.
+    #[arg(long, default_value = "false", env = "HOWM_ALLOW_RELAY")]
+    pub allow_relay: bool,
+
     #[arg(long, default_value = "false")]
     pub dev: bool,
 

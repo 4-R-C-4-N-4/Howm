@@ -13,6 +13,7 @@ mod error;
 mod executor;
 mod identity;
 mod invite;
+mod matchmake;
 mod net_detect;
 mod open_invite;
 mod p2pcd;
@@ -210,6 +211,63 @@ async fn main() -> anyhow::Result<()> {
                 tracing::error!("P2P-CD engine exited with error: {}", e);
             }
         });
+    }
+
+    // Register matchmake circuit event handler
+    if let Some(ref engine) = p2pcd_engine {
+        if let Some(handler) = engine.cap_router().handler_by_name("core.network.relay.1") {
+            if let Some(relay_handler) = handler
+                .as_any()
+                .downcast_ref::<::p2pcd::capabilities::relay::RelayHandler>()
+            {
+                let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+                relay_handler.set_event_callback(tx).await;
+                let mm_state = state.clone();
+                let mm_counter = Arc::clone(&state.matchmake_counter);
+                tokio::spawn(async move {
+                    while let Some(event) = rx.recv().await {
+                        match event {
+                            ::p2pcd::capabilities::relay::CircuitEvent::Data {
+                                circuit_id,
+                                data,
+                                ..
+                            } => {
+                                match matchmake::decode_message(&data) {
+                                    Ok(matchmake::MatchmakeMessage::Request(req)) => {
+                                        let s = mm_state.clone();
+                                        let c = Arc::clone(&mm_counter);
+                                        tokio::spawn(async move {
+                                            if let Err(e) =
+                                                matchmake::handle_incoming_matchmake(
+                                                    &s, circuit_id, req, c,
+                                                )
+                                                .await
+                                            {
+                                                tracing::warn!(
+                                                    "matchmake handler error: {}", e
+                                                );
+                                            }
+                                        });
+                                    }
+                                    Ok(_) => {
+                                        tracing::debug!(
+                                            "matchmake: ignoring non-request on circuit {}",
+                                            circuit_id
+                                        );
+                                    }
+                                    Err(_) => {
+                                        // Not a matchmake message — ignore
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    tracing::debug!("matchmake: circuit event channel closed");
+                });
+                info!("Matchmake circuit event handler registered");
+            }
+        }
     }
 
     // Start HTTP server with graceful shutdown
