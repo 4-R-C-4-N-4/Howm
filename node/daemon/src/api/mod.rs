@@ -132,7 +132,10 @@ pub fn build_router(state: AppState, ui_dir: Option<PathBuf>) -> Router {
             get(connection_routes::network_nat_profile),
         )
         .route("/network/pending", get(connection_routes::network_pending))
-        .route("/network/matchmake/status", get(connection_routes::matchmake_status))
+        .route(
+            "/network/matchmake/status",
+            get(connection_routes::matchmake_status),
+        )
         .route(
             "/network/matchmake/status",
             get(connection_routes::matchmake_status),

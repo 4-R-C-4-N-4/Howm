@@ -237,15 +237,12 @@ async fn main() -> anyhow::Result<()> {
                                         let s = mm_state.clone();
                                         let c = Arc::clone(&mm_counter);
                                         tokio::spawn(async move {
-                                            if let Err(e) =
-                                                matchmake::handle_incoming_matchmake(
-                                                    &s, circuit_id, req, c,
-                                                )
-                                                .await
+                                            if let Err(e) = matchmake::handle_incoming_matchmake(
+                                                &s, circuit_id, req, c,
+                                            )
+                                            .await
                                             {
-                                                tracing::warn!(
-                                                    "matchmake handler error: {}", e
-                                                );
+                                                tracing::warn!("matchmake handler error: {}", e);
                                             }
                                         });
                                     }

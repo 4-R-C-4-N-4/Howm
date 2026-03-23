@@ -20,11 +20,11 @@ use std::sync::Arc;
 use anyhow::Result;
 use ciborium::value::Value;
 use tokio::sync::RwLock;
-use tracing::{info, warn, debug};
+use tracing::{debug, info, warn};
 
 use crate::punch::{self, PunchConfig};
-use crate::stun::{self, NatType};
 use crate::state::AppState;
+use crate::stun::{self, NatType};
 
 // ── CBOR keys ────────────────────────────────────────────────────────────────
 
@@ -133,12 +133,7 @@ pub enum MatchmakeMessage {
 fn cbor_encode(pairs: Vec<(u64, Value)>) -> Vec<u8> {
     let map: Vec<(Value, Value)> = pairs
         .into_iter()
-        .map(|(k, v)| {
-            (
-                Value::Integer(ciborium::value::Integer::from(k)),
-                v,
-            )
-        })
+        .map(|(k, v)| (Value::Integer(ciborium::value::Integer::from(k)), v))
         .collect();
     let mut out = Vec::new();
     ciborium::ser::into_writer(&Value::Map(map), &mut out).expect("CBOR encode");
@@ -235,16 +230,16 @@ pub fn encode_request(info: &EndpointInfo, psk: &str, assigned_ip: &str) -> Vec<
     cbor_encode(vec![
         (cbor_keys::MSG_TYPE, Value::Text("matchmake-request".into())),
         (cbor_keys::WG_PUBKEY, Value::Text(info.wg_pubkey.clone())),
-        (cbor_keys::EXTERNAL_IP, Value::Text(info.external_ip.clone())),
+        (
+            cbor_keys::EXTERNAL_IP,
+            Value::Text(info.external_ip.clone()),
+        ),
         (
             cbor_keys::EXTERNAL_PORT,
             Value::Integer(info.external_port.into()),
         ),
         (cbor_keys::WG_PORT, Value::Integer(info.wg_port.into())),
-        (
-            cbor_keys::NAT_TYPE,
-            Value::Text(info.nat_type.to_string()),
-        ),
+        (cbor_keys::NAT_TYPE, Value::Text(info.nat_type.to_string())),
         (
             cbor_keys::STRIDE,
             Value::Integer(ciborium::value::Integer::from(info.observed_stride as i64)),
@@ -270,16 +265,16 @@ pub fn encode_exchange(info: &EndpointInfo) -> Vec<u8> {
             Value::Text("matchmake-exchange".into()),
         ),
         (cbor_keys::WG_PUBKEY, Value::Text(info.wg_pubkey.clone())),
-        (cbor_keys::EXTERNAL_IP, Value::Text(info.external_ip.clone())),
+        (
+            cbor_keys::EXTERNAL_IP,
+            Value::Text(info.external_ip.clone()),
+        ),
         (
             cbor_keys::EXTERNAL_PORT,
             Value::Integer(info.external_port.into()),
         ),
         (cbor_keys::WG_PORT, Value::Integer(info.wg_port.into())),
-        (
-            cbor_keys::NAT_TYPE,
-            Value::Text(info.nat_type.to_string()),
-        ),
+        (cbor_keys::NAT_TYPE, Value::Text(info.nat_type.to_string())),
         (
             cbor_keys::STRIDE,
             Value::Integer(ciborium::value::Integer::from(info.observed_stride as i64)),
@@ -373,11 +368,7 @@ pub async fn gather_endpoint_info(state: &AppState) -> Result<EndpointInfo, Matc
         .ok_or_else(|| MatchmakeError::PunchError("no WG pubkey on identity".into()))?;
 
     let wg_port = state.identity.wg_listen_port.unwrap_or(41641);
-    let wg_address = state
-        .identity
-        .wg_address
-        .clone()
-        .unwrap_or_default();
+    let wg_address = state.identity.wg_address.clone().unwrap_or_default();
 
     let data_dir = state.config.data_dir.clone();
 
@@ -478,10 +469,7 @@ pub fn punch_config_from_exchange_msg(
 }
 
 /// Build PunchConfig from a MatchmakeRequest (target side).
-pub fn punch_config_from_request(
-    req: &MatchmakeRequest,
-    our_nat_type: NatType,
-) -> PunchConfig {
+pub fn punch_config_from_request(req: &MatchmakeRequest, our_nat_type: NatType) -> PunchConfig {
     build_punch_config_from_exchange(
         &req.wg_pubkey,
         &req.external_ip,
@@ -612,16 +600,14 @@ async fn do_initiate_matchmake(
                     circuit_id: cid,
                     data,
                     ..
-                } if cid == circuit_id => {
-                    match decode_message(&data)? {
-                        MatchmakeMessage::Exchange(exch) => return Ok(exch),
-                        _ => {
-                            return Err(MatchmakeError::InvalidMessage(
-                                "expected exchange, got request".into(),
-                            ))
-                        }
+                } if cid == circuit_id => match decode_message(&data)? {
+                    MatchmakeMessage::Exchange(exch) => return Ok(exch),
+                    _ => {
+                        return Err(MatchmakeError::InvalidMessage(
+                            "expected exchange, got request".into(),
+                        ))
                     }
-                }
+                },
                 ::p2pcd::capabilities::relay::CircuitEvent::Closed {
                     circuit_id: cid,
                     reason,
@@ -649,7 +635,8 @@ async fn do_initiate_matchmake(
     );
 
     // Build punch config and run
-    let config = punch_config_from_exchange_msg(&exchange, our_nat, Some(psk.to_string()), assigned_ip);
+    let config =
+        punch_config_from_exchange_msg(&exchange, our_nat, Some(psk.to_string()), assigned_ip);
     let punch_result = punch::run_punch(
         &config,
         &state.config.data_dir,
@@ -660,7 +647,10 @@ async fn do_initiate_matchmake(
 
     match punch_result {
         punch::PunchResult::Success { elapsed, .. } => {
-            info!("matchmake: punch succeeded in {:.1}s", elapsed.as_secs_f64());
+            info!(
+                "matchmake: punch succeeded in {:.1}s",
+                elapsed.as_secs_f64()
+            );
             Ok(MatchmakeResult::Connected)
         }
         punch::PunchResult::Timeout { .. } | punch::PunchResult::Error(_) => {
@@ -765,7 +755,6 @@ async fn do_handle_incoming(
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -866,10 +855,6 @@ mod tests {
         let err = find_mutual_relay(&their, &ours).unwrap_err();
         assert!(matches!(err, MatchmakeError::NoMutualRelay));
     }
-
-
-
-
 
     #[test]
     fn negative_stride_roundtrip() {

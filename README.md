@@ -101,4 +101,4 @@ Rust (axum, tokio, clap, serde, x25519-dalek), WireGuard (kernel interface), CBO
 
 ## License
 
-MIT
+Apache

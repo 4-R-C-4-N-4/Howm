@@ -484,9 +484,9 @@ mod tests {
             9999999999u64,
             "",
             41641,
-            "",  // no nat type
+            "", // no nat type
             "0",
-            "",  // no relay candidates
+            "", // no relay candidates
         );
         let encoded = URL_SAFE_NO_PAD.encode(payload.as_bytes());
         let invite_code = format!("howm://invite/{}", encoded);

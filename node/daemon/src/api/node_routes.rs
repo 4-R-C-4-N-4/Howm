@@ -111,7 +111,8 @@ pub async fn create_invite(
 
     // Load NAT profile and relay candidates for v3 invite token
     let nat_profile = crate::stun::load_nat_profile(&state.config.data_dir);
-    let relay_candidates = crate::api::connection_routes::collect_relay_candidate_pubkeys(&state).await;
+    let relay_candidates =
+        crate::api::connection_routes::collect_relay_candidate_pubkeys(&state).await;
 
     let invite_code = invite::generate(
         &state.config.data_dir,
@@ -954,10 +955,8 @@ pub async fn redeem_accept(
                 // are our peers that can relay for us).
                 let relay_candidates =
                     crate::api::connection_routes::collect_relay_candidate_pubkeys(&state).await;
-                let our_peers: std::collections::HashSet<String> = relay_candidates
-                    .iter()
-                    .cloned()
-                    .collect();
+                let our_peers: std::collections::HashSet<String> =
+                    relay_candidates.iter().cloned().collect();
 
                 // The joiner's relay candidates came from the original invite we
                 // created, which listed our relay-capable peers. Since both sides
@@ -965,10 +964,9 @@ pub async fn redeem_accept(
                 if !relay_candidates.is_empty() {
                     // find_mutual_relay picks the first overlap — since we're
                     // checking our own list against itself, just use the first.
-                    if let Ok(relay) = crate::matchmake::find_mutual_relay(
-                        &relay_candidates,
-                        &our_peers,
-                    ) {
+                    if let Ok(relay) =
+                        crate::matchmake::find_mutual_relay(&relay_candidates, &our_peers)
+                    {
                         let counter = state.matchmake_counter.clone();
                         match crate::matchmake::initiate_matchmake(
                             &state,
