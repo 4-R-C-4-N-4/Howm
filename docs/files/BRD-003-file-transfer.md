@@ -20,7 +20,7 @@ Howm's `blob` core capability provides peer-to-peer content-addressed binary tra
 
 BitTorrent is an explicit influence on this capability. The key ideas borrowed:
 
-- **Multi-source downloads.** A blob is not tied to a single origin peer. Any peer that has completed a download becomes a seeder. Chunk requests are distributed across all available seeders; if the original operator goes offline, downloads continue from other seeders.
+- **Multi-source downloads.** A blob is not tied to a single origin peer. Any peer that has completed a download can become a seeder. Chunk requests are distributed across all available seeders; if the original operator goes offline, downloads continue from other seeders.
 - **Seeder counts in the catalogue.** Each catalogue listing shows how many peers currently hold the blob, analogous to a torrent's seeder count. A requester can gauge availability before initiating a download.
 - **Automatic seeding.** Completed downloads are automatically contributed back to the swarm unless the user opts out per-blob.
 
@@ -37,7 +37,7 @@ There is no user-facing mechanism to share arbitrary files with peers. The `blob
 - A node operator can add files to a local offering catalogue, giving each offering a name, description, and optional access policy.
 - Connected peers can browse the operator's file catalogue through the Howm UI and initiate downloads directly over WireGuard.
 - Downloads are delivered via the existing `blob` core capability; the files capability manages the catalogue and access layer, not the transfer mechanics.
-- The operator can restrict individual offerings to specific peer IDs or make them available to all connected peers.
+- The operator can restrict individual offerings to specific peer IDs, groups, or make them available to all connected peers.
 - Downloads are resumable via `blob`'s existing resumption semantics.
 - The operator can revoke an offering at any time; in-flight downloads are not cancelled but future requests for that blob are refused at the catalogue layer.
 
@@ -60,7 +60,7 @@ There is no user-facing mechanism to share arbitrary files with peers. The `blob
 | ID | As a… | I want to… | So that… |
 |----|-------|------------|----------|
 | U1 | Node operator | Add a file to my offerings with a name and description | Peers know what I'm sharing and can find it easily |
-| U2 | Node operator | Restrict an offering to specific peer IDs | I can share privately with select peers |
+| U2 | Node operator | Restrict an offering to specific peer IDs  or group | I can share privately with select peers |
 | U3 | Node operator | Remove an offering from my catalogue | I can stop sharing a file at any time |
 | U4 | Connected peer | Browse a peer's download page | I can see what files they're offering |
 | U5 | Connected peer | Download a specific file from a peer | I receive the file directly over WireGuard |
@@ -149,7 +149,7 @@ There is no user-facing mechanism to share arbitrary files with peers. The `blob
 | OQ-2 | Should the peer-facing download page be served by the operator or rendered in the requester's UI? | Closed — rendered in the requesting peer's own Howm UI from catalogue metadata. Operator serves data only. |
 | OQ-3 | Should `files` advertise offered files as P2P-CD capabilities? | Closed — `howm.social.files.1` appears in the manifest with a flexible role (PROVIDE / CONSUME / BOTH). Individual blobs are opaque data within the catalogue, not sub-capabilities. |
 | OQ-4 | What is the maximum catalogue size? 1000 offerings is assumed as a soft limit; is there a hard constraint? | Open |
-| OQ-5 | Should adding a file to the catalogue require the file to already be present on disk, or support pre-announcing an offering before the file is available ("coming soon")? | Open |
+| OQ-5 | Should adding a file to the catalogue require the file to already be present on disk, | Yes |
 | OQ-6 | Seeder state and P2P-CD manifest rebroadcast: per §8.1, any capability state change MUST trigger rebroadcast and re-exchange with all active peers. If per-blob seeder status lived in the P2P-CD manifest, every completed download would kick off re-exchange with every connected peer. | Closed — seeder tracking lives in application-layer catalogue gossip via a dedicated `catalogue.seeders` RPC method, not in the P2P-CD manifest. No rebroadcast on seeder change. |
 
 ---

@@ -87,7 +87,7 @@ Feed posts are text-only. Users cannot share images, GIFs, or short video clips 
 
 - **FR-2.1** Maximum attachments per post: 4.
 - **FR-2.2** Maximum image size: 8 MB per attachment.
-- **FR-2.3** Maximum video size: 10 MB per attachment; maximum duration: 30 seconds.
+- **FR-2.3** Maximum video size: 10 MB per attachment;
 - **FR-2.4** Accepted MIME types: `image/jpeg`, `image/png`, `image/webp`, `image/gif`, `video/mp4`.
 - **FR-2.5** Violations SHALL be rejected at the social feed capability API layer before post submission, with a typed error response.
 

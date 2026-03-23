@@ -38,7 +38,7 @@ The central design constraint is that Howm is fully serverless. There is no brok
 
 - **Offline delivery / store-and-forward.** Messages are not queued for offline peers. (Acknowledged limitation; candidate for a future relay BRD.)
 - **Group messaging.** DMs are strictly one-to-one in this release.
-- **Message editing or deletion** (deferred).
+- **Message editing or deletion** Deletion should be available for sender, editing deferred.
 - **Read receipts** (deferred; privacy implications warrant separate design).
 - **Push / OS-level notifications** (deferred; platform integration outside Howm's current scope).
 - **Encrypted storage at rest.** Messages are stored in plaintext on the local device. WireGuard provides transport encryption.
