@@ -291,10 +291,11 @@ export function InviteManager({ reachability }: { reachability: Reachability }) 
 // ── Pending Exchange Row ─────────────────────────────────────────────────────
 
 function PendingRow({ exchange }: { exchange: PendingExchange }) {
-  const [now, setNow] = useState(Math.floor(Date.now() / 1000));
+  const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
 
   useEffect(() => {
     if (exchange.status !== 'waiting') return;
+    setNow(Math.floor(Date.now() / 1000));
     const interval = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 1000);
     return () => clearInterval(interval);
   }, [exchange.status]);
