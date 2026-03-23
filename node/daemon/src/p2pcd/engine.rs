@@ -1173,6 +1173,7 @@ mod tests {
             make_peer_config(0),
             alice_id,
             Arc::clone(&alice_notifier),
+            std::env::temp_dir(),
         ));
         // Tell Alice where Bob's P2P-CD port is
         alice_engine.set_peer_addr(bob_id, bob_p2pcd_addr).await;
@@ -1193,6 +1194,7 @@ mod tests {
             make_peer_config(bob_p2pcd_addr.port()),
             bob_id,
             Arc::clone(&bob_notifier),
+            std::env::temp_dir(),
         ));
         bob_engine.set_peer_addr(alice_id, alice_p2pcd_addr).await;
 
@@ -1306,6 +1308,7 @@ mod tests {
             make_peer_config_fast_heartbeat(0),
             alice_id,
             Arc::clone(&alice_notifier),
+            std::env::temp_dir(),
         ));
         alice_engine.set_peer_addr(bob_id, bob_p2pcd_addr).await;
 
@@ -1319,6 +1322,7 @@ mod tests {
             make_peer_config_fast_heartbeat(bob_p2pcd_addr.port()),
             bob_id,
             Arc::clone(&bob_notifier),
+            std::env::temp_dir(),
         ));
         bob_engine.set_peer_addr(alice_id, alice_p2pcd_addr).await;
 
@@ -1458,6 +1462,7 @@ mod tests {
             make_peer_config(0),
             alice_id,
             Arc::clone(&alice_notifier),
+            std::env::temp_dir(),
         ));
         alice_engine.set_peer_addr(bob_id, bob_p2pcd_addr).await;
 
@@ -1471,6 +1476,7 @@ mod tests {
             make_peer_config(bob_p2pcd_addr.port()),
             bob_id,
             Arc::clone(&bob_notifier),
+            std::env::temp_dir(),
         ));
         bob_engine.set_peer_addr(alice_id, alice_p2pcd_addr).await;
 
@@ -1557,6 +1563,7 @@ mod tests {
             make_peer_config(0),
             alice_id,
             Arc::clone(&alice_notifier),
+            std::env::temp_dir(),
         ));
         alice_engine.set_peer_addr(bob_id, bob_p2pcd_addr).await;
 
@@ -1569,6 +1576,7 @@ mod tests {
             make_peer_config(bob_p2pcd_addr.port()),
             bob_id,
             Arc::clone(&bob_notifier),
+            std::env::temp_dir(),
         ));
         bob_engine
             .set_peer_addr(alice_id, alice_listener.local_addr)
@@ -1655,6 +1663,7 @@ mod tests {
             make_peer_config(0),
             alice_id,
             Arc::clone(&alice_notifier),
+            std::env::temp_dir(),
         ));
         alice_engine.set_peer_addr(bob_id, bob_p2pcd_addr).await;
 
@@ -1667,6 +1676,7 @@ mod tests {
             make_peer_config(bob_p2pcd_addr.port()),
             bob_id,
             Arc::clone(&bob_notifier),
+            std::env::temp_dir(),
         ));
         bob_engine
             .set_peer_addr(alice_id, alice_listener.local_addr)
