@@ -17,8 +17,8 @@ Completed: Phase 0 (blob bridge), Phase 1 (schema), Phase 2 (multipart
 upload + blob registration + configurable limits + limits endpoint),
 Phase 4 (blob fetch on post receipt + status endpoint).
 
-Skipped: Phase 3 (thumbnails — deferred until UI needs it).
-Remaining: Phase 5 (UI media rendering).
+Skipped: Phase 3 (thumbnails — deferred until blur-up placeholders needed).
+Phase 5 (UI media rendering) complete.
 
 ---
 
@@ -207,6 +207,51 @@ for v1. When all blobs for a post complete, the fetcher logs it — a
 `post.media_ready` bridge event can be added later when the UI needs real-time
 updates.
 
+### Phase 5 — UI Media Rendering
+
+Vanilla JS UI (no build step, embedded via `include_dir!`) with full media
+support. No React — keeps it simple and zero-dependency.
+
+**Composer enhancements**:
+- File attachment picker (📎 button) with client-side validation against
+  configured limits (fetched from `GET /post/limits`)
+- Thumbnail preview grid with remove buttons before posting
+- Multipart upload via `POST /post/upload` when files are attached,
+  falls back to JSON `POST /post` for text-only
+
+**Media grid in post cards**:
+- Responsive CSS grid: 1 image = full width, 2 = side-by-side,
+  3 = 1 large + 2 small, 4 = 2×2 grid
+- Images are clickable → fullscreen lightbox overlay
+- Video plays inline with native controls (muted by default)
+- Content-addressed: `<img src="/blob/<sha256hex>" />`
+
+**Blob download progress for peer posts**:
+- Peer post attachments initially show a spinner + "Downloading…"
+- Polls `GET /post/:id/attachments` every 3s
+- Updates to show percentage + bytes received during fetching
+- On complete: swaps placeholder for actual image/video
+- On failed: shows "⚠️ Media unavailable — Peer may be offline"
+- Stops polling when all attachments are complete or failed
+
+**Blob serving endpoint**:
+- `GET /blob/:hash` — proxies blob data from daemon bridge with correct
+  MIME type from attachments table
+- Cache-Control: `public, max-age=31536000, immutable` (content-addressed = cacheable forever)
+
+**Other UI additions**:
+- Delete button on own posts (✕ in header)
+- Lightbox for full-resolution image viewing
+- `formatSize()` utility for human-readable byte sizes
+
+Files changed:
+- `capabilities/social-feed/ui/index.html` — attachment picker, file input
+- `capabilities/social-feed/ui/feed.js` — multipart upload, media rendering, status polling, lightbox
+- `capabilities/social-feed/ui/feed.css` — media grid, progress spinner, lightbox, attachment preview
+- `capabilities/social-feed/src/api.rs` — `GET /blob/:hash` serve_blob endpoint
+- `capabilities/social-feed/src/db.rs` — `get_attachment_mime()` for blob MIME lookup
+- `capabilities/social-feed/src/main.rs` — `/blob/:hash` route registration
+
 ---
 
 ## Route Summary
@@ -221,6 +266,7 @@ updates.
 | GET | /post/limits | `get_limits` | Configured upload limits |
 | GET | /post/:id/attachments | `get_attachment_status` | Blob transfer status per attachment |
 | DELETE | /post/:id | `delete_post` | Delete a post |
+| GET | /blob/:hash | `serve_blob` | Serve blob data to browser (images, video) |
 | GET | /health | `health` | Health check |
 | GET | /peers | `list_social_peers` | Active social peers |
 | POST | /p2pcd/peer-active | `p2pcd_peer_active` | Daemon callback: peer joined |
@@ -275,9 +321,7 @@ node/p2pcd/src/capabilities/mod.rs            |  10 +-
 | Phase 2 | Multipart upload + blob registration | DONE |
 | Phase 3 | Thumbnail generation | SKIPPED (add when UI needs blur-up) |
 | Phase 4 | Blob fetch on post receipt | DONE |
-| Phase 5 | UI media rendering | TODO |
+| Phase 5 | UI media rendering | DONE |
 
-Phase 5 is next — React components to render media attachments inline,
-show download progress for peer post blobs, and handle error/unavailable
-states. The backend now supports the full lifecycle: upload → broadcast →
-fetch → status query.
+All phases complete (Phase 3 intentionally skipped). The full media
+lifecycle is supported: upload → register → broadcast → fetch → display.

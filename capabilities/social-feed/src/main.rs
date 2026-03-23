@@ -96,6 +96,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/post/limits", get(api::get_limits))
         .route("/post/:id", delete(api::delete_post))
         .route("/post/:id/attachments", get(api::get_attachment_status))
+        // Blob serving (content-addressed media)
+        .route("/blob/:hash", get(api::serve_blob))
         // Utility
         .route("/health", get(api::health))
         .route("/peers", get(api::list_social_peers))

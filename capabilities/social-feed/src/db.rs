@@ -354,6 +354,20 @@ impl FeedDb {
         Ok(incomplete == 0)
     }
 
+    /// Look up the MIME type for a blob from the attachments table.
+    /// Returns the first match (a blob may appear in multiple posts).
+    pub fn get_attachment_mime(&self, blob_id: &str) -> anyhow::Result<Option<String>> {
+        let conn = self.conn.lock().unwrap();
+        let mime: Option<String> = conn
+            .query_row(
+                "SELECT mime_type FROM attachments WHERE blob_id = ?1 LIMIT 1",
+                params![blob_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(mime)
+    }
+
     /// Get the origin (peer_id) for a post. Returns the raw origin string.
     pub fn get_post_origin(&self, post_id: &str) -> anyhow::Result<Option<String>> {
         let conn = self.conn.lock().unwrap();

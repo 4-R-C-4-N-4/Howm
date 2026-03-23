@@ -1,6 +1,8 @@
 use axum::{
+    body::Body,
     extract::{Multipart, Path, Query, State},
-    http::{HeaderMap, StatusCode},
+    http::{header, HeaderMap, StatusCode},
+    response::{IntoResponse, Response},
     Json,
 };
 use p2pcd::bridge_client::BridgeClient;
@@ -295,6 +297,44 @@ pub async fn get_attachment_status(
         "status": overall,
         "attachments": transfers,
     })))
+}
+
+/// GET /blob/:hash — serve blob data to the browser.
+///
+/// Looks up the MIME type from the attachments table, fetches the blob from
+/// the daemon's blob store, and returns it with the correct Content-Type.
+pub async fn serve_blob(State(state): State<FeedState>, Path(hash): Path<String>) -> Response {
+    // Look up MIME type from attachments table
+    let mime = state
+        .db
+        .get_attachment_mime(&hash)
+        .unwrap_or(None)
+        .unwrap_or_else(|| "application/octet-stream".to_string());
+
+    // Decode hash to bytes
+    let hash_bytes: [u8; 32] = match hex::decode(&hash) {
+        Ok(b) if b.len() == 32 => {
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&b);
+            arr
+        }
+        _ => {
+            return (StatusCode::BAD_REQUEST, "invalid hash").into_response();
+        }
+    };
+
+    // Fetch blob data from daemon
+    match state.bridge().blob_data(&hash_bytes).await {
+        Ok(data) => (
+            [
+                (header::CONTENT_TYPE, mime.as_str()),
+                (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+            ],
+            Body::from(data),
+        )
+            .into_response(),
+        Err(_) => (StatusCode::NOT_FOUND, "blob not found").into_response(),
+    }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────

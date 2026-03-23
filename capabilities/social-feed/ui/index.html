@@ -11,7 +11,12 @@
   <div id="app">
     <div id="composer">
       <textarea id="post-content" placeholder="What's happening?" rows="3"></textarea>
+      <div id="attachment-preview"></div>
       <div id="composer-actions">
+        <label id="attach-btn" title="Add media">
+          <input type="file" id="file-input" multiple accept="image/jpeg,image/png,image/webp,image/gif,video/mp4,video/webm" />
+          📎
+        </label>
         <button id="post-btn" onclick="submitPost()">Post</button>
         <span id="post-status"></span>
       </div>
