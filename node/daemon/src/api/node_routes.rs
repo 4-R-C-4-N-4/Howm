@@ -96,12 +96,34 @@ pub async fn create_invite(
 ) -> Result<Json<Value>, AppError> {
     let endpoint_override = body.and_then(|b| b.0.endpoint);
 
+    // Parse stored IPv6 GUAs for the invite token
+    let ipv6_guas: Vec<std::net::Ipv6Addr> = state
+        .identity
+        .ipv6_guas
+        .iter()
+        .filter_map(|s| s.parse().ok())
+        .collect();
+
+    let wg_port = state
+        .identity
+        .wg_listen_port
+        .unwrap_or(state.config.wg_port);
+
+    // Load NAT profile and relay candidates for v3 invite token
+    let nat_profile = crate::stun::load_nat_profile(&state.config.data_dir);
+    let relay_candidates =
+        crate::api::connection_routes::collect_relay_candidate_pubkeys(&state).await;
+
     let invite_code = invite::generate(
         &state.config.data_dir,
         &state.identity,
         endpoint_override.or(state.identity.wg_endpoint.clone()),
         state.config.port,
         state.config.invite_ttl_s,
+        &ipv6_guas,
+        wg_port,
+        nat_profile.as_ref(),
+        &relay_candidates,
     )
     .map_err(|e| AppError::Internal(e.to_string()))?;
 
@@ -142,9 +164,16 @@ pub async fn redeem_invite(
         return Err(AppError::Internal("WireGuard not initialized".to_string()));
     }
 
+    // Build connection candidates — IPv6 first, then IPv4
+    let candidates = invite::connection_candidates(&decoded);
+    let best_endpoint = candidates
+        .first()
+        .cloned()
+        .unwrap_or_else(|| decoded.their_endpoint.clone());
+
     let wg_peer = wireguard::WgPeerConfig {
         pubkey: decoded.their_pubkey.clone(),
-        endpoint: decoded.their_endpoint.clone(),
+        endpoint: best_endpoint.clone(),
         psk: Some(decoded.psk.clone()),
         allowed_ip: decoded.their_wg_address.clone(),
         name: "pending".to_string(),
@@ -156,14 +185,13 @@ pub async fn redeem_invite(
         .map_err(|e| AppError::Internal(format!("failed to add WG peer: {}", e)))?;
 
     // Call their daemon to complete the invite (mutual peer add)
-    // The endpoint in the invite is the WG endpoint (UDP), but we need the
-    // daemon HTTP port. Extract the host from the WG endpoint and use their
-    // daemon port from the invite.
-    let their_host = decoded
-        .their_endpoint
+    // Try each candidate endpoint (IPv6 first) to reach their daemon HTTP port.
+    let their_host = best_endpoint
         .rsplit_once(':')
         .map(|(h, _)| h)
-        .unwrap_or(&decoded.their_endpoint);
+        .unwrap_or(&best_endpoint);
+    // Strip brackets from IPv6 addresses for HTTP URLs
+    let their_host = their_host.trim_start_matches('[').trim_end_matches(']');
 
     let our_pubkey = state.identity.wg_pubkey.as_deref().unwrap_or("");
     let our_endpoint = state.identity.wg_endpoint.as_deref().unwrap_or("");
@@ -759,6 +787,265 @@ pub async fn redeem_open_invite(
         peer_name, host_wg_address
     );
     Ok(Json(json!({ "peer": peer })))
+}
+
+// ── Tier 2: Accept token + hole punch ───────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct GenerateAcceptRequest {
+    /// The original invite code we're responding to.
+    pub invite_code: String,
+}
+
+/// Generate an accept token for a Tier 2 two-way exchange.
+/// Called by the joiner when the invite indicates NAT traversal is needed.
+pub async fn generate_accept(
+    State(state): State<AppState>,
+    Json(req): Json<GenerateAcceptRequest>,
+) -> Result<Json<Value>, AppError> {
+    // Decode the original invite to get the inviter's info
+    let decoded = invite::decode(&req.invite_code)
+        .map_err(|e| AppError::BadRequest(format!("invalid invite: {}", e)))?;
+
+    let our_pubkey = state
+        .identity
+        .wg_pubkey
+        .as_deref()
+        .ok_or_else(|| AppError::Internal("WG not initialized".to_string()))?;
+
+    let wg_port = state
+        .identity
+        .wg_listen_port
+        .unwrap_or(state.config.wg_port);
+
+    // Get NAT profile (run fresh STUN if needed)
+    let data_dir = state.config.data_dir.clone();
+    let nat_profile =
+        tokio::task::spawn_blocking(move || crate::stun::refresh_mapping(&data_dir, wg_port))
+            .await
+            .map_err(|e| AppError::Internal(format!("NAT detection failed: {e}")))?;
+
+    // Parse our IPv6 GUAs
+    let ipv6_guas: Vec<std::net::Ipv6Addr> = state
+        .identity
+        .ipv6_guas
+        .iter()
+        .filter_map(|s| s.parse().ok())
+        .collect();
+
+    let accept_token = crate::accept::generate(
+        &decoded.their_pubkey,
+        our_pubkey,
+        &ipv6_guas,
+        &nat_profile.external_ip,
+        nat_profile.external_port,
+        wg_port,
+        nat_profile.nat_type,
+        nat_profile.observed_stride,
+        &decoded.psk,
+    );
+
+    Ok(Json(json!({
+        "accept_token": accept_token,
+        "nat_type": nat_profile.nat_type,
+        "instruction": "Send this accept token back to the inviter. They will paste it to complete the connection.",
+    })))
+}
+
+#[derive(Deserialize)]
+pub struct RedeemAcceptRequest {
+    /// The accept token received from the joiner.
+    pub accept_token: String,
+}
+
+/// Redeem an accept token — the inviter processes the joiner's response.
+/// Starts the hole punch process.
+pub async fn redeem_accept(
+    State(state): State<AppState>,
+    Json(req): Json<RedeemAcceptRequest>,
+) -> Result<Json<Value>, AppError> {
+    let decoded = crate::accept::decode(&req.accept_token)
+        .map_err(|e| AppError::BadRequest(format!("invalid accept token: {}", e)))?;
+
+    // Verify this accept references one of our pending invites
+    let our_pubkey = state.identity.wg_pubkey.as_deref().unwrap_or("");
+    if decoded.inviter_pubkey != our_pubkey {
+        return Err(AppError::BadRequest(
+            "accept token is not for this node".to_string(),
+        ));
+    }
+
+    // Consume the pending invite by PSK
+    let _invite = invite::consume_by_psk(&state.config.data_dir, &decoded.psk)
+        .map_err(|e| AppError::Internal(e.to_string()))?
+        .ok_or_else(|| AppError::Gone("invite not found or expired".to_string()))?;
+
+    // Try IPv6 direct first
+    let ipv6_candidates = crate::accept::connection_candidates(&decoded);
+    let mut direct_success = false;
+    let mut used_endpoint = String::new();
+
+    for candidate in &ipv6_candidates {
+        if candidate.starts_with('[') {
+            // IPv6 — try direct WG connection
+            let wg_peer = wireguard::WgPeerConfig {
+                pubkey: decoded.pubkey.clone(),
+                endpoint: candidate.clone(),
+                psk: Some(decoded.psk.clone()),
+                allowed_ip: _invite.assigned_ip.clone(),
+                name: "pending".to_string(),
+                node_id: "pending".to_string(),
+            };
+            if wireguard::add_peer(&state.config.data_dir, &wg_peer)
+                .await
+                .is_ok()
+            {
+                // Give WG a moment to try the handshake
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                // Check if handshake succeeded
+                if crate::punch::check_handshake_by_status(&decoded.pubkey).await {
+                    direct_success = true;
+                    used_endpoint = candidate.clone();
+                    break;
+                }
+            }
+        }
+    }
+
+    if !direct_success {
+        // Fall to hole punch
+        let our_nat = crate::stun::load_nat_profile(&state.config.data_dir)
+            .map(|p| p.nat_type)
+            .unwrap_or(crate::stun::NatType::Unknown);
+
+        let punch_config = crate::punch::PunchConfig {
+            peer_pubkey: decoded.pubkey.clone(),
+            peer_external_ip: decoded.external_ip.clone(),
+            peer_external_port: decoded.external_port,
+            peer_stride: decoded.observed_stride,
+            peer_wg_port: decoded.wg_port,
+            peer_nat_type: decoded.nat_type,
+            our_nat_type: our_nat,
+            psk: Some(decoded.psk.clone()),
+            allowed_ip: _invite.assigned_ip.clone(),
+            we_initiate: crate::punch::should_we_initiate(our_nat, decoded.nat_type),
+        };
+
+        let result = crate::punch::run_punch(
+            &punch_config,
+            &state.config.data_dir,
+            "howm0",
+            std::time::Duration::from_secs(15),
+        )
+        .await;
+
+        match result {
+            crate::punch::PunchResult::Success { endpoint, elapsed } => {
+                used_endpoint = endpoint;
+                info!("Hole punch succeeded in {:.1}s", elapsed.as_secs_f64());
+            }
+            crate::punch::PunchResult::Timeout { elapsed } => {
+                info!(
+                    "Hole punch timed out after {:.1}s — trying Tier 3 matchmake relay",
+                    elapsed.as_secs_f64()
+                );
+
+                // Tier 3: Matchmake relay fallback
+                // Re-collect our relay-capable peers (we're the inviter, these
+                // are our peers that can relay for us).
+                let relay_candidates =
+                    crate::api::connection_routes::collect_relay_candidate_pubkeys(&state).await;
+                let our_peers: std::collections::HashSet<String> =
+                    relay_candidates.iter().cloned().collect();
+
+                // The joiner's relay candidates came from the original invite we
+                // created, which listed our relay-capable peers. Since both sides
+                // share those peers, pass our current list as "their" candidates.
+                if !relay_candidates.is_empty() {
+                    // find_mutual_relay picks the first overlap — since we're
+                    // checking our own list against itself, just use the first.
+                    if let Ok(relay) =
+                        crate::matchmake::find_mutual_relay(&relay_candidates, &our_peers)
+                    {
+                        let counter = state.matchmake_counter.clone();
+                        match crate::matchmake::initiate_matchmake(
+                            &state,
+                            &relay,
+                            &decoded.pubkey,
+                            &decoded.psk,
+                            &_invite.assigned_ip,
+                            counter,
+                        )
+                        .await
+                        {
+                            Ok(crate::matchmake::MatchmakeResult::Connected) => {
+                                info!("Tier 3 matchmake relay succeeded");
+                                used_endpoint = format!("matchmake-relay:{}", relay);
+                                // Fall through to peer registration below
+                            }
+                            Ok(crate::matchmake::MatchmakeResult::PunchFailed) => {
+                                return Err(AppError::PeerUnreachable(format!(
+                                    "hole punch timed out after {:.1}s, matchmake relay                                      exchange succeeded but direct punch still failed",
+                                    elapsed.as_secs_f64()
+                                )));
+                            }
+                            Err(e) => {
+                                return Err(AppError::PeerUnreachable(format!(
+                                    "hole punch timed out after {:.1}s, matchmake failed: {}",
+                                    elapsed.as_secs_f64(),
+                                    e,
+                                )));
+                            }
+                        }
+                    } else {
+                        return Err(AppError::PeerUnreachable(format!(
+                            "hole punch timed out after {:.1}s — no mutual relay peer available",
+                            elapsed.as_secs_f64()
+                        )));
+                    }
+                } else {
+                    return Err(AppError::PeerUnreachable(format!(
+                        "hole punch timed out after {:.1}s — no relay-capable peers available",
+                        elapsed.as_secs_f64()
+                    )));
+                }
+            }
+            crate::punch::PunchResult::Error(e) => {
+                return Err(AppError::Internal(format!("hole punch error: {}", e)));
+            }
+        }
+    }
+
+    // Add peer to our peers list
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    let peer = Peer {
+        node_id: "pending".to_string(),
+        name: "pending".to_string(),
+        wg_pubkey: decoded.pubkey.clone(),
+        wg_address: _invite.assigned_ip.clone(),
+        wg_endpoint: used_endpoint,
+        port: state.config.port,
+        last_seen: now,
+        trust: TrustLevel::Friend,
+    };
+
+    {
+        let mut peers = state.peers.write().await;
+        if !peers.iter().any(|p| p.wg_pubkey == peer.wg_pubkey) {
+            peers.push(peer.clone());
+            peers::save(&state.config.data_dir, &peers)
+                .map_err(|e| AppError::Internal(e.to_string()))?;
+        }
+    }
+
+    Ok(Json(json!({
+        "status": "connected",
+        "peer": peer,
+    })))
 }
 
 // ── Step 7: Update peer trust level ──────────────────────────────────────────

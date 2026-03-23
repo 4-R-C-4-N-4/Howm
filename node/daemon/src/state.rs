@@ -23,6 +23,10 @@ pub struct AppState {
     pub open_join_rate_limiter: Arc<RateLimiter>,
     /// P2P-CD protocol engine (None if WG disabled)
     pub p2pcd_engine: Option<Arc<ProtocolEngine>>,
+    /// Runtime relay toggle (initialized from config, mutable via API)
+    pub allow_relay: Arc<RwLock<bool>>,
+    /// Number of active matchmake relay exchanges in progress
+    pub matchmake_counter: Arc<RwLock<u64>>,
 }
 
 impl AppState {
@@ -35,6 +39,7 @@ impl AppState {
     ) -> Self {
         let open_join_rate_limiter =
             Arc::new(RateLimiter::new(config.open_invite_rate_limit, 3600));
+        let allow_relay = config.allow_relay;
         Self {
             identity,
             peers: Arc::new(RwLock::new(peers)),
@@ -46,6 +51,8 @@ impl AppState {
             install_rate_limiter: Arc::new(RateLimiter::new(2, 60)),
             open_join_rate_limiter,
             p2pcd_engine: None,
+            allow_relay: Arc::new(RwLock::new(allow_relay)),
+            matchmake_counter: Arc::new(RwLock::new(0)),
         }
     }
 }

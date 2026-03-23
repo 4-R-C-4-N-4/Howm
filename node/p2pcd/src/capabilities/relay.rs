@@ -8,8 +8,14 @@
 // Message flow:
 //   Initiator → CIRCUIT_OPEN (circuit_id, target_peer)
 //   Relay     → CIRCUIT_OPEN forwarded to target (with initiator info)
+//   Target    → CIRCUIT_OPEN response (circuit_id, status) → relay forwards to initiator
 //   Either    → CIRCUIT_DATA (circuit_id, data) — forwarded to the other end
 //   Either    → CIRCUIT_CLOSE (circuit_id, reason) — forwarded + circuit torn down
+//
+// Three roles:
+//   Relay:     forwards messages between initiator and target (Circuit state)
+//   Initiator: opened the circuit, receives data via callback (EndpointCircuit)
+//   Target:    accepted the circuit, receives data via callback (EndpointCircuit)
 //
 // Scope params:
 //   RELAY_MAX_CIRCUITS (key 9)      — max concurrent circuits (default 16)
@@ -18,6 +24,7 @@
 
 use std::collections::HashMap;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -54,9 +61,9 @@ mod reasons {
 }
 
 /// CIRCUIT_OPEN response status
-#[allow(dead_code)]
 mod open_status {
     pub const ACCEPTED: u64 = 0;
+    #[allow(dead_code)]
     pub const REJECTED: u64 = 1;
 }
 
@@ -65,7 +72,7 @@ const DEFAULT_MAX_CIRCUITS: u64 = 16;
 /// Default circuit TTL: 5 minutes.
 const DEFAULT_TTL_SECS: u64 = 300;
 
-// ── Circuit state ────────────────────────────────────────────────────────────
+// ── Circuit state (relay-side) ──────────────────────────────────────────────
 
 struct Circuit {
     #[allow(dead_code)]
@@ -99,14 +106,65 @@ impl Circuit {
     }
 }
 
+// ── Endpoint circuit state ──────────────────────────────────────────────────
+
+/// Circuit state for when we are an endpoint (initiator or target), not the relay.
+struct EndpointCircuit {
+    #[allow(dead_code)]
+    circuit_id: u64,
+    /// The relay peer we talk through.
+    relay_peer: PeerId,
+    /// The peer on the other end of the circuit.
+    remote_peer: PeerId,
+    /// Our role in this circuit.
+    #[allow(dead_code)]
+    role: EndpointRole,
+}
+
+/// Our role as a circuit endpoint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EndpointRole {
+    /// We initiated the circuit.
+    Initiator,
+    /// We are the target of the circuit.
+    Target,
+}
+
+/// Events delivered to the host application when we are a circuit endpoint.
+#[derive(Debug)]
+pub enum CircuitEvent {
+    /// Circuit established — we can send/receive data.
+    Opened {
+        circuit_id: u64,
+        remote_peer: PeerId,
+        role: EndpointRole,
+    },
+    /// Data arrived on a circuit we're an endpoint of.
+    Data {
+        circuit_id: u64,
+        from: PeerId,
+        data: Vec<u8>,
+    },
+    /// Circuit closed (by remote, relay, or TTL expiry).
+    Closed { circuit_id: u64, reason: u64 },
+}
+
 // ── RelayHandler ─────────────────────────────────────────────────────────────
 
 pub struct RelayHandler {
-    /// Active circuits indexed by circuit_id.
+    /// Active circuits we are RELAYING.
     circuits: Arc<RwLock<HashMap<u64, Circuit>>>,
+    /// Active circuits we are an ENDPOINT of (initiator or target).
+    endpoint_circuits: Arc<RwLock<HashMap<u64, EndpointCircuit>>>,
+    /// Circuits we initiated that haven't been accepted yet (circuit_id → target).
+    pending_initiations: Arc<RwLock<HashMap<u64, PeerId>>>,
     /// Per-peer send channels. The relay needs to route messages to peers other
     /// than the one that sent the incoming message.
     peer_senders: Arc<RwLock<HashMap<PeerId, tokio::sync::mpsc::Sender<ProtocolMessage>>>>,
+    /// Callback channel for circuit events (set by daemon at startup).
+    event_tx: Arc<RwLock<Option<tokio::sync::mpsc::Sender<CircuitEvent>>>>,
+    /// Counter for generating unique circuit IDs when initiating.
+    next_circuit_id: AtomicU64,
 }
 
 impl Default for RelayHandler {
@@ -119,7 +177,11 @@ impl RelayHandler {
     pub fn new() -> Self {
         Self {
             circuits: Arc::new(RwLock::new(HashMap::new())),
+            endpoint_circuits: Arc::new(RwLock::new(HashMap::new())),
+            pending_initiations: Arc::new(RwLock::new(HashMap::new())),
             peer_senders: Arc::new(RwLock::new(HashMap::new())),
+            event_tx: Arc::new(RwLock::new(None)),
+            next_circuit_id: AtomicU64::new(1),
         }
     }
 
@@ -137,9 +199,96 @@ impl RelayHandler {
         self.peer_senders.write().await.remove(peer_id);
     }
 
-    /// Number of active circuits.
+    /// Number of active relay circuits.
     pub async fn circuit_count(&self) -> usize {
         self.circuits.read().await.len()
+    }
+
+    /// Number of active endpoint circuits.
+    pub async fn endpoint_circuit_count(&self) -> usize {
+        self.endpoint_circuits.read().await.len()
+    }
+
+    /// Register a callback channel for circuit events.
+    /// The daemon calls this once at startup.
+    pub async fn set_event_callback(&self, tx: tokio::sync::mpsc::Sender<CircuitEvent>) {
+        *self.event_tx.write().await = Some(tx);
+    }
+
+    /// Initiate a circuit through a relay peer to a target peer.
+    /// Returns the circuit_id. The caller should wait for `CircuitEvent::Opened`
+    /// on the event channel.
+    pub async fn initiate_circuit(&self, relay_peer: &PeerId, target_peer: &PeerId) -> u64 {
+        let circuit_id = self.next_circuit_id.fetch_add(1, Ordering::Relaxed);
+        self.pending_initiations
+            .write()
+            .await
+            .insert(circuit_id, *target_peer);
+
+        let open = cbor_encode_map(vec![
+            (
+                keys::CIRCUIT_ID,
+                ciborium::value::Value::Integer(circuit_id.into()),
+            ),
+            (
+                keys::TARGET_PEER,
+                ciborium::value::Value::Bytes(target_peer.to_vec()),
+            ),
+        ]);
+        self.send_to_peer(relay_peer, message_types::CIRCUIT_OPEN, open)
+            .await;
+
+        tracing::info!(
+            "relay: initiated circuit {} through relay {} to target {}",
+            circuit_id,
+            hex::encode(&relay_peer[..4]),
+            hex::encode(&target_peer[..4])
+        );
+        circuit_id
+    }
+
+    /// Send data on a circuit we are an endpoint of.
+    pub async fn send_circuit_data(&self, circuit_id: u64, data: Vec<u8>) -> Result<()> {
+        let ep = self.endpoint_circuits.read().await;
+        let circuit = ep
+            .get(&circuit_id)
+            .ok_or_else(|| anyhow::anyhow!("no endpoint circuit {}", circuit_id))?;
+        let relay = circuit.relay_peer;
+        drop(ep);
+
+        let msg = cbor_encode_map(vec![
+            (
+                keys::CIRCUIT_ID,
+                ciborium::value::Value::Integer(circuit_id.into()),
+            ),
+            (keys::DATA, ciborium::value::Value::Bytes(data)),
+        ]);
+        self.send_to_peer(&relay, message_types::CIRCUIT_DATA, msg)
+            .await;
+        Ok(())
+    }
+
+    /// Close a circuit we are an endpoint of.
+    pub async fn close_endpoint_circuit(&self, circuit_id: u64) -> Result<()> {
+        let ep = self.endpoint_circuits.write().await.remove(&circuit_id);
+        let circuit = ep.ok_or_else(|| anyhow::anyhow!("no endpoint circuit {}", circuit_id))?;
+        self.pending_initiations.write().await.remove(&circuit_id);
+
+        let close = cbor_encode_map(vec![
+            (
+                keys::CIRCUIT_ID,
+                ciborium::value::Value::Integer(circuit_id.into()),
+            ),
+            (
+                keys::REASON,
+                ciborium::value::Value::Integer(reasons::NORMAL.into()),
+            ),
+        ]);
+        self.send_to_peer(&circuit.relay_peer, message_types::CIRCUIT_CLOSE, close)
+            .await;
+
+        tracing::info!("relay: closed endpoint circuit {}", circuit_id);
+        Ok(())
     }
 
     // ── Scope param helpers ───────────────────────────────────────────────────
@@ -156,6 +305,14 @@ impl RelayHandler {
             .unwrap_or(DEFAULT_TTL_SECS)
     }
 
+    // ── Event helper ──────────────────────────────────────────────────────────
+
+    async fn fire_event(&self, event: CircuitEvent) {
+        if let Some(tx) = self.event_tx.read().await.as_ref() {
+            let _ = tx.send(event).await;
+        }
+    }
+
     // ── Message handlers ─────────────────────────────────────────────────────
 
     async fn handle_open(&self, payload: &[u8], ctx: &CapabilityContext) -> Result<()> {
@@ -163,14 +320,11 @@ impl RelayHandler {
         let circuit_id = cbor_get_int(&map, keys::CIRCUIT_ID).unwrap_or(0);
         let target_bytes = cbor_get_bytes(&map, keys::TARGET_PEER).unwrap_or_default();
         let initiator_bytes = cbor_get_bytes(&map, keys::INITIATOR_PEER);
+        let status = cbor_get_int(&map, keys::STATUS);
 
-        // Determine if we're the relay or the target receiving a forwarded OPEN
-        let is_forwarded = initiator_bytes.is_some();
-
-        if is_forwarded {
-            // We are the target peer — a relay forwarded CIRCUIT_OPEN to us.
-            // The circuit is now established from our perspective.
-            let init_bytes = initiator_bytes.unwrap();
+        // ── Case A: Forwarded OPEN — we are the TARGET ────────────────────
+        // Carol forwarded Alice's CIRCUIT_OPEN to us. Contains INITIATOR_PEER.
+        if let Some(init_bytes) = initiator_bytes {
             if init_bytes.len() != 32 {
                 tracing::warn!("relay: CIRCUIT_OPEN forwarded with invalid initiator length");
                 return Ok(());
@@ -184,6 +338,24 @@ impl RelayHandler {
                 hex::encode(&initiator[..4]),
                 hex::encode(&ctx.peer_id[..4])
             );
+
+            // Store endpoint state — we are the target
+            self.endpoint_circuits.write().await.insert(
+                circuit_id,
+                EndpointCircuit {
+                    circuit_id,
+                    relay_peer: ctx.peer_id,
+                    remote_peer: initiator,
+                    role: EndpointRole::Target,
+                },
+            );
+
+            self.fire_event(CircuitEvent::Opened {
+                circuit_id,
+                remote_peer: initiator,
+                role: EndpointRole::Target,
+            })
+            .await;
 
             // Respond with acceptance back through the relay
             let accept = cbor_encode_map(vec![
@@ -201,7 +373,73 @@ impl RelayHandler {
             return Ok(());
         }
 
-        // We are the relay node — peer wants us to open a circuit to target.
+        // ── Case B: Acceptance with STATUS ────────────────────────────────
+        // Could be arriving at the relay (from target) or at the initiator
+        // (forwarded by relay).
+        if let Some(st) = status {
+            // Check if we're the relay — circuit_id in our relay circuits map
+            {
+                let circuits = self.circuits.read().await;
+                if let Some(circuit) = circuits.get(&circuit_id) {
+                    // We are the relay. Forward acceptance to the initiator.
+                    let accept = cbor_encode_map(vec![
+                        (
+                            keys::CIRCUIT_ID,
+                            ciborium::value::Value::Integer(circuit_id.into()),
+                        ),
+                        (keys::STATUS, ciborium::value::Value::Integer(st.into())),
+                    ]);
+                    let initiator = circuit.initiator;
+                    drop(circuits);
+                    self.send_to_peer(&initiator, message_types::CIRCUIT_OPEN, accept)
+                        .await;
+
+                    tracing::debug!(
+                        "relay: forwarded acceptance for circuit {} to initiator {}",
+                        circuit_id,
+                        hex::encode(&initiator[..4])
+                    );
+                    return Ok(());
+                }
+            }
+
+            // Check if we're the initiator — circuit_id in pending_initiations
+            if let Some(target_peer) = self.pending_initiations.write().await.remove(&circuit_id) {
+                // We are the initiator receiving the forwarded acceptance.
+                self.endpoint_circuits.write().await.insert(
+                    circuit_id,
+                    EndpointCircuit {
+                        circuit_id,
+                        relay_peer: ctx.peer_id,
+                        remote_peer: target_peer,
+                        role: EndpointRole::Initiator,
+                    },
+                );
+
+                self.fire_event(CircuitEvent::Opened {
+                    circuit_id,
+                    remote_peer: target_peer,
+                    role: EndpointRole::Initiator,
+                })
+                .await;
+
+                tracing::info!(
+                    "relay: circuit {} accepted, endpoint to {} via relay {}",
+                    circuit_id,
+                    hex::encode(&target_peer[..4]),
+                    hex::encode(&ctx.peer_id[..4])
+                );
+                return Ok(());
+            }
+
+            tracing::debug!(
+                "relay: CIRCUIT_OPEN acceptance for unknown circuit {}",
+                circuit_id
+            );
+            return Ok(());
+        }
+
+        // ── Case C: New circuit request — we are the RELAY ────────────────
         if target_bytes.len() != 32 {
             tracing::warn!(
                 "relay: CIRCUIT_OPEN with invalid target peer length from {}",
@@ -315,70 +553,77 @@ impl RelayHandler {
 
         let data_len = data.len() as u64;
 
-        // Look up circuit and find the other end
-        let forward_to = {
+        // ── Relay path (forwards to the other end) ────────────────────────
+        {
             let mut circuits = self.circuits.write().await;
-            let circuit = match circuits.get_mut(&circuit_id) {
-                Some(c) => c,
-                None => {
-                    tracing::debug!("relay: CIRCUIT_DATA for unknown circuit {}", circuit_id);
+            if let Some(circuit) = circuits.get_mut(&circuit_id) {
+                // Check TTL
+                if circuit.is_expired() {
+                    let initiator = circuit.initiator;
+                    let target = circuit.target;
+                    circuits.remove(&circuit_id);
+                    drop(circuits);
+
+                    // Notify both ends
+                    let close = cbor_encode_map(vec![
+                        (
+                            keys::CIRCUIT_ID,
+                            ciborium::value::Value::Integer(circuit_id.into()),
+                        ),
+                        (
+                            keys::REASON,
+                            ciborium::value::Value::Integer(reasons::TTL_EXPIRED.into()),
+                        ),
+                    ]);
+                    self.send_to_peer(&initiator, message_types::CIRCUIT_CLOSE, close.clone())
+                        .await;
+                    self.send_to_peer(&target, message_types::CIRCUIT_CLOSE, close)
+                        .await;
+                    tracing::info!("relay: circuit {} expired, closed", circuit_id);
                     return Ok(());
                 }
-            };
 
-            // Check TTL
-            if circuit.is_expired() {
-                let initiator = circuit.initiator;
-                let target = circuit.target;
-                circuits.remove(&circuit_id);
+                let other = circuit.other_end(&ctx.peer_id);
+                circuit.bytes_relayed += data_len;
                 drop(circuits);
 
-                // Notify both ends
-                let close = cbor_encode_map(vec![
-                    (
-                        keys::CIRCUIT_ID,
-                        ciborium::value::Value::Integer(circuit_id.into()),
-                    ),
-                    (
-                        keys::REASON,
-                        ciborium::value::Value::Integer(reasons::TTL_EXPIRED.into()),
-                    ),
-                ]);
-                self.send_to_peer(&initiator, message_types::CIRCUIT_CLOSE, close.clone())
-                    .await;
-                self.send_to_peer(&target, message_types::CIRCUIT_CLOSE, close)
-                    .await;
-                tracing::info!("relay: circuit {} expired, closed", circuit_id);
+                match other {
+                    Some(peer) => {
+                        // Forward the data payload as-is to the other end
+                        let fwd = cbor_encode_map(vec![
+                            (
+                                keys::CIRCUIT_ID,
+                                ciborium::value::Value::Integer(circuit_id.into()),
+                            ),
+                            (keys::DATA, ciborium::value::Value::Bytes(data)),
+                        ]);
+                        self.send_to_peer(&peer, message_types::CIRCUIT_DATA, fwd)
+                            .await;
+                    }
+                    None => {
+                        tracing::warn!(
+                            "relay: CIRCUIT_DATA from {} not part of circuit {}",
+                            hex::encode(&ctx.peer_id[..4]),
+                            circuit_id
+                        );
+                    }
+                }
                 return Ok(());
-            }
-
-            let other = circuit.other_end(&ctx.peer_id);
-            circuit.bytes_relayed += data_len;
-            other
-        };
-
-        match forward_to {
-            Some(peer) => {
-                // Forward the data payload as-is to the other end
-                let fwd = cbor_encode_map(vec![
-                    (
-                        keys::CIRCUIT_ID,
-                        ciborium::value::Value::Integer(circuit_id.into()),
-                    ),
-                    (keys::DATA, ciborium::value::Value::Bytes(data)),
-                ]);
-                self.send_to_peer(&peer, message_types::CIRCUIT_DATA, fwd)
-                    .await;
-            }
-            None => {
-                tracing::warn!(
-                    "relay: CIRCUIT_DATA from {} not part of circuit {}",
-                    hex::encode(&ctx.peer_id[..4]),
-                    circuit_id
-                );
             }
         }
 
+        // ── Endpoint path (deliver to daemon via callback) ────────────────
+        if let Some(ep) = self.endpoint_circuits.read().await.get(&circuit_id) {
+            self.fire_event(CircuitEvent::Data {
+                circuit_id,
+                from: ep.remote_peer,
+                data,
+            })
+            .await;
+            return Ok(());
+        }
+
+        tracing::debug!("relay: CIRCUIT_DATA for unknown circuit {}", circuit_id);
         Ok(())
     }
 
@@ -387,36 +632,55 @@ impl RelayHandler {
         let circuit_id = cbor_get_int(&map, keys::CIRCUIT_ID).unwrap_or(0);
         let reason = cbor_get_int(&map, keys::REASON).unwrap_or(reasons::NORMAL);
 
-        let mut circuits = self.circuits.write().await;
-        let circuit = match circuits.remove(&circuit_id) {
-            Some(c) => c,
-            None => {
-                tracing::debug!("relay: CIRCUIT_CLOSE for unknown circuit {}", circuit_id);
+        // ── Relay path ────────────────────────────────────────────────────
+        {
+            let mut circuits = self.circuits.write().await;
+            if let Some(circuit) = circuits.remove(&circuit_id) {
+                drop(circuits);
+
+                // Forward CLOSE to the other end
+                if let Some(other) = circuit.other_end(&ctx.peer_id) {
+                    let close = cbor_encode_map(vec![
+                        (
+                            keys::CIRCUIT_ID,
+                            ciborium::value::Value::Integer(circuit_id.into()),
+                        ),
+                        (keys::REASON, ciborium::value::Value::Integer(reason.into())),
+                    ]);
+                    self.send_to_peer(&other, message_types::CIRCUIT_CLOSE, close)
+                        .await;
+                }
+
+                tracing::info!(
+                    "relay: circuit {} closed (reason={}, relayed {} bytes)",
+                    circuit_id,
+                    reason,
+                    circuit.bytes_relayed
+                );
                 return Ok(());
             }
-        };
-        drop(circuits);
-
-        // Forward CLOSE to the other end
-        if let Some(other) = circuit.other_end(&ctx.peer_id) {
-            let close = cbor_encode_map(vec![
-                (
-                    keys::CIRCUIT_ID,
-                    ciborium::value::Value::Integer(circuit_id.into()),
-                ),
-                (keys::REASON, ciborium::value::Value::Integer(reason.into())),
-            ]);
-            self.send_to_peer(&other, message_types::CIRCUIT_CLOSE, close)
-                .await;
         }
 
-        tracing::info!(
-            "relay: circuit {} closed (reason={}, relayed {} bytes)",
-            circuit_id,
-            reason,
-            circuit.bytes_relayed
-        );
+        // ── Endpoint path ─────────────────────────────────────────────────
+        if self
+            .endpoint_circuits
+            .write()
+            .await
+            .remove(&circuit_id)
+            .is_some()
+        {
+            self.fire_event(CircuitEvent::Closed { circuit_id, reason })
+                .await;
 
+            tracing::info!(
+                "relay: endpoint circuit {} closed (reason={})",
+                circuit_id,
+                reason
+            );
+            return Ok(());
+        }
+
+        tracing::debug!("relay: CIRCUIT_CLOSE for unknown circuit {}", circuit_id);
         Ok(())
     }
 
@@ -514,7 +778,7 @@ impl CapabilityHandler for RelayHandler {
     ) -> Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + '_>> {
         let peer_id = ctx.peer_id;
         Box::pin(async move {
-            // Close all circuits involving this peer
+            // Close all relay circuits involving this peer
             let mut circuits = self.circuits.write().await;
             let to_close: Vec<u64> = circuits
                 .iter()
@@ -543,13 +807,37 @@ impl CapabilityHandler for RelayHandler {
                     }
                 }
             }
+            drop(circuits);
+
+            // Close endpoint circuits through this relay peer
+            let mut ep_circuits = self.endpoint_circuits.write().await;
+            let ep_to_close: Vec<u64> = ep_circuits
+                .iter()
+                .filter(|(_, ep)| ep.relay_peer == peer_id)
+                .map(|(id, _)| *id)
+                .collect();
+            for circuit_id in &ep_to_close {
+                if ep_circuits.remove(circuit_id).is_some() {
+                    self.fire_event(CircuitEvent::Closed {
+                        circuit_id: *circuit_id,
+                        reason: reasons::NORMAL,
+                    })
+                    .await;
+                }
+            }
+            drop(ep_circuits);
+
+            // Clean up pending initiations through this peer
+            // (We don't know which relay peer they were through, so leave them
+            // to time out. The initiator side will get a timeout error.)
 
             // Remove the peer's sender
             self.peer_senders.write().await.remove(&peer_id);
 
             tracing::debug!(
-                "relay: cleaned up {} circuits for peer {}",
+                "relay: cleaned up {} relay + {} endpoint circuits for peer {}",
                 to_close.len(),
+                ep_to_close.len(),
                 hex::encode(&peer_id[..4])
             );
             Ok(())
@@ -1058,5 +1346,215 @@ mod tests {
             let map = decode_payload(&payload).unwrap();
             assert_eq!(cbor_get_bytes(&map, keys::DATA).unwrap(), b"B to A");
         }
+    }
+
+    // ── Endpoint circuit tests ───────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn acceptance_forwarding_through_relay() {
+        // Carol correctly forwards Bob's acceptance back to Alice
+        let handler = RelayHandler::new(); // Carol
+        let peer_a = [1u8; 32]; // Alice (initiator)
+        let peer_b = [2u8; 32]; // Bob (target)
+
+        let (tx_a, mut rx_a) = tokio::sync::mpsc::channel(16);
+        let (tx_b, mut rx_b) = tokio::sync::mpsc::channel(16);
+        handler.add_peer_sender(peer_a, tx_a).await;
+        handler.add_peer_sender(peer_b, tx_b).await;
+
+        // Alice opens circuit through Carol
+        let open = cbor_encode_map(vec![
+            (
+                keys::CIRCUIT_ID,
+                ciborium::value::Value::Integer(42u64.into()),
+            ),
+            (
+                keys::TARGET_PEER,
+                ciborium::value::Value::Bytes(peer_b.to_vec()),
+            ),
+        ]);
+        let ctx_a = make_ctx(peer_a);
+        handler.handle_open(&open, &ctx_a).await.unwrap();
+        let _ = rx_b.recv().await; // drain forwarded OPEN to Bob
+
+        // Bob sends acceptance back through Carol
+        let accept = cbor_encode_map(vec![
+            (
+                keys::CIRCUIT_ID,
+                ciborium::value::Value::Integer(42u64.into()),
+            ),
+            (
+                keys::STATUS,
+                ciborium::value::Value::Integer(open_status::ACCEPTED.into()),
+            ),
+        ]);
+        let ctx_b = make_ctx(peer_b);
+        handler.handle_open(&accept, &ctx_b).await.unwrap();
+
+        // Alice should receive the forwarded acceptance
+        let msg = rx_a.recv().await.unwrap();
+        match msg {
+            ProtocolMessage::CapabilityMsg {
+                message_type,
+                payload,
+            } => {
+                assert_eq!(message_type, message_types::CIRCUIT_OPEN);
+                let map = decode_payload(&payload).unwrap();
+                assert_eq!(cbor_get_int(&map, keys::CIRCUIT_ID), Some(42));
+                assert_eq!(
+                    cbor_get_int(&map, keys::STATUS),
+                    Some(open_status::ACCEPTED)
+                );
+            }
+            _ => panic!("expected CapabilityMsg"),
+        }
+    }
+
+    #[tokio::test]
+    async fn endpoint_circuit_lifecycle() {
+        // Full 3-node test: Alice initiates through Carol to Bob
+        let carol = RelayHandler::new();
+        let alice = RelayHandler::new();
+        let bob = RelayHandler::new();
+
+        let peer_alice = [1u8; 32];
+        let peer_carol = [3u8; 32];
+        let peer_bob = [2u8; 32];
+
+        // Carol's peer senders (she knows both Alice and Bob)
+        let (tx_to_alice, mut rx_alice) = tokio::sync::mpsc::channel(16);
+        let (tx_to_bob, mut rx_bob) = tokio::sync::mpsc::channel(16);
+        carol.add_peer_sender(peer_alice, tx_to_alice).await;
+        carol.add_peer_sender(peer_bob, tx_to_bob).await;
+
+        // Alice's sender to Carol
+        let (tx_alice_to_carol, mut rx_carol_from_alice) = tokio::sync::mpsc::channel(16);
+        alice.add_peer_sender(peer_carol, tx_alice_to_carol).await;
+
+        // Bob's sender to Carol
+        let (tx_bob_to_carol, mut rx_carol_from_bob) = tokio::sync::mpsc::channel(16);
+        bob.add_peer_sender(peer_carol, tx_bob_to_carol).await;
+
+        // Event callbacks
+        let (alice_evt_tx, mut alice_evt_rx) = tokio::sync::mpsc::channel(16);
+        let (bob_evt_tx, mut bob_evt_rx) = tokio::sync::mpsc::channel(16);
+        alice.set_event_callback(alice_evt_tx).await;
+        bob.set_event_callback(bob_evt_tx).await;
+
+        // 1. Alice initiates circuit through Carol to Bob
+        let circuit_id = alice.initiate_circuit(&peer_carol, &peer_bob).await;
+
+        // Carol receives CIRCUIT_OPEN from Alice
+        let msg = rx_carol_from_alice.recv().await.unwrap();
+        if let ProtocolMessage::CapabilityMsg { payload, .. } = msg {
+            carol
+                .handle_open(&payload, &make_ctx(peer_alice))
+                .await
+                .unwrap();
+        }
+
+        // Bob receives forwarded CIRCUIT_OPEN from Carol
+        let msg = rx_bob.recv().await.unwrap();
+        if let ProtocolMessage::CapabilityMsg { payload, .. } = msg {
+            bob.handle_open(&payload, &make_ctx(peer_carol))
+                .await
+                .unwrap();
+        }
+
+        // Bob should have fired an Opened event
+        let evt = bob_evt_rx.recv().await.unwrap();
+        assert!(matches!(
+            evt,
+            CircuitEvent::Opened {
+                role: EndpointRole::Target,
+                ..
+            }
+        ));
+
+        // Carol receives Bob's acceptance
+        let msg = rx_carol_from_bob.recv().await.unwrap();
+        if let ProtocolMessage::CapabilityMsg { payload, .. } = msg {
+            carol
+                .handle_open(&payload, &make_ctx(peer_bob))
+                .await
+                .unwrap();
+        }
+
+        // Alice receives forwarded acceptance from Carol
+        let msg = rx_alice.recv().await.unwrap();
+        if let ProtocolMessage::CapabilityMsg { payload, .. } = msg {
+            alice
+                .handle_open(&payload, &make_ctx(peer_carol))
+                .await
+                .unwrap();
+        }
+
+        // Alice should have fired an Opened event
+        let evt = alice_evt_rx.recv().await.unwrap();
+        assert!(matches!(
+            evt,
+            CircuitEvent::Opened {
+                role: EndpointRole::Initiator,
+                ..
+            }
+        ));
+
+        // 2. Alice sends data to Bob through Carol
+        alice
+            .send_circuit_data(circuit_id, b"hello bob".to_vec())
+            .await
+            .unwrap();
+
+        // Carol receives and forwards
+        let msg = rx_carol_from_alice.recv().await.unwrap();
+        if let ProtocolMessage::CapabilityMsg { payload, .. } = msg {
+            carol
+                .handle_data(&payload, &make_ctx(peer_alice))
+                .await
+                .unwrap();
+        }
+
+        // Bob receives forwarded data
+        let msg = rx_bob.recv().await.unwrap();
+        if let ProtocolMessage::CapabilityMsg { payload, .. } = msg {
+            bob.handle_data(&payload, &make_ctx(peer_carol))
+                .await
+                .unwrap();
+        }
+
+        // Bob should have received a Data event
+        let evt = bob_evt_rx.recv().await.unwrap();
+        match evt {
+            CircuitEvent::Data { data, .. } => assert_eq!(data, b"hello bob"),
+            _ => panic!("expected Data event"),
+        }
+
+        // 3. Alice closes the circuit
+        alice.close_endpoint_circuit(circuit_id).await.unwrap();
+
+        // Carol receives and forwards the close
+        let msg = rx_carol_from_alice.recv().await.unwrap();
+        if let ProtocolMessage::CapabilityMsg { payload, .. } = msg {
+            carol
+                .handle_close(&payload, &make_ctx(peer_alice))
+                .await
+                .unwrap();
+        }
+
+        // Bob receives the close
+        let msg = rx_bob.recv().await.unwrap();
+        if let ProtocolMessage::CapabilityMsg { payload, .. } = msg {
+            bob.handle_close(&payload, &make_ctx(peer_carol))
+                .await
+                .unwrap();
+        }
+
+        // Bob should have received a Closed event
+        let evt = bob_evt_rx.recv().await.unwrap();
+        assert!(matches!(evt, CircuitEvent::Closed { .. }));
+
+        assert_eq!(carol.circuit_count().await, 0);
+        assert_eq!(alice.endpoint_circuit_count().await, 0);
+        assert_eq!(bob.endpoint_circuit_count().await, 0);
     }
 }

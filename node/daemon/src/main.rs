@@ -4,6 +4,7 @@ use std::sync::Arc;
 use tracing::info;
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
+mod accept;
 mod api;
 mod capabilities;
 mod config;
@@ -12,12 +13,15 @@ mod error;
 mod executor;
 mod identity;
 mod invite;
+mod matchmake;
 mod net_detect;
 mod open_invite;
 mod p2pcd;
 mod peers;
 mod proxy;
+mod punch;
 mod state;
+mod stun;
 mod wireguard;
 
 use config::Config;
@@ -55,10 +59,16 @@ async fn main() -> anyhow::Result<()> {
     let mut identity = identity::load_or_create(&config.data_dir, config.name.clone())?;
     info!("Node identity: {} ({})", identity.name, identity.node_id);
 
+    // Detect IPv6 GUAs before WG init (informs endpoint selection)
+    let ipv6_guas = net_detect::detect_ipv6_guas();
+
+    // Find available WG port (falls back through range if preferred is busy)
+    let actual_wg_port = net_detect::find_available_wg_port(config.wg_port);
+
     // Init WireGuard
     let wg_config = wireguard::WgConfig {
         enabled: config.wg_enabled(),
-        port: config.wg_port,
+        port: actual_wg_port,
         endpoint: config.wg_endpoint.clone(),
         address: config.wg_address.clone(),
         data_dir: config.data_dir.clone(),
@@ -71,11 +81,17 @@ async fn main() -> anyhow::Result<()> {
         identity.wg_pubkey = Some(pubkey.clone());
         identity.wg_address = wg_state.address.clone();
         identity.wg_endpoint = wg_state.endpoint.clone();
+        identity.ipv6_guas = ipv6_guas.iter().map(|a| a.to_string()).collect();
+        identity.wg_listen_port = Some(actual_wg_port);
         identity::write_identity(&config.data_dir, &identity)?;
         info!(
-            "WG address: {}",
-            wg_state.address.as_deref().unwrap_or("none")
+            "WG address: {}, listen port: {}",
+            wg_state.address.as_deref().unwrap_or("none"),
+            actual_wg_port,
         );
+        if !ipv6_guas.is_empty() {
+            info!("IPv6 GUAs available: {}", ipv6_guas.len());
+        }
     }
 
     // Load persisted state
@@ -195,6 +211,58 @@ async fn main() -> anyhow::Result<()> {
                 tracing::error!("P2P-CD engine exited with error: {}", e);
             }
         });
+    }
+
+    // Register matchmake circuit event handler
+    if let Some(ref engine) = p2pcd_engine {
+        if let Some(handler) = engine.cap_router().handler_by_name("core.network.relay.1") {
+            if let Some(relay_handler) = handler
+                .as_any()
+                .downcast_ref::<::p2pcd::capabilities::relay::RelayHandler>()
+            {
+                let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+                relay_handler.set_event_callback(tx).await;
+                let mm_state = state.clone();
+                let mm_counter = Arc::clone(&state.matchmake_counter);
+                tokio::spawn(async move {
+                    while let Some(event) = rx.recv().await {
+                        if let ::p2pcd::capabilities::relay::CircuitEvent::Data {
+                            circuit_id,
+                            data,
+                            ..
+                        } = event
+                        {
+                            match matchmake::decode_message(&data) {
+                                Ok(matchmake::MatchmakeMessage::Request(req)) => {
+                                    let s = mm_state.clone();
+                                    let c = Arc::clone(&mm_counter);
+                                    tokio::spawn(async move {
+                                        if let Err(e) = matchmake::handle_incoming_matchmake(
+                                            &s, circuit_id, req, c,
+                                        )
+                                        .await
+                                        {
+                                            tracing::warn!("matchmake handler error: {}", e);
+                                        }
+                                    });
+                                }
+                                Ok(_) => {
+                                    tracing::debug!(
+                                        "matchmake: ignoring non-request on circuit {}",
+                                        circuit_id
+                                    );
+                                }
+                                Err(_) => {
+                                    // Not a matchmake message — ignore
+                                }
+                            }
+                        }
+                    }
+                    tracing::debug!("matchmake: circuit event channel closed");
+                });
+                info!("Matchmake circuit event handler registered");
+            }
+        }
     }
 
     // Start HTTP server with graceful shutdown

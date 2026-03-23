@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route, Navigate, NavLink, useNavigate } from 're
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { useEffect, useState, useCallback } from 'react';
 import { Dashboard } from './pages/Dashboard';
+import { Connection } from './pages/Connection';
 import { Settings } from './pages/Settings';
 import { CapabilityPage } from './pages/CapabilityPage';
 import { getCapabilities } from './api/capabilities';
@@ -85,6 +86,7 @@ function NavBar() {
     <nav style={navStyle}>
       <span style={brandStyle}>howm</span>
       <NavLink to="/dashboard" style={linkStyle}>Dashboard</NavLink>
+      <NavLink to="/connection" style={linkStyle}>Connection</NavLink>
       {capabilities?.filter(c => c.ui).map(cap => (
         <NavLink key={cap.name} to={`/cap/${cap.name}`} style={linkStyle}>
           {cap.ui!.label}
@@ -163,6 +165,7 @@ function Shell() {
         <Routes>
           <Route path="/" element={<Navigate to="/dashboard" replace />} />
           <Route path="/dashboard" element={<Dashboard />} />
+          <Route path="/connection" element={<Connection />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="/cap/:name" element={<CapabilityPage />} />
         </Routes>

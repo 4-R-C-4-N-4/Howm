@@ -1,9 +1,8 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { getNodeInfo, getWgStatus } from '../api/nodes';
+import { getNodeInfo } from '../api/nodes';
 import { getApiToken, setApiToken, clearApiToken } from '../api/client';
 import { PeerList } from '../components/PeerList';
 import { CapabilityList } from '../components/CapabilityList';
-import { OpenInviteSection } from '../components/OpenInviteSection';
 import { useState } from 'react';
 
 export function Dashboard() {
@@ -12,16 +11,10 @@ export function Dashboard() {
     queryKey: ['node-info'],
     queryFn: getNodeInfo,
   });
-  const { data: wgStatus } = useQuery({
-    queryKey: ['wg-status'],
-    queryFn: getWgStatus,
-    refetchInterval: 15000,
-  });
 
   const [tokenInput, setTokenInput] = useState('');
   const hasToken = !!getApiToken();
 
-  // Task 5: invalidate queries instead of reloading the page
   const handleSetToken = () => {
     if (tokenInput.trim()) {
       setApiToken(tokenInput.trim());
@@ -33,8 +26,6 @@ export function Dashboard() {
     clearApiToken();
     queryClient.invalidateQueries();
   };
-
-  const endpointMissing = wgStatus && !wgStatus.endpoint;
 
   return (
     <div style={pageStyle}>
@@ -85,40 +76,6 @@ export function Dashboard() {
             <Row label="Name"    value={nodeInfo.name} />
           </dl>
         )}
-      </section>
-
-      {/* WireGuard */}
-      <section style={cardStyle}>
-        <h2 style={h2Style}>WireGuard</h2>
-        {/* Task 6: endpoint warning */}
-        {endpointMissing && (
-          <div style={warnBannerStyle}>
-            ⚠ WireGuard endpoint not set — invites will not work for remote peers.
-            Restart with <code style={codeStyle}>--wg-endpoint &lt;public-ip:51820&gt;</code> or set <code style={codeStyle}>HOWM_WG_ENDPOINT</code>.
-          </div>
-        )}
-        {wgStatus ? (
-          <dl style={dlStyle}>
-            <dt style={dtStyle}>Status</dt>
-            <dd style={ddStyle}>
-              <span style={{ color: wgStatus.status === 'connected' ? 'var(--howm-success, #4ade80)' : 'var(--howm-warning, #fbbf24)' }}>
-                {wgStatus.status}
-              </span>
-            </dd>
-            {wgStatus.public_key && <Row label="Public Key" value={wgStatus.public_key} mono />}
-            {wgStatus.address    && <Row label="WG Address" value={wgStatus.address} mono />}
-            {wgStatus.endpoint   && <Row label="Endpoint"   value={wgStatus.endpoint} mono />}
-            {wgStatus.listen_port != null && <Row label="Listen Port" value={String(wgStatus.listen_port)} mono />}
-            {wgStatus.active_tunnels != null && <Row label="Active Tunnels" value={String(wgStatus.active_tunnels)} />}
-          </dl>
-        ) : (
-          <p style={mutedStyle}>Loading WireGuard status…</p>
-        )}
-      </section>
-
-      {/* Open Invite */}
-      <section style={cardStyle}>
-        <OpenInviteSection />
       </section>
 
       {/* Peers */}
@@ -182,22 +139,3 @@ const accentBtnStyle: React.CSSProperties = {
   borderRadius: 'var(--howm-radius-sm, 4px)',
   color: '#fff', cursor: 'pointer', fontSize: '0.9em',
 };
-const warnBannerStyle: React.CSSProperties = {
-  background: 'rgba(251,191,36,0.1)',
-  border: '1px solid var(--howm-warning, #fbbf24)',
-  borderRadius: 'var(--howm-radius-sm, 4px)',
-  padding: '10px 14px',
-  marginBottom: '16px',
-  fontSize: '0.875rem',
-  color: 'var(--howm-warning, #fbbf24)',
-  lineHeight: 1.5,
-};
-const codeStyle: React.CSSProperties = {
-  fontFamily: 'var(--howm-font-mono, monospace)',
-  fontSize: '0.875em',
-  background: 'rgba(255,255,255,0.08)',
-  padding: '1px 5px',
-  borderRadius: '3px',
-};
-
-
