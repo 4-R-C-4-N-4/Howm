@@ -5,7 +5,7 @@
   "binary": "./feed",
   "port": 7001,
   "api": {
-    "base_path": "/cap/social",
+    "base_path": "/cap/feed",
     "endpoints": [
       { "name": "get_feed", "method": "GET", "path": "/feed" },
       { "name": "create_post", "method": "POST", "path": "/post" },

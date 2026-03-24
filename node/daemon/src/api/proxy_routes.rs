@@ -107,35 +107,28 @@ async fn proxy_handler_inner(
 /// Map an installed capability short name to its P2P-CD fully-qualified name.
 ///
 /// Installed capabilities use short names like "feed" while AccessDb
-/// rules use P2P-CD names like "howm.feed.1".
+/// rules use P2P-CD names like "howm.social.feed.1".
 ///
-/// Resolution order:
-/// 1. Check P2P-CD engine's local manifest for a capability matching the pattern
-///    `howm.{short_name_with_dots}.N` (e.g. "feed" → "howm.feed.1")
-/// 2. Try direct `howm.{short_name}.1` construction
+/// Resolution: scan the P2P-CD engine's local manifest for any capability
+/// whose second or third namespace segment matches the short name.
+/// e.g. "feed" matches "howm.social.feed.1" (third segment),
+///      "social" matches "howm.social.feed.1" (second segment).
+/// Falls back to `howm.{short_name}.1` if no manifest match.
 async fn resolve_p2pcd_cap_name(state: &AppState, short_name: &str) -> Option<String> {
-    // Check the P2P-CD engine's manifest for an exact match
     if let Some(engine) = &state.p2pcd_engine {
         let manifest = engine.local_manifest().await;
-        // Try matching: "feed" against "howm.feed.1"
         for cap in &manifest.capabilities {
-            // Strip "howm." prefix and version suffix for comparison
             let parts: Vec<&str> = cap.name.split('.').collect();
-            if parts.len() >= 3 && parts[0] == "howm" {
-                // Compare against "feed" (middle segments without howm. and .version)
-                let middle = &parts[1..parts.len() - 1].join(".");
-                if middle == short_name {
+            if parts.len() >= 3 {
+                // Match against any middle segment (between prefix and version)
+                // e.g. for "howm.social.feed.1", check "social" and "feed"
+                let middle = &parts[1..parts.len() - 1];
+                if middle.contains(&short_name) {
                     return Some(cap.name.clone());
                 }
-                // Also match first segment: "social" matches "howm.feed.1"
-                if parts[1] == short_name {
-                    return Some(cap.name.clone());
-                }
-            }
-            // Also check core.* capabilities
-            if parts.len() >= 3 && parts[0] == "core" {
-                let middle = &parts[1..parts.len() - 1].join(".");
-                if middle == short_name || parts[1] == short_name {
+                // Also match the joined middle: "social.feed"
+                let joined = middle.join(".");
+                if joined == short_name {
                     return Some(cap.name.clone());
                 }
             }
@@ -143,7 +136,6 @@ async fn resolve_p2pcd_cap_name(state: &AppState, short_name: &str) -> Option<St
     }
 
     // Fallback: construct from convention
-    // "feed" → "howm.feed.1"
     let candidate = format!("howm.{}.1", short_name);
     Some(candidate)
 }

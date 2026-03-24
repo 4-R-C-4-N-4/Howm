@@ -20,15 +20,13 @@ pub async fn proxy_request_with_peer(
     req: Request<Body>,
     peer_pubkey: Option<&str>,
 ) -> Result<Response<Body>, AppError> {
-    // Find capability by name — "feed" matches "feed" (first segment before '.')
+    // Find capability by name — match against the installed name, or any
+    // dot-separated segment (e.g. "feed" matches installed name "feed",
+    // and a future "social.feed" would also match on "social" or "feed").
     let cap = {
         let caps = state.capabilities.read().await;
         caps.iter()
-            .find(|c| {
-                let first_seg = c.name.split('.').next().unwrap_or(&c.name);
-                let last_seg = c.name.rsplit('.').next().unwrap_or(&c.name);
-                first_seg == cap_name || last_seg == cap_name || c.name == cap_name
-            })
+            .find(|c| c.name == cap_name || c.name.split('.').any(|seg| seg == cap_name))
             .cloned()
     };
 

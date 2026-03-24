@@ -21,7 +21,7 @@ use crate::posts;
 use crate::posts::MediaLimits;
 
 /// P2P-CD feed capability name as declared in p2pcd-peer.toml.
-pub const FEED_CAP: &str = "howm.feed.1";
+pub const FEED_CAP: &str = "howm.social.feed.1";
 
 /// Message type for feed post broadcasts (application-level, 100+).
 pub const MSG_TYPE_POST_BROADCAST: u64 = 100;
