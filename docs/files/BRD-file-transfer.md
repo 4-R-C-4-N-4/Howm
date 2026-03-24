@@ -1,4 +1,4 @@
-# BRD-003: File Transfer Offerings and Peer Download Page
+# BRD: File Transfer Offerings and Peer Download Page
 
 **Author:** Ivy Darling
 **Project:** Howm
@@ -167,8 +167,8 @@ The `access` field on an offering record (§6.2) SHALL support these four values
 | OQ-1 | How does a peer request the operator's catalogue? | Closed — P2P-CD `rpc` call to the operator's `files` capability; peer renders catalogue locally from returned metadata. |
 | OQ-2 | Should the peer-facing download page be served by the operator or rendered in the requester's UI? | Closed — rendered in the requesting peer's own Howm UI from catalogue metadata. Operator serves data only. |
 | OQ-3 | Should `files` advertise offered files as P2P-CD capabilities? | Closed — `howm.social.files.1` appears in the manifest with a flexible role (PROVIDE / CONSUME / BOTH). Individual blobs are opaque data within the catalogue, not sub-capabilities. |
-| OQ-4 | What is the maximum catalogue size? 1000 offerings is assumed as a soft limit; is there a hard constraint? | Open |
-| OQ-5 | Should adding a file to the catalogue require the file to already be present on disk, or support pre-announcing an offering before the file is available ("coming soon")? | Open |
+| OQ-4 | What is the maximum catalogue size? 1000 offerings is assumed as a soft limit; is there a hard constraint? | Why should there be? Peers can offer what they want in my opinion |
+| OQ-5 | Should adding a file to the catalogue require the file to already be present on disk| Yes, upload requires actual file |
 | OQ-6 | Seeder state and P2P-CD manifest rebroadcast: per §8.1, any capability state change MUST trigger rebroadcast and re-exchange with all active peers. If per-blob seeder status lived in the P2P-CD manifest, every completed download would kick off re-exchange with every connected peer. | Closed — seeder tracking lives in application-layer catalogue gossip via a dedicated `catalogue.seeders` RPC method, not in the P2P-CD manifest. No rebroadcast on seeder change. |
 
 ---

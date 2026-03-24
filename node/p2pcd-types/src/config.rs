@@ -345,6 +345,17 @@ impl PeerConfig {
                     },
                 );
                 m.insert(
+                    "messaging".to_string(),
+                    CapabilityConfig {
+                        name: "howm.social.messaging.1".to_string(),
+                        role: RoleConfig::Both,
+                        mutual: true,
+                        scope: None,
+                        classification: None,
+                        params: None,
+                    },
+                );
+                m.insert(
                     "heartbeat".to_string(),
                     CapabilityConfig {
                         name: "core.session.heartbeat.1".to_string(),
@@ -536,7 +547,7 @@ list = []
         let cfg = PeerConfig::generate_default(&data_dir);
         let peer_id = [0xA1u8; 32];
         let manifest = cfg.to_manifest(peer_id, 1);
-        assert_eq!(manifest.capabilities.len(), 2);
+        assert_eq!(manifest.capabilities.len(), 3);
         // Capabilities must be sorted
         let names: Vec<_> = manifest
             .capabilities

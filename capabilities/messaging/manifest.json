@@ -1,0 +1,21 @@
+{
+  "name": "social.messaging",
+  "version": "0.1.0",
+  "description": "Private peer-to-peer direct messaging",
+  "binary": "./messaging",
+  "port": 7002,
+  "api": {
+    "base_path": "/cap/messaging",
+    "endpoints": [
+      { "name": "send", "method": "POST", "path": "/send" },
+      { "name": "conversations", "method": "GET", "path": "/conversations" },
+      { "name": "conversation", "method": "GET", "path": "/conversations/:peer_id" },
+      { "name": "mark_read", "method": "POST", "path": "/conversations/:peer_id/read" },
+      { "name": "delete_message", "method": "DELETE", "path": "/conversations/:peer_id/messages/:msg_id" },
+      { "name": "health", "method": "GET", "path": "/health" }
+    ]
+  },
+  "permissions": {
+    "visibility": "friends"
+  }
+}
