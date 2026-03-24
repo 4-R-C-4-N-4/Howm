@@ -54,8 +54,9 @@ export function CapabilityPage() {
   }
 
   // Build the iframe src — route through the daemon proxy at /cap/{prefix}/...
-  // Capability name "feed" → proxy prefix "feed" (first segment before '.')
-  const proxyPrefix = cap.name.split('.')[0];
+  // Capability name "social.feed" → proxy prefix "feed" (last segment after '.')
+  const segments = cap.name.split('.');
+  const proxyPrefix = segments[segments.length - 1];
   const entry = cap.ui.entry.startsWith('/')
     ? `/cap/${proxyPrefix}${cap.ui.entry}`
     : `/cap/${proxyPrefix}/${cap.ui.entry}`;

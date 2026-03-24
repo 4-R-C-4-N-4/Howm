@@ -19,7 +19,7 @@ var BASE = (function () {
 (function init() {
   // 1. Try URL param first (simplest path — shell passes ?token=***
   var params = new URLSearchParams(window.location.search);
-  var tokenParam=params...n');
+  var tokenParam = params.get('token');
   if (tokenParam) {
     apiToken = tokenParam;
     startup();

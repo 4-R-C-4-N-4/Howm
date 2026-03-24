@@ -1,5 +1,5 @@
 {
-  "name": "feed",
+  "name": "social.feed",
   "version": "0.1.0",
   "description": "Distributed feed capability",
   "binary": "./feed",
