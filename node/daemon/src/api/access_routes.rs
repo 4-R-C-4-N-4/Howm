@@ -173,7 +173,7 @@ pub async fn list_group_members(
         .list_group_member_ids(&uuid)
         .map_err(|e| AppError::Internal(format!("access_db: {}", e)))?;
 
-    let hex_ids: Vec<String> = member_ids.iter().map(|id| hex::encode(id)).collect();
+    let hex_ids: Vec<String> = member_ids.iter().map(hex::encode).collect();
 
     Ok(Json(json!({
         "group_id": group_id,
