@@ -356,6 +356,17 @@ impl PeerConfig {
                     },
                 );
                 m.insert(
+                    "files".to_string(),
+                    CapabilityConfig {
+                        name: "howm.social.files.1".to_string(),
+                        role: RoleConfig::Both,
+                        mutual: true,
+                        scope: None,
+                        classification: None,
+                        params: None,
+                    },
+                );
+                m.insert(
                     "heartbeat".to_string(),
                     CapabilityConfig {
                         name: "core.session.heartbeat.1".to_string(),
