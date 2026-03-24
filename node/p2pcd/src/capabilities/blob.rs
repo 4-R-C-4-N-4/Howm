@@ -62,6 +62,8 @@ const DEFAULT_CHUNK_SIZE: u64 = 32_768;
 const DEFAULT_MAX_BYTES: u64 = 52_428_800;
 /// Transfer timeout: 5 minutes
 const TRANSFER_TIMEOUT_SECS: u64 = 300;
+/// Maximum retransmit attempts before giving up
+const MAX_RETRANSMIT_ATTEMPTS: u32 = 3;
 
 // ── Transfer state ───────────────────────────────────────────────────────────
 
@@ -76,6 +78,7 @@ struct InboundTransfer {
     received: Vec<bool>,
     chunks: Vec<Option<Vec<u8>>>,
     started_at: u64,
+    retransmit_count: u32,
 }
 
 impl InboundTransfer {
@@ -383,6 +386,7 @@ impl BlobHandler {
                 received: vec![false; chunk_count as usize],
                 chunks: vec![None; chunk_count as usize],
                 started_at: unix_now(),
+                retransmit_count: 0,
             },
         );
 
@@ -454,10 +458,47 @@ impl BlobHandler {
                         ),
                     ]);
                     self.send_msg(message_types::BLOB_ACK, ack).await;
+                    self.inbound.write().await.remove(&transfer_id);
                 }
                 Err(e) => {
+                    // Check retry limit before requesting retransmit
+                    let mut inbound_w = self.inbound.write().await;
+                    if let Some(transfer) = inbound_w.get_mut(&transfer_id) {
+                        transfer.retransmit_count += 1;
+                        if transfer.retransmit_count > MAX_RETRANSMIT_ATTEMPTS {
+                            tracing::warn!(
+                                "blob: transfer {} failed after {} retransmit attempts: {}",
+                                transfer_id,
+                                MAX_RETRANSMIT_ATTEMPTS,
+                                e
+                            );
+                            inbound_w.remove(&transfer_id);
+                            drop(inbound_w);
+                            self.emit_transfer_event(
+                                transfer_id,
+                                blob_hash,
+                                TransferStatus::Failed,
+                                0,
+                                Some(format!(
+                                    "hash mismatch after {} retries: {}",
+                                    MAX_RETRANSMIT_ATTEMPTS, e
+                                )),
+                            );
+                            return Ok(());
+                        }
+
+                        // Reset chunk state so retransmitted chunks can be received
+                        for i in 0..transfer.received.len() {
+                            transfer.received[i] = false;
+                            transfer.chunks[i] = None;
+                        }
+                        drop(inbound_w);
+                    } else {
+                        drop(inbound_w);
+                    }
+
                     tracing::warn!(
-                        "blob: hash verification failed for transfer {}: {}",
+                        "blob: hash verification failed for transfer {}, requesting retransmit: {}",
                         transfer_id,
                         e
                     );
@@ -479,8 +520,6 @@ impl BlobHandler {
                     self.send_msg(message_types::BLOB_ACK, ack).await;
                 }
             }
-
-            self.inbound.write().await.remove(&transfer_id);
         }
 
         Ok(())
@@ -706,7 +745,7 @@ fn unix_now() -> u64 {
 mod tests {
     use super::*;
     use crate::cbor_helpers::cbor_get_int;
-    use p2pcd_types::CapabilityHandler;
+    use p2pcd_types::{CapabilityHandler, ScopeValue};
     use sha2::{Digest, Sha256};
 
     fn hash_data(data: &[u8]) -> [u8; 32] {
@@ -928,6 +967,225 @@ mod tests {
         }
     }
 
+    /// Test the full retransmit flow: corrupt chunk → hash mismatch → NACK → retransmit → success
+    #[tokio::test]
+    async fn retransmit_on_hash_mismatch() {
+        let provider_dir = tempfile::tempdir().unwrap();
+        let consumer_dir = tempfile::tempdir().unwrap();
+
+        // Use data large enough for multiple chunks (use small chunk size via scope params)
+        let data = vec![0xABu8; 128]; // 128 bytes
+        let hash = hash_data(&data);
+        let store = BlobStore::new(provider_dir.path());
+        let mut writer = store.begin_write(hash);
+        writer.write(&data).await.unwrap();
+        writer.finalize().await.unwrap();
+
+        let provider = BlobHandler::new(provider_dir.path().to_path_buf());
+        let consumer = BlobHandler::new(consumer_dir.path().to_path_buf());
+
+        let (provider_tx, mut provider_rx) = tokio::sync::mpsc::channel(64);
+        let (consumer_tx, mut consumer_rx) = tokio::sync::mpsc::channel(64);
+        provider.set_sender(provider_tx).await;
+        consumer.set_sender(consumer_tx).await;
+
+        // Subscribe to transfer events on the consumer side
+        let mut event_rx = consumer.subscribe_transfer_events();
+
+        let peer_a = [1u8; 32];
+        let peer_b = [2u8; 32];
+
+        // Use small chunk size (32 bytes) so we get 4 chunks for 128 bytes
+        let mut params = ScopeParams::default();
+        params.set_ext(scope_keys::BLOB_CHUNK_SIZE, ScopeValue::Uint(32));
+        let ctx_from_a = CapabilityContext {
+            peer_id: peer_a,
+            params: params.clone(),
+            capability_name: "core.data.blob.1".to_string(),
+        };
+        let ctx_from_b = CapabilityContext {
+            peer_id: peer_b,
+            params: params.clone(),
+            capability_name: "core.data.blob.1".to_string(),
+        };
+
+        // Consumer sends REQ → Provider
+        let req = cbor_encode_map(vec![
+            (
+                keys::TRANSFER_ID,
+                ciborium::value::Value::Integer(99u64.into()),
+            ),
+            (
+                keys::BLOB_HASH,
+                ciborium::value::Value::Bytes(hash.to_vec()),
+            ),
+        ]);
+        provider.handle_req(&req, &ctx_from_a).await.unwrap();
+
+        // Collect provider messages: OFFER + chunks
+        let mut messages = Vec::new();
+        while let Ok(msg) = provider_rx.try_recv() {
+            messages.push(msg);
+        }
+        assert!(messages.len() >= 2, "should have OFFER + at least 1 chunk");
+
+        // Feed OFFER to consumer
+        if let ProtocolMessage::CapabilityMsg {
+            message_type,
+            payload,
+        } = &messages[0]
+        {
+            assert_eq!(*message_type, message_types::BLOB_OFFER);
+            consumer
+                .on_message(*message_type, payload, &ctx_from_b)
+                .await
+                .unwrap();
+        }
+
+        // Feed chunks to consumer, but CORRUPT chunk index 1
+        for (i, msg) in messages[1..].iter().enumerate() {
+            if let ProtocolMessage::CapabilityMsg {
+                message_type,
+                payload,
+            } = msg
+            {
+                if i == 1 {
+                    // Corrupt this chunk: decode, mutate data, re-encode
+                    let map = decode_payload(payload).unwrap();
+                    let transfer_id = cbor_get_int(&map, keys::TRANSFER_ID).unwrap_or(0);
+                    let chunk_index = cbor_get_int(&map, keys::CHUNK_INDEX).unwrap_or(0);
+                    let mut bad_data = cbor_get_bytes(&map, keys::DATA).unwrap_or_default();
+                    // Flip some bytes
+                    for b in bad_data.iter_mut() {
+                        *b = b.wrapping_add(1);
+                    }
+                    let corrupt_payload = cbor_encode_map(vec![
+                        (
+                            keys::TRANSFER_ID,
+                            ciborium::value::Value::Integer(transfer_id.into()),
+                        ),
+                        (
+                            keys::CHUNK_INDEX,
+                            ciborium::value::Value::Integer(chunk_index.into()),
+                        ),
+                        (keys::DATA, ciborium::value::Value::Bytes(bad_data)),
+                    ]);
+                    consumer
+                        .on_message(*message_type, &corrupt_payload, &ctx_from_b)
+                        .await
+                        .unwrap();
+                } else {
+                    consumer
+                        .on_message(*message_type, payload, &ctx_from_b)
+                        .await
+                        .unwrap();
+                }
+            }
+        }
+
+        // Consumer should have detected hash mismatch and sent RETRANSMIT ACK
+        let ack_msg = consumer_rx.recv().await.unwrap();
+        match &ack_msg {
+            ProtocolMessage::CapabilityMsg {
+                message_type,
+                payload,
+            } => {
+                assert_eq!(*message_type, message_types::BLOB_ACK);
+                let map = decode_payload(payload).unwrap();
+                assert_eq!(
+                    cbor_get_int(&map, keys::STATUS),
+                    Some(status::RETRANSMIT),
+                    "should be RETRANSMIT status"
+                );
+                let missing = cbor_get_array(&map, keys::MISSING_CHUNKS).unwrap_or_default();
+                assert!(
+                    !missing.is_empty(),
+                    "missing chunks list should not be empty"
+                );
+            }
+            _ => panic!("expected ACK"),
+        }
+
+        // Inbound transfer should still exist (not removed)
+        assert_eq!(
+            consumer.inbound.read().await.len(),
+            1,
+            "inbound transfer should be preserved for retransmit"
+        );
+
+        // Feed the RETRANSMIT ACK to provider so it re-sends chunks
+        if let ProtocolMessage::CapabilityMsg {
+            message_type,
+            payload,
+        } = &ack_msg
+        {
+            provider
+                .on_message(*message_type, payload, &ctx_from_a)
+                .await
+                .unwrap();
+        }
+
+        // Provider should have re-sent all chunks
+        let mut retransmit_msgs = Vec::new();
+        while let Ok(msg) = provider_rx.try_recv() {
+            retransmit_msgs.push(msg);
+        }
+        assert!(
+            !retransmit_msgs.is_empty(),
+            "provider should have retransmitted chunks"
+        );
+
+        // Feed retransmitted (correct) chunks to consumer
+        for msg in &retransmit_msgs {
+            if let ProtocolMessage::CapabilityMsg {
+                message_type,
+                payload,
+            } = msg
+            {
+                assert_eq!(*message_type, message_types::BLOB_CHUNK);
+                consumer
+                    .on_message(*message_type, payload, &ctx_from_b)
+                    .await
+                    .unwrap();
+            }
+        }
+
+        // Consumer should now send COMPLETE ACK
+        let final_ack = consumer_rx.recv().await.unwrap();
+        match final_ack {
+            ProtocolMessage::CapabilityMsg {
+                message_type,
+                payload,
+            } => {
+                assert_eq!(message_type, message_types::BLOB_ACK);
+                let map = decode_payload(&payload).unwrap();
+                assert_eq!(
+                    cbor_get_int(&map, keys::STATUS),
+                    Some(status::COMPLETE),
+                    "should be COMPLETE after retransmit"
+                );
+            }
+            _ => panic!("expected COMPLETE ACK"),
+        }
+
+        // Consumer should have the correct blob
+        let consumer_store = BlobStore::new(consumer_dir.path());
+        assert!(consumer_store.has(&hash).await);
+        let retrieved = consumer_store
+            .read_chunk(&hash, 0, data.len() as u64)
+            .await
+            .unwrap();
+        assert_eq!(retrieved, data);
+
+        // Transfer event should have been emitted
+        let event = event_rx.try_recv().unwrap();
+        assert_eq!(event.transfer_id, 99);
+        assert_eq!(event.status, TransferStatus::Complete);
+
+        // Inbound transfer should be cleaned up
+        assert_eq!(consumer.inbound.read().await.len(), 0);
+    }
+
     #[tokio::test]
     async fn on_deactivated_cleans_up() {
         let dir = tempfile::tempdir().unwrap();
@@ -948,6 +1206,7 @@ mod tests {
                 received: vec![false, false],
                 chunks: vec![None, None],
                 started_at: unix_now(),
+                retransmit_count: 0,
             },
         );
 
