@@ -26,7 +26,8 @@ pub async fn proxy_request_with_peer(
         caps.iter()
             .find(|c| {
                 let first_seg = c.name.split('.').next().unwrap_or(&c.name);
-                first_seg == cap_name || c.name == cap_name
+                let last_seg = c.name.rsplit('.').next().unwrap_or(&c.name);
+                first_seg == cap_name || last_seg == cap_name || c.name == cap_name
             })
             .cloned()
     };

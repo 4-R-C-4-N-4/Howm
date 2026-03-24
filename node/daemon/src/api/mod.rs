@@ -121,6 +121,7 @@ pub fn build_router(state: AppState, ui_dir: Option<PathBuf>) -> Router {
             get(network_routes::find_capability_providers),
         )
         .route("/network/feed", get(network_routes::network_feed))
+        .route("/cap/:name", any(proxy_routes::proxy_handler_root))
         .route("/cap/:name/*rest", any(proxy_routes::proxy_handler))
         .route("/p2pcd/status", get(p2pcd_routes::p2pcd_status))
         .route("/p2pcd/sessions", get(p2pcd_routes::p2pcd_sessions))

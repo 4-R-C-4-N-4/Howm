@@ -1,7 +1,7 @@
 'use strict';
 
 // ── State ──────────────────────────────────────────────────────────────────────
-var apiToken=***
+var apiToken = null;
 var trustFilter = null;
 var pendingFiles = []; // files queued for upload
 var mediaLimits = null; // fetched from /post/limits
@@ -21,7 +21,7 @@ var BASE = (function () {
   var params = new URLSearchParams(window.location.search);
   var tokenParam=params...n');
   if (tokenParam) {
-    apiToken=***
+    apiToken = tokenParam;
     startup();
   } else {
     // 2. Ask parent shell via postMessage
@@ -33,7 +33,7 @@ var BASE = (function () {
   window.addEventListener('message', function (e) {
     if (e.origin !== window.location.origin) return;
     if (e.data && e.data.type === 'howm:token:reply') {
-      apiToken=*** && e.data.payload.token;
+      apiToken = e.data && e.data.payload && e.data.payload.token;
       startup();
     }
   });

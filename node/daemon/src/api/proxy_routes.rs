@@ -8,10 +8,31 @@ use std::net::SocketAddr;
 
 use crate::{error::AppError, proxy, state::AppState};
 
+/// Handler for `/cap/:name` (no trailing path) — proxies to the capability root.
+pub async fn proxy_handler_root(
+    State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    Path(name): Path<String>,
+    req: Request<Body>,
+) -> Result<Response<Body>, AppError> {
+    proxy_handler_inner(state, addr, name, String::new(), req).await
+}
+
+/// Handler for `/cap/:name/*rest` — proxies to a sub-path of the capability.
 pub async fn proxy_handler(
     State(state): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Path((name, rest)): Path<(String, String)>,
+    req: Request<Body>,
+) -> Result<Response<Body>, AppError> {
+    proxy_handler_inner(state, addr, name, rest, req).await
+}
+
+async fn proxy_handler_inner(
+    state: AppState,
+    addr: SocketAddr,
+    name: String,
+    rest: String,
     req: Request<Body>,
 ) -> Result<Response<Body>, AppError> {
     let source_ip = addr.ip().to_string();
