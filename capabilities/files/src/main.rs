@@ -1,5 +1,5 @@
 use axum::{
-    routing::{delete, get, patch, post},
+    routing::{get, patch, post},
     Router,
 };
 use clap::Parser;
