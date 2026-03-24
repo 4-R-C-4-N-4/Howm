@@ -6,14 +6,29 @@ use uuid::Uuid;
 
 // Well-known group UUIDs (mirrors node/access/src/types.rs)
 const GROUP_FRIENDS: Uuid = Uuid::from_bytes([
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x02,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02,
 ]);
 
 const GROUP_TRUSTED: Uuid = Uuid::from_bytes([
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x03,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03,
 ]);
+
+// ── Download ────────────────────────────────────────────────────────────────
+
+/// A tracked download from a peer.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Download {
+    pub blob_id: String,
+    pub offering_id: String,
+    pub peer_id: String,
+    pub transfer_id: i64,
+    pub name: String,
+    pub mime_type: String,
+    pub size: i64,
+    pub status: String, // pending, transferring, complete, failed
+    pub started_at: i64,
+    pub completed_at: Option<i64>,
+}
 
 // ── Offering ────────────────────────────────────────────────────────────────
 
@@ -241,6 +256,82 @@ impl FilesDb {
         Ok(visible)
     }
 
+    // ── Downloads CRUD ─────────────────────────────────────────────────────────
+
+    /// Insert a new download record.
+    pub fn insert_download(&self, dl: &Download) -> anyhow::Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO downloads (blob_id, offering_id, peer_id, transfer_id, name, mime_type, size, status, started_at, completed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                dl.blob_id,
+                dl.offering_id,
+                dl.peer_id,
+                dl.transfer_id,
+                dl.name,
+                dl.mime_type,
+                dl.size,
+                dl.status,
+                dl.started_at,
+                dl.completed_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// List all downloads.
+    pub fn list_downloads(&self) -> anyhow::Result<Vec<Download>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT blob_id, offering_id, peer_id, transfer_id, name, mime_type, size, status, started_at, completed_at
+             FROM downloads ORDER BY started_at DESC",
+        )?;
+        let rows = stmt.query_map([], row_to_download)?;
+        let mut downloads = Vec::new();
+        for row in rows {
+            downloads.push(row?);
+        }
+        Ok(downloads)
+    }
+
+    /// Get a single download by blob_id.
+    pub fn get_download(&self, blob_id: &str) -> anyhow::Result<Option<Download>> {
+        let conn = self.conn.lock().unwrap();
+        let result = conn
+            .query_row(
+                "SELECT blob_id, offering_id, peer_id, transfer_id, name, mime_type, size, status, started_at, completed_at
+                 FROM downloads WHERE blob_id = ?1",
+                params![blob_id],
+                row_to_download,
+            )
+            .optional()?;
+        Ok(result)
+    }
+
+    /// Update a download's status and optionally completed_at. Returns true if a row was updated.
+    pub fn update_download_status(
+        &self,
+        blob_id: &str,
+        status: &str,
+        completed_at: Option<i64>,
+    ) -> anyhow::Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let updated = conn.execute(
+            "UPDATE downloads SET status = ?1, completed_at = ?2 WHERE blob_id = ?3",
+            params![status, completed_at, blob_id],
+        )?;
+        Ok(updated > 0)
+    }
+
+    /// Delete a download by blob_id. Returns true if a row was deleted.
+    #[allow(dead_code)]
+    pub fn delete_download(&self, blob_id: &str) -> anyhow::Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let deleted = conn.execute("DELETE FROM downloads WHERE blob_id = ?1", params![blob_id])?;
+        Ok(deleted > 0)
+    }
+
     /// List offerings visible to a peer, with pagination.
     /// Returns (offerings, total_visible_count).
     pub fn list_offerings_for_peer_paginated(
@@ -305,6 +396,21 @@ fn row_to_offering(row: &rusqlite::Row) -> rusqlite::Result<Offering> {
     })
 }
 
+fn row_to_download(row: &rusqlite::Row) -> rusqlite::Result<Download> {
+    Ok(Download {
+        blob_id: row.get(0)?,
+        offering_id: row.get(1)?,
+        peer_id: row.get(2)?,
+        transfer_id: row.get(3)?,
+        name: row.get(4)?,
+        mime_type: row.get(5)?,
+        size: row.get(6)?,
+        status: row.get(7)?,
+        started_at: row.get(8)?,
+        completed_at: row.get(9)?,
+    })
+}
+
 // ── Access filtering ────────────────────────────────────────────────────────
 
 /// Check whether a peer should see a given offering based on its access policy.
@@ -319,16 +425,16 @@ pub fn peer_can_see_offering(
             parse_group_uuid(&g.group_id)
                 .is_some_and(|uuid| uuid == GROUP_FRIENDS || uuid == GROUP_TRUSTED)
         }),
-        "trusted" => peer_groups.iter().any(|g| {
-            parse_group_uuid(&g.group_id) == Some(GROUP_TRUSTED)
-        }),
+        "trusted" => peer_groups
+            .iter()
+            .any(|g| parse_group_uuid(&g.group_id) == Some(GROUP_TRUSTED)),
         "peer" => allowlist_contains(&offering.allowlist, peer_id_b64),
         access if access.starts_with("group:") => {
             let gid_str = &access[6..];
             match Uuid::parse_str(gid_str) {
-                Ok(target) => peer_groups.iter().any(|g| {
-                    parse_group_uuid(&g.group_id) == Some(target)
-                }),
+                Ok(target) => peer_groups
+                    .iter()
+                    .any(|g| parse_group_uuid(&g.group_id) == Some(target)),
                 Err(_) => false,
             }
         }
@@ -337,9 +443,9 @@ pub fn peer_can_see_offering(
                 .split(',')
                 .filter_map(|s| Uuid::parse_str(s.trim()).ok())
                 .collect();
-            peer_groups.iter().any(|g| {
-                parse_group_uuid(&g.group_id).is_some_and(|uuid| gids.contains(&uuid))
-            })
+            peer_groups
+                .iter()
+                .any(|g| parse_group_uuid(&g.group_id).is_some_and(|uuid| gids.contains(&uuid)))
         }
         _ => false, // unknown policy = deny
     }
@@ -370,8 +476,7 @@ mod tests {
     fn make_offering(name: &str, access: &str) -> Offering {
         Offering {
             offering_id: Uuid::new_v4().to_string(),
-            blob_id: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
-                .to_string(),
+            blob_id: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789".to_string(),
             name: name.to_string(),
             description: Some("test file".to_string()),
             mime_type: "application/octet-stream".to_string(),
@@ -724,5 +829,89 @@ mod tests {
             .list_offerings_for_peer_paginated("peer", &[], 10, 2)
             .unwrap();
         assert_eq!(page4.len(), 0);
+    }
+
+    // ── Download CRUD tests ──────────────────────────────────────────────
+
+    fn make_download(blob_id: &str, status: &str) -> Download {
+        Download {
+            blob_id: blob_id.to_string(),
+            offering_id: "off-1".to_string(),
+            peer_id: "peer-abc".to_string(),
+            transfer_id: 123456,
+            name: "test-file.bin".to_string(),
+            mime_type: "application/octet-stream".to_string(),
+            size: 2048,
+            status: status.to_string(),
+            started_at: 1700000000,
+            completed_at: None,
+        }
+    }
+
+    #[test]
+    fn insert_and_list_downloads() {
+        let db = FilesDb::open_memory().unwrap();
+        let dl = make_download("blob1", "transferring");
+        db.insert_download(&dl).unwrap();
+
+        let list = db.list_downloads().unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].blob_id, "blob1");
+        assert_eq!(list[0].status, "transferring");
+    }
+
+    #[test]
+    fn get_download_by_blob_id() {
+        let db = FilesDb::open_memory().unwrap();
+        let dl = make_download("blob2", "pending");
+        db.insert_download(&dl).unwrap();
+
+        let found = db.get_download("blob2").unwrap().unwrap();
+        assert_eq!(found.name, "test-file.bin");
+        assert_eq!(found.transfer_id, 123456);
+
+        let missing = db.get_download("nonexistent").unwrap();
+        assert!(missing.is_none());
+    }
+
+    #[test]
+    fn update_download_status_works() {
+        let db = FilesDb::open_memory().unwrap();
+        let dl = make_download("blob3", "transferring");
+        db.insert_download(&dl).unwrap();
+
+        let updated = db
+            .update_download_status("blob3", "complete", Some(1700001000))
+            .unwrap();
+        assert!(updated);
+
+        let found = db.get_download("blob3").unwrap().unwrap();
+        assert_eq!(found.status, "complete");
+        assert_eq!(found.completed_at, Some(1700001000));
+    }
+
+    #[test]
+    fn update_download_status_nonexistent() {
+        let db = FilesDb::open_memory().unwrap();
+        let updated = db.update_download_status("nope", "complete", None).unwrap();
+        assert!(!updated);
+    }
+
+    #[test]
+    fn delete_download_works() {
+        let db = FilesDb::open_memory().unwrap();
+        let dl = make_download("blob4", "complete");
+        db.insert_download(&dl).unwrap();
+
+        let deleted = db.delete_download("blob4").unwrap();
+        assert!(deleted);
+        assert!(db.get_download("blob4").unwrap().is_none());
+    }
+
+    #[test]
+    fn delete_download_nonexistent() {
+        let db = FilesDb::open_memory().unwrap();
+        let deleted = db.delete_download("nope").unwrap();
+        assert!(!deleted);
     }
 }

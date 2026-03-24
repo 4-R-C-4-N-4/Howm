@@ -57,7 +57,10 @@ async fn main() -> anyhow::Result<()> {
         // Health
         .route("/health", get(api::health))
         // Operator offerings API
-        .route("/offerings", get(api::list_offerings).post(api::create_offering))
+        .route(
+            "/offerings",
+            get(api::list_offerings).post(api::create_offering),
+        )
         // JSON path for creating from pre-registered blob
         .route("/offerings/json", put(api::create_offering_json))
         .route(
@@ -67,7 +70,10 @@ async fn main() -> anyhow::Result<()> {
         // Peer catalogue browsing (wired in FEAT-003-E)
         .route("/peer/{peer_id}/catalogue", get(api::peer_catalogue))
         // Downloads (wired in FEAT-003-E)
-        .route("/downloads", get(api::list_downloads).post(api::initiate_download))
+        .route(
+            "/downloads",
+            get(api::list_downloads).post(api::initiate_download),
+        )
         .route("/downloads/{blob_id}/status", get(api::download_status))
         .route("/downloads/{blob_id}/data", get(api::download_data))
         // P2P-CD lifecycle hooks (called by daemon cap_notify)

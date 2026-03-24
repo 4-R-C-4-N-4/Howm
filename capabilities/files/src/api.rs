@@ -1,4 +1,5 @@
 use axum::{
+    body::Bytes,
     extract::{Multipart, Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
@@ -10,10 +11,10 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use uuid::Uuid;
 use tracing::{info, warn};
+use uuid::Uuid;
 
-use crate::db::{FilesDb, PeerGroup};
+use crate::db::{Download, FilesDb, PeerGroup};
 use p2pcd::bridge_client::BridgeClient;
 
 // ── Shared state ─────────────────────────────────────────────────────────────
@@ -80,11 +81,7 @@ impl AppState {
 
 /// Initialise active peers from the daemon on startup.
 pub async fn init_peers_from_daemon(state: AppState) {
-    match state
-        .bridge
-        .list_peers(Some("howm.social.files.1"))
-        .await
-    {
+    match state.bridge.list_peers(Some("howm.social.files.1")).await {
         Ok(peers) => {
             let mut active = state.active_peers.write().await;
             for p in &peers {
@@ -127,15 +124,13 @@ async fn fetch_peer_groups(state: &AppState, peer_id_b64: &str) -> Vec<PeerGroup
 
     let client = reqwest::Client::new();
     match client.get(&url).send().await {
-        Ok(resp) if resp.status().is_success() => {
-            match resp.json::<Vec<PeerGroup>>().await {
-                Ok(groups) => groups,
-                Err(e) => {
-                    warn!("Failed to parse peer groups response: {}", e);
-                    vec![]
-                }
+        Ok(resp) if resp.status().is_success() => match resp.json::<Vec<PeerGroup>>().await {
+            Ok(groups) => groups,
+            Err(e) => {
+                warn!("Failed to parse peer groups response: {}", e);
+                vec![]
             }
-        }
+        },
         Ok(resp) => {
             warn!("Peer groups request returned {}", resp.status());
             vec![]
@@ -265,7 +260,10 @@ pub async fn inbound_message(
     let payload_bytes = match base64_decode(&msg.payload) {
         Some(b) => b,
         None => {
-            warn!("Failed to decode base64 payload from {}", &msg.peer_id[..8.min(msg.peer_id.len())]);
+            warn!(
+                "Failed to decode base64 payload from {}",
+                &msg.peer_id[..8.min(msg.peer_id.len())]
+            );
             return (
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({ "error": "invalid payload encoding" })),
@@ -314,11 +312,7 @@ pub async fn inbound_message(
 }
 
 /// Handle catalogue.list RPC — returns filtered, paginated catalogue.
-async fn handle_catalogue_list(
-    state: &AppState,
-    peer_id_b64: &str,
-    payload: &[u8],
-) -> Vec<u8> {
+async fn handle_catalogue_list(state: &AppState, peer_id_b64: &str, payload: &[u8]) -> Vec<u8> {
     // Parse cursor and limit from CBOR
     let (cursor, limit) = decode_catalogue_list_params(payload);
     let limit = limit.clamp(1, 100);
@@ -333,16 +327,17 @@ async fn handle_catalogue_list(
     };
 
     // Query filtered offerings
-    let (offerings, total) = match state
-        .db
-        .list_offerings_for_peer_paginated(peer_id_b64, &groups, cursor, limit)
-    {
-        Ok(result) => result,
-        Err(e) => {
-            warn!("Failed to list offerings for peer: {}", e);
-            (vec![], 0)
-        }
-    };
+    let (offerings, total) =
+        match state
+            .db
+            .list_offerings_for_peer_paginated(peer_id_b64, &groups, cursor, limit)
+        {
+            Ok(result) => result,
+            Err(e) => {
+                warn!("Failed to list offerings for peer: {}", e);
+                (vec![], 0)
+            }
+        };
 
     // Compute next cursor
     let next_cursor = if cursor + offerings.len() < total {
@@ -396,16 +391,42 @@ pub struct TransferCompletePayload {
 }
 
 pub async fn transfer_complete(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Json(payload): Json<TransferCompletePayload>,
 ) -> impl IntoResponse {
-    // Download tracking wired in FEAT-003-E
     info!(
         "transfer-complete: blob={} status={} size={:?}",
         &payload.blob_id[..8.min(payload.blob_id.len())],
         payload.status,
         payload.size
     );
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+
+    match payload.status.as_str() {
+        "complete" => {
+            if let Err(e) = state
+                .db
+                .update_download_status(&payload.blob_id, "complete", Some(now))
+            {
+                warn!("Failed to update download status to complete: {}", e);
+            }
+        }
+        "failed" => {
+            if let Err(e) = state
+                .db
+                .update_download_status(&payload.blob_id, "failed", Some(now))
+            {
+                warn!("Failed to update download status to failed: {}", e);
+            }
+        }
+        other => {
+            warn!("Unknown transfer-complete status: {}", other);
+        }
+    }
 
     StatusCode::OK
 }
@@ -541,7 +562,10 @@ pub async fn create_offering_json(
         }
     })?;
 
-    info!("Created offering: {} ({})", offering.offering_id, offering.name);
+    info!(
+        "Created offering: {} ({})",
+        offering.offering_id, offering.name
+    );
     Ok((
         StatusCode::CREATED,
         Json(serde_json::json!({ "offering": offering })),
@@ -649,12 +673,14 @@ async fn create_offering_multipart(
         })?;
     } else {
         // Direct filesystem write (same layout as BlobStore)
-        direct_blob_write(&state.data_dir, &hash, &data).await.map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": format!("blob write failed: {}", e) })),
-            )
-        })?;
+        direct_blob_write(&state.data_dir, &hash, &data)
+            .await
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error": format!("blob write failed: {}", e) })),
+                )
+            })?;
     }
 
     let now = std::time::SystemTime::now()
@@ -739,19 +765,24 @@ pub async fn update_offering(
         allowlist: req.allowlist,
     };
 
-    let updated = state.db.update_offering(&offering_id, &update).map_err(|e| {
-        if e.to_string().contains("name_conflict") {
-            (
-                StatusCode::CONFLICT,
-                Json(serde_json::json!({ "error": "an offering with this name already exists" })),
-            )
-        } else {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": format!("{}", e) })),
-            )
-        }
-    })?;
+    let updated = state
+        .db
+        .update_offering(&offering_id, &update)
+        .map_err(|e| {
+            if e.to_string().contains("name_conflict") {
+                (
+                    StatusCode::CONFLICT,
+                    Json(
+                        serde_json::json!({ "error": "an offering with this name already exists" }),
+                    ),
+                )
+            } else {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error": format!("{}", e) })),
+                )
+            }
+        })?;
 
     if !updated {
         return Err((
@@ -813,7 +844,11 @@ pub async fn delete_offering(
             );
             match client.delete(&url).send().await {
                 Ok(resp) if resp.status().is_success() => {
-                    info!("Deleted blob {} for offering {}", &blob_id[..8], offering_id);
+                    info!(
+                        "Deleted blob {} for offering {}",
+                        &blob_id[..8],
+                        offering_id
+                    );
                 }
                 Ok(resp) => {
                     warn!(
@@ -845,35 +880,360 @@ pub async fn delete_offering(
     Ok(StatusCode::NO_CONTENT)
 }
 
-// ── Stub handlers (wired in FEAT-003-E) ──────────────────────────────────────
+// ── Peer catalogue browsing & download handlers (FEAT-003-E) ─────────────────
 
+#[derive(Debug, Deserialize)]
+pub struct CatalogueQuery {
+    #[serde(default)]
+    pub cursor: Option<usize>,
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+/// GET /peer/{peer_id}/catalogue — browse a remote peer's catalogue via RPC.
 pub async fn peer_catalogue(
-    State(_state): State<AppState>,
-    Path(_peer_id): Path<String>,
-) -> impl IntoResponse {
-    Json(serde_json::json!({ "offerings": [], "total": 0 }))
+    State(state): State<AppState>,
+    Path(peer_id): Path<String>,
+    Query(query): Query<CatalogueQuery>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    // Verify peer is active
+    {
+        let active = state.active_peers.read().await;
+        if !active.contains_key(&peer_id) {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "error": "peer not active" })),
+            ));
+        }
+    }
+
+    let cursor = query.cursor.unwrap_or(0);
+    let limit = query.limit.unwrap_or(20).clamp(1, 100);
+
+    // Decode peer_id from base64 to bytes
+    let peer_id_bytes_vec = match base64_decode(&peer_id) {
+        Some(b) if b.len() == 32 => b,
+        _ => {
+            return Err(bad_request("invalid peer_id (expected base64 of 32 bytes)"));
+        }
+    };
+    let mut peer_id_bytes = [0u8; 32];
+    peer_id_bytes.copy_from_slice(&peer_id_bytes_vec);
+
+    // Build CBOR catalogue.list request
+    let cbor_payload = encode_catalogue_list_request(cursor, limit);
+
+    // RPC call to remote peer
+    let response_bytes = state
+        .bridge
+        .rpc_call(&peer_id_bytes, "catalogue.list", &cbor_payload, Some(10000))
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({ "error": format!("RPC call failed: {}", e) })),
+            )
+        })?;
+
+    // Decode CBOR response
+    let (offerings_json, total, next_cursor) =
+        decode_catalogue_list_response_to_json(&response_bytes);
+
+    Ok(Json(serde_json::json!({
+        "offerings": offerings_json,
+        "total": total,
+        "next_cursor": next_cursor,
+    })))
 }
 
-pub async fn list_downloads(State(_state): State<AppState>) -> impl IntoResponse {
-    Json(serde_json::json!({ "downloads": [] }))
+/// Decode a CBOR catalogue.list response into JSON-friendly values.
+fn decode_catalogue_list_response_to_json(
+    data: &[u8],
+) -> (Vec<serde_json::Value>, i64, Option<i64>) {
+    use ciborium::value::Value;
+
+    let value: Value = match ciborium::from_reader(data) {
+        Ok(v) => v,
+        Err(_) => return (vec![], 0, None),
+    };
+    let map = match value {
+        Value::Map(m) => m,
+        _ => return (vec![], 0, None),
+    };
+
+    let mut offerings = vec![];
+    let mut total: i64 = 0;
+    let mut next_cursor: Option<i64> = None;
+
+    for (k, v) in map {
+        if let Value::Integer(i) = k {
+            let key: i128 = i.into();
+            match key as u64 {
+                CBOR_KEY_OFFERINGS => {
+                    if let Value::Array(arr) = v {
+                        for item in arr {
+                            if let Value::Map(fields) = item {
+                                let mut obj = serde_json::Map::new();
+                                for (fk, fv) in fields {
+                                    if let Value::Text(field_name) = fk {
+                                        let json_val = cbor_value_to_json(fv);
+                                        obj.insert(field_name, json_val);
+                                    }
+                                }
+                                offerings.push(serde_json::Value::Object(obj));
+                            }
+                        }
+                    }
+                }
+                CBOR_KEY_TOTAL => {
+                    if let Value::Integer(val) = v {
+                        let n: i128 = val.into();
+                        total = n as i64;
+                    }
+                }
+                CBOR_KEY_NEXT_CURSOR => match v {
+                    Value::Integer(val) => {
+                        let n: i128 = val.into();
+                        next_cursor = Some(n as i64);
+                    }
+                    Value::Null => {
+                        next_cursor = None;
+                    }
+                    _ => {}
+                },
+                _ => {}
+            }
+        }
+    }
+
+    (offerings, total, next_cursor)
 }
 
-pub async fn initiate_download(State(_state): State<AppState>) -> impl IntoResponse {
-    StatusCode::NOT_IMPLEMENTED
+/// Convert a ciborium Value to a serde_json Value.
+fn cbor_value_to_json(v: ciborium::value::Value) -> serde_json::Value {
+    use ciborium::value::Value;
+    match v {
+        Value::Text(s) => serde_json::Value::String(s),
+        Value::Integer(i) => {
+            let n: i128 = i.into();
+            serde_json::json!(n as i64)
+        }
+        Value::Null => serde_json::Value::Null,
+        Value::Bool(b) => serde_json::Value::Bool(b),
+        Value::Float(f) => serde_json::json!(f),
+        Value::Array(arr) => {
+            serde_json::Value::Array(arr.into_iter().map(cbor_value_to_json).collect())
+        }
+        _ => serde_json::Value::Null,
+    }
 }
 
+/// GET /downloads — list all tracked downloads.
+pub async fn list_downloads(State(state): State<AppState>) -> impl IntoResponse {
+    match state.db.list_downloads() {
+        Ok(downloads) => (
+            StatusCode::OK,
+            Json(serde_json::json!({ "downloads": downloads })),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("{}", e) })),
+        ),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct InitiateDownloadRequest {
+    pub peer_id: String,
+    pub blob_id: String,
+    pub offering_id: String,
+    pub name: String,
+    pub mime_type: String,
+    pub size: i64,
+}
+
+/// POST /downloads — initiate a download from a peer.
+pub async fn initiate_download(
+    State(state): State<AppState>,
+    Json(req): Json<InitiateDownloadRequest>,
+) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<serde_json::Value>)> {
+    // Validate peer is active
+    {
+        let active = state.active_peers.read().await;
+        if !active.contains_key(&req.peer_id) {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "error": "peer not active" })),
+            ));
+        }
+    }
+
+    // Parse blob_id as hex hash
+    let hash = hex_to_hash(&req.blob_id)
+        .ok_or_else(|| bad_request("invalid blob_id (expected 64-char hex SHA-256)"))?;
+
+    // Check if we already have this blob locally
+    if let Ok(status) = state.bridge.blob_status(&hash).await {
+        if status.exists {
+            return Err((
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({ "error": "blob already exists locally" })),
+            ));
+        }
+    }
+
+    // Check no existing download for this blob_id
+    if let Ok(Some(_)) = state.db.get_download(&req.blob_id) {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({ "error": "download already exists for this blob_id" })),
+        ));
+    }
+
+    // Decode peer_id to bytes
+    let peer_id_bytes_vec = match base64_decode(&req.peer_id) {
+        Some(b) if b.len() == 32 => b,
+        _ => return Err(bad_request("invalid peer_id (expected base64 of 32 bytes)")),
+    };
+    let mut peer_id_bytes = [0u8; 32];
+    peer_id_bytes.copy_from_slice(&peer_id_bytes_vec);
+
+    // Generate transfer_id from timestamp
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let transfer_id = now;
+
+    // Call bridge to start the P2P transfer
+    state
+        .bridge
+        .blob_request(&peer_id_bytes, &hash, transfer_id as u64)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({ "error": format!("blob_request failed: {}", e) })),
+            )
+        })?;
+
+    // Insert download record
+    let download = Download {
+        blob_id: req.blob_id,
+        offering_id: req.offering_id,
+        peer_id: req.peer_id,
+        transfer_id,
+        name: req.name,
+        mime_type: req.mime_type,
+        size: req.size,
+        status: "transferring".to_string(),
+        started_at: now,
+        completed_at: None,
+    };
+
+    state.db.insert_download(&download).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("{}", e) })),
+        )
+    })?;
+
+    info!(
+        "Initiated download: blob={} from peer={}",
+        &download.blob_id[..8.min(download.blob_id.len())],
+        &download.peer_id[..8.min(download.peer_id.len())]
+    );
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::json!({ "download": download })),
+    ))
+}
+
+/// GET /downloads/{blob_id}/status — check download status.
 pub async fn download_status(
-    State(_state): State<AppState>,
-    Path(_blob_id): Path<String>,
-) -> impl IntoResponse {
-    StatusCode::NOT_FOUND
+    State(state): State<AppState>,
+    Path(blob_id): Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let mut download = state
+        .db
+        .get_download(&blob_id)
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("{}", e) })),
+            )
+        })?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "error": "download not found" })),
+            )
+        })?;
+
+    // If still transferring, check blob_status to see if it completed
+    if download.status == "transferring" {
+        if let Some(hash) = hex_to_hash(&blob_id) {
+            if let Ok(status) = state.bridge.blob_status(&hash).await {
+                if status.exists {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs() as i64;
+                    let _ = state
+                        .db
+                        .update_download_status(&blob_id, "complete", Some(now));
+                    download.status = "complete".to_string();
+                    download.completed_at = Some(now);
+                }
+            }
+        }
+    }
+
+    Ok(Json(serde_json::json!({ "download": download })))
 }
 
+/// GET /downloads/{blob_id}/data — fetch completed download data.
 pub async fn download_data(
-    State(_state): State<AppState>,
-    Path(_blob_id): Path<String>,
-) -> impl IntoResponse {
-    StatusCode::NOT_FOUND
+    State(state): State<AppState>,
+    Path(blob_id): Path<String>,
+) -> Result<(StatusCode, [(String, String); 1], Bytes), (StatusCode, Json<serde_json::Value>)> {
+    let download = state
+        .db
+        .get_download(&blob_id)
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("{}", e) })),
+            )
+        })?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "error": "download not found" })),
+            )
+        })?;
+
+    if download.status != "complete" {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({ "error": "download not complete" })),
+        ));
+    }
+
+    let hash = hex_to_hash(&blob_id).ok_or_else(|| bad_request("invalid blob_id"))?;
+
+    let data = state.bridge.blob_data(&hash).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("blob_data failed: {}", e) })),
+        )
+    })?;
+
+    Ok((
+        StatusCode::OK,
+        [("content-type".to_string(), download.mime_type)],
+        Bytes::from(data),
+    ))
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -886,9 +1246,7 @@ fn bad_request(msg: &str) -> (StatusCode, Json<serde_json::Value>) {
 }
 
 /// Validate access policy string. Returns Err with BAD_REQUEST on invalid format.
-fn validate_access(
-    access: &str,
-) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+fn validate_access(access: &str) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
     match access {
         "public" | "friends" | "trusted" | "peer" => Ok(()),
         a if a.starts_with("group:") => {
@@ -919,7 +1277,11 @@ fn validate_access(
 
 /// Write a blob directly to the blob store filesystem (for files >50MB).
 /// Uses the same path layout as p2pcd's BlobStore: blobs/<first-2-hex>/<full-hex>.
-async fn direct_blob_write(data_dir: &std::path::Path, hash: &[u8; 32], data: &[u8]) -> anyhow::Result<()> {
+async fn direct_blob_write(
+    data_dir: &std::path::Path,
+    hash: &[u8; 32],
+    data: &[u8],
+) -> anyhow::Result<()> {
     use tokio::io::AsyncWriteExt;
 
     let hex_hash = hex::encode(hash);
@@ -1066,10 +1428,7 @@ fn encode_catalogue_list_response(
                     Value::Text("offering_id".to_string()),
                     Value::Text(o.offering_id.clone()),
                 ),
-                (
-                    Value::Text("name".to_string()),
-                    Value::Text(o.name.clone()),
-                ),
+                (Value::Text("name".to_string()), Value::Text(o.name.clone())),
                 (
                     Value::Text("description".to_string()),
                     match &o.description {
@@ -1116,10 +1475,7 @@ fn encode_catalogue_list_response(
             ));
         }
         None => {
-            map.push((
-                Value::Integer(CBOR_KEY_NEXT_CURSOR.into()),
-                Value::Null,
-            ));
+            map.push((Value::Integer(CBOR_KEY_NEXT_CURSOR.into()), Value::Null));
         }
     }
 
@@ -1168,6 +1524,7 @@ pub fn encode_catalogue_list_request(cursor: usize, limit: usize) -> Vec<u8> {
 }
 
 /// Encode a catalogue.has_blob CBOR request.
+#[allow(dead_code)]
 pub fn encode_has_blob_request(blob_ids: &[String]) -> Vec<u8> {
     use ciborium::value::Value;
     let ids: Vec<Value> = blob_ids.iter().map(|s| Value::Text(s.clone())).collect();
@@ -1176,10 +1533,7 @@ pub fn encode_has_blob_request(blob_ids: &[String]) -> Vec<u8> {
             Value::Integer(CBOR_KEY_METHOD.into()),
             Value::Text("catalogue.has_blob".to_string()),
         ),
-        (
-            Value::Integer(CBOR_KEY_BLOB_IDS.into()),
-            Value::Array(ids),
-        ),
+        (Value::Integer(CBOR_KEY_BLOB_IDS.into()), Value::Array(ids)),
     ]);
     let mut buf = Vec::new();
     ciborium::into_writer(&map, &mut buf).unwrap();
@@ -1450,8 +1804,7 @@ mod tests {
             .route("/health", axum::routing::get(super::health))
             .route(
                 "/offerings",
-                axum::routing::get(super::list_offerings)
-                    .post(super::create_offering),
+                axum::routing::get(super::list_offerings).post(super::create_offering),
             )
             .route(
                 "/offerings/json",
@@ -1459,23 +1812,47 @@ mod tests {
             )
             .route(
                 "/offerings/:offering_id",
-                axum::routing::patch(super::update_offering)
-                    .delete(super::delete_offering),
+                axum::routing::patch(super::update_offering).delete(super::delete_offering),
             )
-            .route("/p2pcd/peer-active", axum::routing::post(super::peer_active))
-            .route("/p2pcd/peer-inactive", axum::routing::post(super::peer_inactive))
-            .route("/p2pcd/inbound", axum::routing::post(super::inbound_message))
+            .route(
+                "/peer/:peer_id/catalogue",
+                axum::routing::get(super::peer_catalogue),
+            )
+            .route(
+                "/downloads",
+                axum::routing::get(super::list_downloads).post(super::initiate_download),
+            )
+            .route(
+                "/downloads/:blob_id/status",
+                axum::routing::get(super::download_status),
+            )
+            .route(
+                "/downloads/:blob_id/data",
+                axum::routing::get(super::download_data),
+            )
+            .route(
+                "/p2pcd/peer-active",
+                axum::routing::post(super::peer_active),
+            )
+            .route(
+                "/p2pcd/peer-inactive",
+                axum::routing::post(super::peer_inactive),
+            )
+            .route(
+                "/p2pcd/inbound",
+                axum::routing::post(super::inbound_message),
+            )
+            .route(
+                "/internal/transfer-complete",
+                axum::routing::post(super::transfer_complete),
+            )
             .with_state(state);
 
         (app, db, dir)
     }
 
     /// Insert an offering directly into the DB for test setup.
-    fn seed_offering(
-        db: &crate::db::FilesDb,
-        name: &str,
-        access: &str,
-    ) -> crate::db::Offering {
+    fn seed_offering(db: &crate::db::FilesDb, name: &str, access: &str) -> crate::db::Offering {
         let offering = crate::db::Offering {
             offering_id: Uuid::new_v4().to_string(),
             blob_id: hex::encode([0xABu8; 32]),
@@ -2037,5 +2414,204 @@ mod tests {
 
         // Offering is gone from DB even though blob deletion failed
         assert!(db.list_offerings().unwrap().is_empty());
+    }
+
+    // ── FEAT-003-E HTTP integration tests ────────────────────────────────
+
+    /// Insert a download directly into the DB for test setup.
+    fn seed_download(db: &crate::db::FilesDb, blob_id: &str, status: &str) -> crate::db::Download {
+        let dl = crate::db::Download {
+            blob_id: blob_id.to_string(),
+            offering_id: "off-1".to_string(),
+            peer_id: "peer-abc".to_string(),
+            transfer_id: 1700000000,
+            name: "test-file.bin".to_string(),
+            mime_type: "application/octet-stream".to_string(),
+            size: 2048,
+            status: status.to_string(),
+            started_at: 1700000000,
+            completed_at: if status == "complete" {
+                Some(1700001000)
+            } else {
+                None
+            },
+        };
+        db.insert_download(&dl).unwrap();
+        dl
+    }
+
+    #[tokio::test]
+    async fn http_list_downloads_empty() {
+        let (app, _, _dir) = test_app();
+        let req = axum::http::Request::builder()
+            .uri("/downloads")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = http_body_util::BodyExt::collect(resp.into_body())
+            .await
+            .unwrap()
+            .to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["downloads"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn http_list_downloads_with_data() {
+        let (app, db, _dir) = test_app();
+        seed_download(&db, "blob_aaa", "transferring");
+        seed_download(&db, "blob_bbb", "complete");
+
+        let req = axum::http::Request::builder()
+            .uri("/downloads")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = http_body_util::BodyExt::collect(resp.into_body())
+            .await
+            .unwrap()
+            .to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["downloads"].as_array().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn http_download_status_not_found() {
+        let (app, _, _dir) = test_app();
+        let req = axum::http::Request::builder()
+            .uri("/downloads/nonexistent/status")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn http_download_status_found() {
+        let (app, db, _dir) = test_app();
+        seed_download(&db, "blob_abc", "transferring");
+
+        let req = axum::http::Request::builder()
+            .uri("/downloads/blob_abc/status")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = http_body_util::BodyExt::collect(resp.into_body())
+            .await
+            .unwrap()
+            .to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["download"]["blob_id"], "blob_abc");
+        assert_eq!(json["download"]["status"], "transferring");
+    }
+
+    #[tokio::test]
+    async fn http_download_data_not_complete() {
+        let (app, db, _dir) = test_app();
+        seed_download(&db, "blob_xyz", "transferring");
+
+        let req = axum::http::Request::builder()
+            .uri("/downloads/blob_xyz/data")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn http_transfer_complete_updates_status() {
+        let (app, db, _dir) = test_app();
+        seed_download(&db, "blob_tc1", "transferring");
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/internal/transfer-complete")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                serde_json::json!({
+                    "blob_id": "blob_tc1",
+                    "transfer_id": 1700000000_u64,
+                    "status": "complete",
+                    "size": 2048,
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Verify status updated in DB
+        let dl = db.get_download("blob_tc1").unwrap().unwrap();
+        assert_eq!(dl.status, "complete");
+        assert!(dl.completed_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn http_transfer_complete_failed() {
+        let (app, db, _dir) = test_app();
+        seed_download(&db, "blob_tc2", "transferring");
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/internal/transfer-complete")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                serde_json::json!({
+                    "blob_id": "blob_tc2",
+                    "transfer_id": 1700000000_u64,
+                    "status": "failed",
+                    "error": "timeout",
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let dl = db.get_download("blob_tc2").unwrap().unwrap();
+        assert_eq!(dl.status, "failed");
+        assert!(dl.completed_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn http_initiate_download_no_peer() {
+        let (app, _, _dir) = test_app();
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/downloads")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                serde_json::json!({
+                    "peer_id": "dGVzdHBlZXIx",
+                    "blob_id": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+                    "offering_id": "off-1",
+                    "name": "test.bin",
+                    "mime_type": "application/octet-stream",
+                    "size": 1024,
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn http_peer_catalogue_no_peer() {
+        let (app, _, _dir) = test_app();
+
+        let req = axum::http::Request::builder()
+            .uri("/peer/dGVzdHBlZXIx/catalogue")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 }
