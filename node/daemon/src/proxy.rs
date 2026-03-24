@@ -8,11 +8,17 @@ use tracing::warn;
 
 use crate::{error::AppError, state::AppState};
 
-pub async fn proxy_request(
+/// Proxy a request to a local capability process.
+///
+/// `peer_pubkey`: If Some, the base64-encoded WG public key of the remote peer
+/// making the request. Injected as `X-Peer-Id` header so the capability process
+/// can identify the caller for its own authorization logic.
+pub async fn proxy_request_with_peer(
     state: &AppState,
     cap_name: &str,
     rest_path: &str,
     req: Request<Body>,
+    peer_pubkey: Option<&str>,
 ) -> Result<Response<Body>, AppError> {
     // Find capability by name — "social" matches "social.feed" (first segment before '.')
     let cap = {
@@ -54,15 +60,23 @@ pub async fn proxy_request(
     // Forward headers, skipping hop-by-hop ones
     for (name, value) in headers.iter() {
         let name_str = name.as_str();
-        if !matches!(name_str, "host" | "connection" | "transfer-encoding") {
+        if !matches!(
+            name_str,
+            "host" | "connection" | "transfer-encoding" | "x-peer-id" | "x-node-id" | "x-node-name"
+        ) {
             proxy_req = proxy_req.header(name_str, value.as_bytes());
         }
     }
 
-    // Inject node identity headers so the capability knows who is calling
+    // Inject node identity headers so the capability knows which node it's running on
     proxy_req = proxy_req
         .header("X-Node-Id", &state.identity.node_id)
         .header("X-Node-Name", &state.identity.name);
+
+    // Inject peer identity if this is a remote request
+    if let Some(pubkey) = peer_pubkey {
+        proxy_req = proxy_req.header("X-Peer-Id", pubkey);
+    }
 
     if !body_bytes.is_empty() {
         proxy_req = proxy_req.body(body_bytes.to_vec());
