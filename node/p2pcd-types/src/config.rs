@@ -345,6 +345,17 @@ impl PeerConfig {
                     },
                 );
                 m.insert(
+                    "messaging".to_string(),
+                    CapabilityConfig {
+                        name: "howm.social.messaging.1".to_string(),
+                        role: RoleConfig::Both,
+                        mutual: true,
+                        scope: None,
+                        classification: None,
+                        params: None,
+                    },
+                );
+                m.insert(
                     "heartbeat".to_string(),
                     CapabilityConfig {
                         name: "core.session.heartbeat.1".to_string(),

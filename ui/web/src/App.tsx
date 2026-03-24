@@ -9,7 +9,10 @@ import { PeersPage } from './pages/PeersPage';
 import { PeerDetail } from './pages/PeerDetail';
 import { GroupsPage } from './pages/GroupsPage';
 import { GroupDetail } from './pages/GroupDetail';
+import { MessagesPage } from './pages/MessagesPage';
+import { ConversationView } from './pages/ConversationView';
 import { getCapabilities } from './api/capabilities';
+import { getConversations } from './api/messaging';
 import { getApiToken } from './api/client';
 import { listenFromCapabilities, type NotifyLevel } from './lib/postMessage';
 
@@ -71,6 +74,14 @@ function NavBar() {
     refetchInterval: 60000,
   });
 
+  const { data: conversations = [] } = useQuery({
+    queryKey: ['conversations'],
+    queryFn: getConversations,
+    refetchInterval: 5_000,
+  });
+
+  const totalUnread = conversations.reduce((sum, c) => sum + (c.unread_count || 0), 0);
+
   const linkStyle = ({ isActive }: { isActive: boolean }): React.CSSProperties => ({
     padding: '0 16px',
     height: '48px',
@@ -91,6 +102,18 @@ function NavBar() {
       <span style={brandStyle}>howm</span>
       <NavLink to="/dashboard" style={linkStyle}>Dashboard</NavLink>
       <NavLink to="/peers" style={linkStyle}>Peers</NavLink>
+      <NavLink to="/messages" style={linkStyle}>
+        {({ isActive }) => (
+          <span style={{ display: 'flex', alignItems: 'center', gap: '6px', color: isActive ? 'var(--howm-accent, #6c8cff)' : 'inherit', fontWeight: isActive ? 600 : 400 }}>
+            Messages
+            {totalUnread > 0 && (
+              <span style={{ background: '#ef4444', color: '#fff', borderRadius: '10px', padding: '1px 6px', fontSize: '0.7rem', fontWeight: 600, minWidth: '16px', textAlign: 'center' as const }}>
+                {totalUnread}
+              </span>
+            )}
+          </span>
+        )}
+      </NavLink>
       <NavLink to="/connection" style={linkStyle}>Connection</NavLink>
       <NavLink to="/access/groups" style={linkStyle}>Groups</NavLink>
       {capabilities?.filter(c => c.ui).map(cap => (
@@ -173,6 +196,8 @@ function Shell() {
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/peers" element={<PeersPage />} />
           <Route path="/peers/:peerId" element={<PeerDetail />} />
+          <Route path="/messages" element={<MessagesPage />} />
+          <Route path="/messages/:peerId" element={<ConversationView />} />
           <Route path="/connection" element={<Connection />} />
           <Route path="/access/groups" element={<GroupsPage />} />
           <Route path="/access/groups/:groupId" element={<GroupDetail />} />

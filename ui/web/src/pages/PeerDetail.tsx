@@ -1,4 +1,4 @@
-import { useParams, useNavigate, Link } from 'react-router-dom';
+import { useParams, useNavigate, Link, useLocation } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useState, useCallback, useRef } from 'react';
 import { getPeers } from '../api/nodes';
@@ -154,9 +154,27 @@ export function PeerDetail() {
             {badge.label}
           </span>
         </div>
-        <span style={{ color: online ? '#4ade80' : '#5c6170', fontSize: '0.9rem' }}>
-          {online ? '● Online' : '○ Offline'}
-        </span>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '6px' }}>
+          <span style={{ color: online ? '#4ade80' : '#5c6170', fontSize: '0.9rem' }}>
+            {online ? '● Online' : '○ Offline'}
+          </span>
+          <Link
+            to={`/messages/${encodeURIComponent(peer.wg_pubkey)}`}
+            style={{
+              background: 'var(--howm-accent, #6c8cff)',
+              color: '#fff',
+              border: 'none',
+              borderRadius: '6px',
+              padding: '5px 14px',
+              fontSize: '0.85rem',
+              fontWeight: 600,
+              textDecoration: 'none',
+              cursor: 'pointer',
+            }}
+          >
+            Message
+          </Link>
+        </div>
       </div>
 
       {/* Identity */}

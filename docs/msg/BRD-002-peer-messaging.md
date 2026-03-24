@@ -38,7 +38,8 @@ The central design constraint is that Howm is fully serverless. There is no brok
 
 - **Offline delivery / store-and-forward.** Messages are not queued for offline peers. (Acknowledged limitation; candidate for a future relay BRD.)
 - **Group messaging.** DMs are strictly one-to-one in this release.
-- **Message editing or deletion** Deletion should be available for sender, editing deferred.
+- **Message editing.** Editing sent messages is deferred.
+- **Remote deletion notifications.** Deleting a message removes it locally for the sender; the recipient's copy is not affected.
 - **Read receipts** (deferred; privacy implications warrant separate design).
 - **Push / OS-level notifications** (deferred; platform integration outside Howm's current scope).
 - **Encrypted storage at rest.** Messages are stored in plaintext on the local device. WireGuard provides transport encryption.
@@ -77,12 +78,13 @@ The central design constraint is that Howm is fully serverless. There is no brok
   - `sent_at` — Unix epoch milliseconds, uint64.
   - `body` — UTF-8 string, max 4096 bytes.
 - **FR-2.2** The `messaging` capability SHALL use the `rpc` P2P-CD primitive to deliver the CBOR envelope to the target peer's messaging capability endpoint. The `rpc` response serves as the ACK.
+- **FR-2.2a** On receipt, the messaging capability SHALL validate that the `sender_peer_id` in the envelope matches the authenticated peer identity from the P2P-CD session (provided via `X-Peer-Id` header). Mismatched sender identity SHALL be rejected.
 - **FR-2.3** On successful receipt and persistence of a DM, the receiving peer's `messaging` capability SHALL emit an `event` notification of type `messaging.dm.received` carrying `{ msg_id, sender_peer_id, sent_at, body_preview }` (body preview truncated to 128 bytes). Subscribers to this event (including the UI and any other capability) configure their own hooks; the messaging capability is responsible only for emission.
 
 ### 6.3 Delivery State
 
 - **FR-3.1** A message SHALL transition through states: `pending` → `delivered` (ACK received) or `failed` (timeout or peer disconnection).
-- **FR-3.2** If no ACK is received within 10 seconds, the message SHALL be marked `failed` with reason `ack_timeout`.
+- **FR-3.2** If no ACK is received within 4 seconds, the message SHALL be marked `failed` with reason `ack_timeout`.
 - **FR-3.3** If the peer's P2P-CD session transitions to a non-ACTIVE state before ACK is received, the message SHALL be marked `failed` with reason `peer_offline`.
 - **FR-3.4** `failed` messages SHALL be retained in local storage. Automatic retry on next peer connection is out of scope for this release; the user may manually resend.
 - **FR-3.5** The UI SHALL present delivery state distinctly: `pending` (clock icon), `delivered` (checkmark), `failed` (warning icon with reason).
@@ -90,9 +92,9 @@ The central design constraint is that Howm is fully serverless. There is no brok
 ### 6.4 Local Storage
 
 - **FR-4.1** The messaging capability SHALL persist messages to a SQLite database (`rusqlite` with the `bundled` feature) located at `$DATA_DIR/messaging.db`.
-- **FR-4.2** Each message record SHALL include: `msg_id`, `conversation_id` (derived from the sorted pair of peer IDs), `direction` (sent/received), `sent_at`, `body`, `delivery_status`.
+- **FR-4.2** Each message record SHALL include: `msg_id`, `conversation_id` (SHA-256 hash of the sorted pair of 32-byte peer IDs, stored as 32 bytes hex), `direction` (sent/received), `sent_at`, `body`, `delivery_status`.
 - **FR-4.3** Storage SHALL support efficient conversation-range queries: retrieve messages for a given `conversation_id`, ordered by `sent_at`, with cursor-based pagination.
-- **FR-4.4** Storage SHALL be queryable for unread count per conversation (messages received since last `read_at` timestamp for that conversation).
+- **FR-4.4** Storage SHALL maintain a `read_markers` table with `conversation_id` and `read_at` timestamp. Unread count is derived from messages received after the `read_at` marker for that conversation.
 - **FR-4.5** No message retention limit is enforced in this release.
 
 ### 6.5 HTTP API (Capability Process)
@@ -105,11 +107,12 @@ The messaging capability exposes the following endpoints, proxied by the daemon 
 | `GET` | `/cap/messaging/conversations` | List conversations with last message and unread count |
 | `GET` | `/cap/messaging/conversations/{peer_id}` | Paginated message history for a conversation |
 | `POST` | `/cap/messaging/conversations/{peer_id}/read` | Mark conversation as read |
+| `DELETE` | `/cap/messaging/conversations/{peer_id}/messages/{msg_id}` | Delete a sent message (sender only) |
 | `GET` | `/cap/messaging/health` | Daemon health check endpoint (required by capability protocol) |
 
 ### 6.6 UI
 
-- **FR-6.1** The peer list (or a dedicated Messaging tab) SHALL show a badge on peers with unread messages.
+- **FR-6.1** The peer list (or a dedicated Messaging tab) SHALL show a badge on peers with unread messages. Unread state is refreshed via react-query polling (matching existing UI patterns), not SSE/WebSocket.
 - **FR-6.2** Opening a conversation SHALL mark all messages from that peer as read.
 - **FR-6.3** The conversation view SHALL display messages in ascending `sent_at` order, with sent and received messages visually differentiated.
 - **FR-6.4** The composer SHALL enforce the 4096-byte limit with a visible character counter.
@@ -132,7 +135,7 @@ The messaging capability exposes the following endpoints, proxied by the daemon 
 | OQ-1 | `rpc` vs `stream` for message delivery. | Closed — `rpc` selected; ACK is the response frame. |
 | OQ-2 | Local storage format. | Closed — SQLite via `rusqlite` (bundled feature). |
 | OQ-3 | Should failed messages include a resend button in the UI (v1), or is that deferred? | Open |
-| OQ-4 | `conversation_id` derivation: sorting the two peer ID hex strings and concatenating is simple; is there an existing pattern in the codebase for compound keys? | Open |
+| OQ-4 | `conversation_id` derivation: sorting the two peer ID hex strings and concatenating is simple; is there an existing pattern in the codebase for compound keys? | Closed — SHA-256 hash of sorted 32-byte peer ID pair. Compact, deterministic, future-proof for multi-peer chats. |
 
 ---
 
