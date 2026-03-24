@@ -23,7 +23,7 @@ The existing `blob` capability (`capabilities/blob.rs`) does single-peer transfe
 
 The bridge client's `blob_request(peer_id, hash, transfer_id)` signature confirms this — it's a one-peer-at-a-time API.
 
-**Recommendation:** Scope v1 to single-source downloads. The files capability picks the best available seeder (e.g. the one with lowest latency or the operator first) and falls back to others on failure. Multi-source chunk scheduling is a significant protocol change to blob and should be a separate BRD. The catalogue can still track seeders so the UI shows availability — the requester just picks one source per attempt rather than fanning out.
+**Recommendation:** Scope v1 to single-source downloads. The files capability picks the best available seeder by querying `core.session.latency.1` RTT data via the daemon bridge — the peer with the lowest average round-trip time wins. This leverages the latency capability that's already running (it's in the Default tier capability set) and collecting a sliding window of 20 LAT_PING/LAT_PONG samples per peer. If the chosen seeder fails, the capability falls back to the next-lowest-latency peer. Multi-source chunk scheduling is a significant protocol change to blob and should be a separate BRD. The catalogue can still track seeders so the UI shows availability — the requester just picks one source per attempt rather than fanning out.
 
 ### 2. Seeder tracking via `catalogue.seeders` RPC is underspecified
 

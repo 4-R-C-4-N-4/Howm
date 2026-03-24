@@ -10,7 +10,7 @@ Capability: `capabilities/files/`
 
 These decisions refine the BRD based on the review and should be applied during implementation:
 
-1. **Single-source downloads for v1.** No multi-source chunk scheduling. The files capability picks the best available seeder (operator first, then fallback). Multi-source is a future blob protocol change.
+1. **Single-source downloads for v1.** No multi-source chunk scheduling. The files capability picks the best available seeder using `core.session.latency.1` RTT data (lowest latency wins), with fallback to the next-best seeder on failure. Multi-source chunk fan-out is a future blob protocol change.
 2. **Role: BOTH, mutual: true.** Follows messaging and social-feed pattern. No PROVIDE/CONSUME split. An empty catalogue is the "consume-only" mode.
 3. **Seeder count via RPC probe, not gossip.** The files capability queries connected peers with a lightweight `catalogue.has_blob` RPC to build approximate seeder counts. Cached per-session.
 4. **Automatic seeding is implicit in v1.** A peer that downloads a blob has it in their blob store and can serve it via the blob capability. No announcement protocol — discovery is via the probe mechanism above.
@@ -65,24 +65,46 @@ Create the `files` capability process as a standalone Rust binary under `capabil
 
 ---
 
-## FEAT-003-B: Daemon Peer Groups Endpoint
+## FEAT-003-B: Daemon Endpoints — Peer Groups + Peer Latency
 
-Add a daemon API endpoint for capabilities to resolve a peer's group memberships.
+Add daemon API endpoints for capabilities to resolve peer group memberships and peer latency data.
 
 **Scope:**
+
+**B.1: Peer groups endpoint**
 - Add `GET /access/peer/{peer_id}/groups` to the daemon's access routes.
 - `peer_id` is hex-encoded 32-byte WG pubkey.
 - Returns `{ groups: [{ group_id, name, built_in }] }`.
 - Calls `AccessDb::list_peer_groups(&peer_bytes)` from the existing `howm-access` crate.
 - This is a local-only endpoint (127.0.0.1) — no auth needed, used by out-of-process capabilities.
 
+**B.2: Peer latency endpoint**
+- Add `GET /p2pcd/bridge/latency/{peer_id}` to the bridge routes.
+- `peer_id` is base64-encoded 32-byte WG pubkey (matches bridge convention).
+- Returns `{ peer_id, average_rtt_ms, samples: [u64] }`.
+- Reads from the in-process `LatencyHandler` via `engine.cap_router().handler_by_name("core.session.latency.1")` → downcast to `LatencyHandler` → call `average_rtt(&peer_id)` and `get_samples(&peer_id)`.
+- Returns `{ peer_id, average_rtt_ms: null, samples: [] }` if no samples yet (peer just connected or latency capability not active).
+- This endpoint exposes the sliding-window RTT data that `core.session.latency.1` already collects via LAT_PING/LAT_PONG exchanges. Currently this data is only available in-process; this endpoint makes it available to out-of-process capabilities.
+
+**B.3: Bulk peer latency endpoint (optional, for efficiency)**
+- Add `GET /p2pcd/bridge/latency` (no peer_id) — returns latency for all active peers in one call.
+- Returns `{ peers: [{ peer_id, average_rtt_ms }] }`.
+- Used by the files capability to rank all seeders in one round-trip instead of N calls.
+
+The files capability uses latency data to pick the lowest-latency seeder when multiple peers hold a blob. This is the "pick best available seeder" strategy mentioned in the review — now it has real data to make the choice instead of just preferring the operator.
+
 **Reference files:**
 - `node/daemon/src/api/access_routes.rs` — existing access API patterns
 - `node/access/src/db.rs:282` — `list_peer_groups()` method
+- `node/p2pcd/src/capabilities/latency.rs:64-71` — `average_rtt()`, `get_samples()`
+- `node/daemon/src/p2pcd/bridge.rs:482-493` — `get_blob_store()` downcast pattern (same approach for LatencyHandler)
 
 **Acceptance criteria:**
 - `GET /access/peer/{hex_peer_id}/groups` returns the peer's group list.
 - Unknown peer returns empty groups array (not 404).
+- `GET /p2pcd/bridge/latency/{b64_peer_id}` returns RTT data for a connected peer.
+- `GET /p2pcd/bridge/latency` returns latency for all active peers.
+- Peer with no latency samples returns `average_rtt_ms: null`.
 
 ---
 
@@ -181,8 +203,17 @@ Implement the peer-side catalogue fetch and seeder counting.
   - After receiving the catalogue from the operator, the files capability sends `catalogue.has_blob` RPC to each other connected files-capable peer (excluding the operator and ourselves).
   - Merges results: seeder count = 1 (operator) + count of peers that responded `has` for each blob_id.
   - Cache seeder results for 30 seconds to avoid hammering peers on every UI poll.
+- **Latency-based seeder selection:**
+  - When initiating a download, the files capability determines which seeder to use:
+    1. Collect all peers that responded `has` for the blob_id (from `catalogue.has_blob` probes).
+    2. Fetch `GET /p2pcd/bridge/latency` to get average RTT for all active peers.
+    3. Rank seeders by `average_rtt_ms` ascending (lowest latency first). Peers with no latency samples (null) are ranked last.
+    4. Select the lowest-latency seeder. If that peer fails (blob_request returns error or transfer times out), fall back to the next seeder in rank order.
+  - The operator (original offerer) is always included as a seeder candidate. If only the operator has the blob, latency ranking is skipped.
+  - If the UI provides an explicit `peer_id` in the download request, that peer is used directly (user override).
+
 - Active downloads tracking:
-  - `POST /cap/files/downloads` — initiate a download: `{ blob_id, peer_id, offering_id }`. Calls `blob_request` via bridge. Inserts a download record in the DB.
+  - `POST /cap/files/downloads` — initiate a download: `{ blob_id, offering_id, peer_id? }`. If `peer_id` omitted, auto-selects best seeder via latency ranking. Calls `blob_request` via bridge. Inserts a download record in the DB.
   - `GET /cap/files/downloads` — list active/completed downloads with status.
   - `GET /cap/files/downloads/{blob_id}/status` — single download status: `{ blob_id, offering_id, name, size, bytes_received, status }`. Polls `blob/status` from the bridge.
   - `GET /cap/files/downloads/{blob_id}/data` — stream the completed blob as an HTTP response with `Content-Type` and `Content-Disposition: attachment; filename="<name>"` headers.
