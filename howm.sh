@@ -8,7 +8,7 @@
 #   --port PORT             Daemon listen port (default: 7000)
 #   --data-dir DIR          Data directory (default: ~/.local/howm)
 #   --name NAME             Node name (default: hostname)
-#   --wg-port PORT          WireGuard listen port (default: 51820)
+#   --wg-port PORT          WireGuard listen port (default: 41641)
 #   --wg-endpoint HOST:PORT Public WireGuard endpoint for peers
 #   --no-ui                 Skip the web UI
 #   --dev                   Pass --dev flag to daemon (enables CORS for Vite proxy)
@@ -30,7 +30,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PORT=7000
 DATA_DIR=""
 NODE_NAME=""
-WG_PORT=51820
+WG_PORT=41641
 WG_ENDPOINT=""
 NO_UI=0
 DEV_FLAG=""
