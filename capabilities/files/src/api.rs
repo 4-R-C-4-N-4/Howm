@@ -1,13 +1,16 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Multipart, Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
     Json,
 };
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use uuid::Uuid;
 use tracing::{info, warn};
 
 use crate::db::{FilesDb, PeerGroup};
@@ -32,20 +35,34 @@ pub struct AppState {
     /// Port this capability listens on (used to build callback URLs in FEAT-003-E).
     #[allow(dead_code)]
     pub local_port: u16,
+    /// Data directory for direct blob filesystem writes.
+    pub data_dir: PathBuf,
     /// Active peers with files capability: peer_id_b64 → ActivePeer.
     pub active_peers: Arc<RwLock<HashMap<String, ActivePeer>>>,
-    /// Our own peer ID (base64), learned from X-Node-Id header or daemon (used in FEAT-003-D/E).
+    /// Our own peer ID (base64), learned from X-Node-Id header or daemon (used in FEAT-003-E).
     #[allow(dead_code)]
     pub local_peer_id: Arc<RwLock<Option<String>>>,
 }
 
+/// Max upload size: 500 MB.
+const MAX_UPLOAD_SIZE: u64 = 500 * 1024 * 1024;
+/// Threshold for direct filesystem write vs bridge (50 MB).
+const BRIDGE_STORE_THRESHOLD: usize = 50 * 1024 * 1024;
+
 impl AppState {
-    pub fn new(db: FilesDb, bridge: BridgeClient, daemon_port: u16, local_port: u16) -> Self {
+    pub fn new(
+        db: FilesDb,
+        bridge: BridgeClient,
+        daemon_port: u16,
+        local_port: u16,
+        data_dir: PathBuf,
+    ) -> Self {
         Self {
             db: Arc::new(db),
             bridge,
             daemon_port,
             local_port,
+            data_dir,
             active_peers: Arc::new(RwLock::new(HashMap::new())),
             local_peer_id: Arc::new(RwLock::new(None)),
         }
@@ -393,11 +410,15 @@ pub async fn transfer_complete(
     StatusCode::OK
 }
 
-// ── Stub handlers (wired in later tasks) ─────────────────────────────────────
+// ── Operator offerings API (FEAT-003-D) ──────────────────────────────────────
 
+/// GET /offerings — list all offerings (operator view, includes access policies).
 pub async fn list_offerings(State(state): State<AppState>) -> impl IntoResponse {
     match state.db.list_offerings() {
-        Ok(offerings) => (StatusCode::OK, Json(serde_json::json!({ "offerings": offerings }))),
+        Ok(offerings) => (
+            StatusCode::OK,
+            Json(serde_json::json!({ "offerings": offerings })),
+        ),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({ "error": format!("{}", e) })),
@@ -405,42 +426,439 @@ pub async fn list_offerings(State(state): State<AppState>) -> impl IntoResponse 
     }
 }
 
-pub async fn create_offering(State(_state): State<AppState>) -> impl IntoResponse {
-    // FEAT-003-D
-    StatusCode::NOT_IMPLEMENTED
+/// JSON body for creating an offering from a pre-registered blob.
+#[derive(Debug, Deserialize)]
+pub struct CreateOfferingJson {
+    pub blob_id: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    pub mime_type: String,
+    pub size: i64,
+    #[serde(default = "default_access")]
+    pub access: String,
+    #[serde(default)]
+    pub allowlist: Option<String>,
 }
 
+fn default_access() -> String {
+    "public".to_string()
+}
+
+/// POST /offerings — create offering via multipart upload OR JSON (pre-registered blob).
+///
+/// Multipart fields: `file` (binary), `name` (text), `description` (text, optional),
+/// `access` (text, optional), `allowlist` (text, optional).
+///
+/// JSON body: `{ blob_id, name, description?, mime_type, size, access?, allowlist? }`.
+pub async fn create_offering(
+    State(state): State<AppState>,
+    multipart: Option<Multipart>,
+) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<serde_json::Value>)> {
+    match multipart {
+        Some(mp) => create_offering_multipart(state, mp).await,
+        None => Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "expected multipart/form-data or JSON body" })),
+        )),
+    }
+}
+
+/// JSON path for creating an offering from a pre-registered blob.
+pub async fn create_offering_json(
+    State(state): State<AppState>,
+    Json(req): Json<CreateOfferingJson>,
+) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<serde_json::Value>)> {
+    // Validate name length
+    if req.name.len() > 255 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "name exceeds 255 bytes" })),
+        ));
+    }
+    if let Some(ref desc) = req.description {
+        if desc.len() > 1024 {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "description exceeds 1024 bytes" })),
+            ));
+        }
+    }
+
+    // Validate access policy
+    validate_access(&req.access)?;
+
+    // Verify blob exists via bridge
+    let hash = hex_to_hash(&req.blob_id).ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "invalid blob_id (expected 64-char hex SHA-256)" })),
+        )
+    })?;
+
+    let status = state.bridge.blob_status(&hash).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("blob status check failed: {}", e) })),
+        )
+    })?;
+
+    if !status.exists {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "blob not found in store — upload it first" })),
+        ));
+    }
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+
+    let offering = crate::db::Offering {
+        offering_id: Uuid::new_v4().to_string(),
+        blob_id: req.blob_id,
+        name: req.name,
+        description: req.description,
+        mime_type: req.mime_type,
+        size: req.size,
+        created_at: now,
+        access: req.access,
+        allowlist: req.allowlist,
+    };
+
+    state.db.insert_offering(&offering).map_err(|e| {
+        if e.to_string().contains("name_conflict") {
+            (
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({ "error": "an offering with this name already exists" })),
+            )
+        } else {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("{}", e) })),
+            )
+        }
+    })?;
+
+    info!("Created offering: {} ({})", offering.offering_id, offering.name);
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::json!({ "offering": offering })),
+    ))
+}
+
+/// Multipart path for creating an offering via file upload.
+async fn create_offering_multipart(
+    state: AppState,
+    mut multipart: Multipart,
+) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<serde_json::Value>)> {
+    let mut name = String::new();
+    let mut description: Option<String> = None;
+    let mut access = "public".to_string();
+    let mut allowlist: Option<String> = None;
+    let mut file_data: Option<(String, Vec<u8>)> = None; // (mime_type, data)
+
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| bad_request(&format!("multipart error: {e}")))?
+    {
+        let field_name = field.name().unwrap_or("").to_string();
+        match field_name.as_str() {
+            "name" => {
+                name = field
+                    .text()
+                    .await
+                    .map_err(|e| bad_request(&format!("name field error: {e}")))?;
+            }
+            "description" => {
+                description = Some(
+                    field
+                        .text()
+                        .await
+                        .map_err(|e| bad_request(&format!("description error: {e}")))?,
+                );
+            }
+            "access" => {
+                access = field
+                    .text()
+                    .await
+                    .map_err(|e| bad_request(&format!("access error: {e}")))?;
+            }
+            "allowlist" => {
+                allowlist = Some(
+                    field
+                        .text()
+                        .await
+                        .map_err(|e| bad_request(&format!("allowlist error: {e}")))?,
+                );
+            }
+            "file" => {
+                let mime = field
+                    .content_type()
+                    .unwrap_or("application/octet-stream")
+                    .to_string();
+                let data = field
+                    .bytes()
+                    .await
+                    .map_err(|e| bad_request(&format!("file read error: {e}")))?
+                    .to_vec();
+                file_data = Some((mime, data));
+            }
+            _ => {} // ignore unknown fields
+        }
+    }
+
+    // Validate required fields
+    if name.is_empty() {
+        return Err(bad_request("name is required"));
+    }
+    if name.len() > 255 {
+        return Err(bad_request("name exceeds 255 bytes"));
+    }
+    if let Some(ref desc) = description {
+        if desc.len() > 1024 {
+            return Err(bad_request("description exceeds 1024 bytes"));
+        }
+    }
+    validate_access(&access)?;
+
+    let (mime_type, data) = file_data.ok_or_else(|| bad_request("file field is required"))?;
+
+    // Enforce size limit
+    if data.len() as u64 > MAX_UPLOAD_SIZE {
+        return Err((
+            StatusCode::PAYLOAD_TOO_LARGE,
+            Json(serde_json::json!({ "error": "file exceeds 500 MB limit" })),
+        ));
+    }
+
+    // SHA-256 hash
+    let hash: [u8; 32] = Sha256::digest(&data).into();
+    let hex_hash = hex::encode(hash);
+    let size = data.len() as i64;
+
+    // Store blob: bridge for ≤50MB, direct filesystem for >50MB
+    if data.len() <= BRIDGE_STORE_THRESHOLD {
+        state.bridge.blob_store(&hash, &data).await.map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("blob store failed: {}", e) })),
+            )
+        })?;
+    } else {
+        // Direct filesystem write (same layout as BlobStore)
+        direct_blob_write(&state.data_dir, &hash, &data).await.map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("blob write failed: {}", e) })),
+            )
+        })?;
+    }
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+
+    let offering = crate::db::Offering {
+        offering_id: Uuid::new_v4().to_string(),
+        blob_id: hex_hash,
+        name,
+        description,
+        mime_type,
+        size,
+        created_at: now,
+        access,
+        allowlist,
+    };
+
+    state.db.insert_offering(&offering).map_err(|e| {
+        if e.to_string().contains("name_conflict") {
+            (
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({ "error": "an offering with this name already exists" })),
+            )
+        } else {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("{}", e) })),
+            )
+        }
+    })?;
+
+    info!(
+        "Created offering via upload: {} ({}, {} bytes)",
+        offering.offering_id, offering.name, offering.size
+    );
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::json!({ "offering": offering })),
+    ))
+}
+
+/// JSON body for partial update of an offering.
+#[derive(Debug, Deserialize)]
+pub struct UpdateOfferingRequest {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub access: Option<String>,
+    #[serde(default)]
+    pub allowlist: Option<String>,
+}
+
+/// PATCH /offerings/{offering_id} — partial update.
 pub async fn update_offering(
-    State(_state): State<AppState>,
-    Path(_offering_id): Path<String>,
-) -> impl IntoResponse {
-    // FEAT-003-D
-    StatusCode::NOT_IMPLEMENTED
+    State(state): State<AppState>,
+    Path(offering_id): Path<String>,
+    Json(req): Json<UpdateOfferingRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    // Validate fields if present
+    if let Some(ref name) = req.name {
+        if name.len() > 255 {
+            return Err(bad_request("name exceeds 255 bytes"));
+        }
+    }
+    if let Some(ref desc) = req.description {
+        if desc.len() > 1024 {
+            return Err(bad_request("description exceeds 1024 bytes"));
+        }
+    }
+    if let Some(ref access) = req.access {
+        validate_access(access)?;
+    }
+
+    let update = crate::db::OfferingUpdate {
+        name: req.name,
+        description: req.description,
+        access: req.access,
+        allowlist: req.allowlist,
+    };
+
+    let updated = state.db.update_offering(&offering_id, &update).map_err(|e| {
+        if e.to_string().contains("name_conflict") {
+            (
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({ "error": "an offering with this name already exists" })),
+            )
+        } else {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("{}", e) })),
+            )
+        }
+    })?;
+
+    if !updated {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "offering not found" })),
+        ));
+    }
+
+    let offering = state.db.get_offering(&offering_id).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("{}", e) })),
+        )
+    })?;
+
+    info!("Updated offering: {}", offering_id);
+    Ok(Json(serde_json::json!({ "offering": offering })))
 }
 
-pub async fn delete_offering(
-    State(_state): State<AppState>,
-    Path(_offering_id): Path<String>,
-) -> impl IntoResponse {
-    // FEAT-003-D
-    StatusCode::NOT_IMPLEMENTED
+/// Query params for DELETE /offerings/{offering_id}.
+#[derive(Debug, Deserialize)]
+pub struct DeleteOfferingQuery {
+    /// If present (any value), keep the blob in the store.
+    #[serde(default)]
+    pub retain_blob: Option<String>,
 }
+
+/// DELETE /offerings/{offering_id} — remove from catalogue + delete blob.
+pub async fn delete_offering(
+    State(state): State<AppState>,
+    Path(offering_id): Path<String>,
+    Query(query): Query<DeleteOfferingQuery>,
+) -> Result<StatusCode, (StatusCode, Json<serde_json::Value>)> {
+    let blob_id = state.db.delete_offering(&offering_id).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("{}", e) })),
+        )
+    })?;
+
+    let blob_id = match blob_id {
+        Some(id) => id,
+        None => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "error": "offering not found" })),
+            ));
+        }
+    };
+
+    // Delete blob from store unless ?retain_blob is set
+    if query.retain_blob.is_none() {
+        if let Some(hash) = hex_to_hash(&blob_id) {
+            // Best-effort blob deletion — offering is already gone from catalogue
+            let client = reqwest::Client::new();
+            let url = format!(
+                "http://127.0.0.1:{}/p2pcd/bridge/blob/{}",
+                state.daemon_port, blob_id
+            );
+            match client.delete(&url).send().await {
+                Ok(resp) if resp.status().is_success() => {
+                    info!("Deleted blob {} for offering {}", &blob_id[..8], offering_id);
+                }
+                Ok(resp) => {
+                    warn!(
+                        "Blob delete returned {} for {} (offering {} already removed)",
+                        resp.status(),
+                        &blob_id[..8],
+                        offering_id
+                    );
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to delete blob {} for offering {}: {}",
+                        &blob_id[..8],
+                        offering_id,
+                        e
+                    );
+                }
+            }
+            let _ = hash; // used for validation
+        }
+    } else {
+        info!(
+            "Deleted offering {} (retained blob {})",
+            offering_id,
+            &blob_id[..8.min(blob_id.len())]
+        );
+    }
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+// ── Stub handlers (wired in FEAT-003-E) ──────────────────────────────────────
 
 pub async fn peer_catalogue(
     State(_state): State<AppState>,
     Path(_peer_id): Path<String>,
 ) -> impl IntoResponse {
-    // FEAT-003-E
     Json(serde_json::json!({ "offerings": [], "total": 0 }))
 }
 
 pub async fn list_downloads(State(_state): State<AppState>) -> impl IntoResponse {
-    // FEAT-003-E
     Json(serde_json::json!({ "downloads": [] }))
 }
 
 pub async fn initiate_download(State(_state): State<AppState>) -> impl IntoResponse {
-    // FEAT-003-E
     StatusCode::NOT_IMPLEMENTED
 }
 
@@ -448,7 +866,6 @@ pub async fn download_status(
     State(_state): State<AppState>,
     Path(_blob_id): Path<String>,
 ) -> impl IntoResponse {
-    // FEAT-003-E
     StatusCode::NOT_FOUND
 }
 
@@ -456,8 +873,65 @@ pub async fn download_data(
     State(_state): State<AppState>,
     Path(_blob_id): Path<String>,
 ) -> impl IntoResponse {
-    // FEAT-003-E
     StatusCode::NOT_FOUND
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+fn bad_request(msg: &str) -> (StatusCode, Json<serde_json::Value>) {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(serde_json::json!({ "error": msg })),
+    )
+}
+
+/// Validate access policy string. Returns Err with BAD_REQUEST on invalid format.
+fn validate_access(
+    access: &str,
+) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+    match access {
+        "public" | "friends" | "trusted" | "peer" => Ok(()),
+        a if a.starts_with("group:") => {
+            let uuid_str = &a[6..];
+            Uuid::parse_str(uuid_str).map_err(|_| {
+                bad_request(&format!("invalid group UUID: {}", uuid_str))
+            })?;
+            Ok(())
+        }
+        a if a.starts_with("groups:") => {
+            let parts: Vec<&str> = a[7..].split(',').collect();
+            if parts.is_empty() {
+                return Err(bad_request("groups: requires at least one UUID"));
+            }
+            for part in parts {
+                Uuid::parse_str(part.trim()).map_err(|_| {
+                    bad_request(&format!("invalid group UUID: {}", part.trim()))
+                })?;
+            }
+            Ok(())
+        }
+        _ => Err(bad_request(&format!(
+            "unknown access policy: {} (valid: public, friends, trusted, peer, group:<uuid>, groups:<uuid1>,<uuid2>)",
+            access
+        ))),
+    }
+}
+
+/// Write a blob directly to the blob store filesystem (for files >50MB).
+/// Uses the same path layout as p2pcd's BlobStore: blobs/<first-2-hex>/<full-hex>.
+async fn direct_blob_write(data_dir: &std::path::Path, hash: &[u8; 32], data: &[u8]) -> anyhow::Result<()> {
+    use tokio::io::AsyncWriteExt;
+
+    let hex_hash = hex::encode(hash);
+    let prefix = &hex_hash[..2];
+    let blob_dir = data_dir.join("blobs").join(prefix);
+    tokio::fs::create_dir_all(&blob_dir).await?;
+
+    let blob_path = blob_dir.join(&hex_hash);
+    let mut file = tokio::fs::File::create(&blob_path).await?;
+    file.write_all(data).await?;
+    file.flush().await?;
+    Ok(())
 }
 
 // ── CBOR helpers ─────────────────────────────────────────────────────────────
@@ -855,7 +1329,6 @@ mod tests {
 
     #[test]
     fn null_next_cursor_in_response() {
-        use crate::db::Offering;
         let cbor = encode_catalogue_list_response(&[], None, 0);
 
         use ciborium::value::Value;
@@ -900,5 +1373,669 @@ mod tests {
     #[test]
     fn hex_to_hash_invalid_hex() {
         assert!(hex_to_hash("zzzzzz").is_none());
+    }
+
+    // ── validate_access tests ────────────────────────────────────────────
+
+    #[test]
+    fn validate_access_builtins() {
+        assert!(validate_access("public").is_ok());
+        assert!(validate_access("friends").is_ok());
+        assert!(validate_access("trusted").is_ok());
+        assert!(validate_access("peer").is_ok());
+    }
+
+    #[test]
+    fn validate_access_single_group() {
+        assert!(validate_access("group:a1b2c3d4-e5f6-7890-abcd-ef0123456789").is_ok());
+        assert!(validate_access("group:not-a-uuid").is_err());
+        assert!(validate_access("group:").is_err());
+    }
+
+    #[test]
+    fn validate_access_multi_group() {
+        assert!(validate_access(
+            "groups:a1b2c3d4-e5f6-7890-abcd-ef0123456789,b2c3d4e5-f6a7-8901-bcde-f01234567890"
+        )
+        .is_ok());
+        assert!(validate_access("groups:not-a-uuid").is_err());
+    }
+
+    #[test]
+    fn validate_access_unknown_policy() {
+        assert!(validate_access("admins").is_err());
+        assert!(validate_access("").is_err());
+    }
+
+    // ── direct_blob_write test ───────────────────────────────────────────
+
+    #[tokio::test]
+    async fn direct_blob_write_creates_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = b"hello blob world";
+        let hash: [u8; 32] = sha2::Sha256::digest(data).into();
+
+        direct_blob_write(dir.path(), &hash, data).await.unwrap();
+
+        let hex_hash = hex::encode(hash);
+        let prefix = &hex_hash[..2];
+        let blob_path = dir.path().join("blobs").join(prefix).join(&hex_hash);
+        assert!(blob_path.exists());
+
+        let contents = std::fs::read(&blob_path).unwrap();
+        assert_eq!(contents, data);
+    }
+
+    // ── HTTP integration tests ──────────────────────────────────────────
+
+    /// Build a test Router with in-memory DB and a BridgeClient pointing at a
+    /// non-existent daemon (for testing paths that don't hit the bridge).
+    fn test_app() -> (axum::Router, Arc<crate::db::FilesDb>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::FilesDb::open(dir.path()).unwrap();
+        let db = Arc::new(db);
+        let bridge = p2pcd::bridge_client::BridgeClient::new(19999); // unused port
+
+        let state = AppState {
+            db: db.clone(),
+            bridge,
+            daemon_port: 19999,
+            local_port: 17003,
+            data_dir: dir.path().to_path_buf(),
+            active_peers: Arc::new(RwLock::new(HashMap::new())),
+            local_peer_id: Arc::new(RwLock::new(None)),
+        };
+
+        let app = axum::Router::new()
+            .route("/health", axum::routing::get(super::health))
+            .route(
+                "/offerings",
+                axum::routing::get(super::list_offerings)
+                    .post(super::create_offering),
+            )
+            .route(
+                "/offerings/json",
+                axum::routing::put(super::create_offering_json),
+            )
+            .route(
+                "/offerings/:offering_id",
+                axum::routing::patch(super::update_offering)
+                    .delete(super::delete_offering),
+            )
+            .route("/p2pcd/peer-active", axum::routing::post(super::peer_active))
+            .route("/p2pcd/peer-inactive", axum::routing::post(super::peer_inactive))
+            .route("/p2pcd/inbound", axum::routing::post(super::inbound_message))
+            .with_state(state);
+
+        (app, db, dir)
+    }
+
+    /// Insert an offering directly into the DB for test setup.
+    fn seed_offering(
+        db: &crate::db::FilesDb,
+        name: &str,
+        access: &str,
+    ) -> crate::db::Offering {
+        let offering = crate::db::Offering {
+            offering_id: Uuid::new_v4().to_string(),
+            blob_id: hex::encode([0xABu8; 32]),
+            name: name.to_string(),
+            description: Some(format!("Desc for {}", name)),
+            mime_type: "application/octet-stream".to_string(),
+            size: 1024,
+            created_at: 1700000000,
+            access: access.to_string(),
+            allowlist: None,
+        };
+        db.insert_offering(&offering).unwrap();
+        offering
+    }
+
+    use tower::ServiceExt; // for oneshot()
+
+    #[tokio::test]
+    async fn http_health_returns_ok() {
+        let (app, _, _dir) = test_app();
+        let req = axum::http::Request::builder()
+            .uri("/health")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn http_list_offerings_empty() {
+        let (app, _, _dir) = test_app();
+        let req = axum::http::Request::builder()
+            .uri("/offerings")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = http_body_util::BodyExt::collect(resp.into_body())
+            .await
+            .unwrap()
+            .to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["offerings"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn http_list_offerings_with_data() {
+        let (app, db, _dir) = test_app();
+        seed_offering(&db, "file1.txt", "public");
+        seed_offering(&db, "file2.txt", "friends");
+
+        let req = axum::http::Request::builder()
+            .uri("/offerings")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = http_body_util::BodyExt::collect(resp.into_body())
+            .await
+            .unwrap()
+            .to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["offerings"].as_array().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn http_update_offering_success() {
+        let (app, db, _dir) = test_app();
+        let o = seed_offering(&db, "original.txt", "public");
+
+        let req = axum::http::Request::builder()
+            .method("PATCH")
+            .uri(format!("/offerings/{}", o.offering_id))
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                serde_json::json!({
+                    "name": "renamed.txt",
+                    "description": "updated desc"
+                })
+                .to_string(),
+            ))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = http_body_util::BodyExt::collect(resp.into_body())
+            .await
+            .unwrap()
+            .to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["offering"]["name"], "renamed.txt");
+        assert_eq!(json["offering"]["description"], "updated desc");
+    }
+
+    #[tokio::test]
+    async fn http_update_offering_not_found() {
+        let (app, _, _dir) = test_app();
+
+        let req = axum::http::Request::builder()
+            .method("PATCH")
+            .uri("/offerings/nonexistent-id")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                serde_json::json!({ "name": "new.txt" }).to_string(),
+            ))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn http_update_name_too_long() {
+        let (app, db, _dir) = test_app();
+        let o = seed_offering(&db, "file.txt", "public");
+
+        let long_name = "x".repeat(256);
+        let req = axum::http::Request::builder()
+            .method("PATCH")
+            .uri(format!("/offerings/{}", o.offering_id))
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                serde_json::json!({ "name": long_name }).to_string(),
+            ))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn http_update_invalid_access() {
+        let (app, db, _dir) = test_app();
+        let o = seed_offering(&db, "file.txt", "public");
+
+        let req = axum::http::Request::builder()
+            .method("PATCH")
+            .uri(format!("/offerings/{}", o.offering_id))
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                serde_json::json!({ "access": "wizards" }).to_string(),
+            ))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn http_update_name_conflict() {
+        let (app, db, _dir) = test_app();
+        seed_offering(&db, "existing.txt", "public");
+        let o2 = seed_offering(&db, "other.txt", "public");
+
+        let req = axum::http::Request::builder()
+            .method("PATCH")
+            .uri(format!("/offerings/{}", o2.offering_id))
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                serde_json::json!({ "name": "existing.txt" }).to_string(),
+            ))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn http_update_change_access_to_group() {
+        let (app, db, _dir) = test_app();
+        let o = seed_offering(&db, "file.txt", "public");
+
+        let req = axum::http::Request::builder()
+            .method("PATCH")
+            .uri(format!("/offerings/{}", o.offering_id))
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                serde_json::json!({ "access": "group:a1b2c3d4-e5f6-7890-abcd-ef0123456789" })
+                    .to_string(),
+            ))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = http_body_util::BodyExt::collect(resp.into_body())
+            .await
+            .unwrap()
+            .to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            json["offering"]["access"],
+            "group:a1b2c3d4-e5f6-7890-abcd-ef0123456789"
+        );
+    }
+
+    #[tokio::test]
+    async fn http_delete_offering_success() {
+        let (app, db, _dir) = test_app();
+        let o = seed_offering(&db, "doomed.txt", "public");
+
+        // retain_blob=1 to skip bridge blob deletion (bridge isn't running)
+        let req = axum::http::Request::builder()
+            .method("DELETE")
+            .uri(format!("/offerings/{}?retain_blob=1", o.offering_id))
+            .body(axum::body::Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+        // Verify it's gone
+        let offerings = db.list_offerings().unwrap();
+        assert!(offerings.is_empty());
+    }
+
+    #[tokio::test]
+    async fn http_delete_offering_not_found() {
+        let (app, _, _dir) = test_app();
+
+        let req = axum::http::Request::builder()
+            .method("DELETE")
+            .uri("/offerings/nonexistent-id?retain_blob=1")
+            .body(axum::body::Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn http_create_offering_json_validation() {
+        let (app, _, _dir) = test_app();
+
+        // Name too long
+        let long_name = "x".repeat(256);
+        let req = axum::http::Request::builder()
+            .method("PUT")
+            .uri("/offerings/json")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                serde_json::json!({
+                    "blob_id": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+                    "name": long_name,
+                    "mime_type": "text/plain",
+                    "size": 100,
+                })
+                .to_string(),
+            ))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn http_create_offering_json_bad_blob_id() {
+        let (app, _, _dir) = test_app();
+
+        let req = axum::http::Request::builder()
+            .method("PUT")
+            .uri("/offerings/json")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                serde_json::json!({
+                    "blob_id": "not-a-valid-hex",
+                    "name": "test.txt",
+                    "mime_type": "text/plain",
+                    "size": 100,
+                })
+                .to_string(),
+            ))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn http_create_offering_json_invalid_access() {
+        let (app, _, _dir) = test_app();
+
+        let req = axum::http::Request::builder()
+            .method("PUT")
+            .uri("/offerings/json")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                serde_json::json!({
+                    "blob_id": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+                    "name": "test.txt",
+                    "mime_type": "text/plain",
+                    "size": 100,
+                    "access": "invalid_policy",
+                })
+                .to_string(),
+            ))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn http_create_offering_json_desc_too_long() {
+        let (app, _, _dir) = test_app();
+
+        let long_desc = "x".repeat(1025);
+        let req = axum::http::Request::builder()
+            .method("PUT")
+            .uri("/offerings/json")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                serde_json::json!({
+                    "blob_id": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+                    "name": "test.txt",
+                    "mime_type": "text/plain",
+                    "size": 100,
+                    "description": long_desc,
+                })
+                .to_string(),
+            ))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn http_peer_active_and_inactive() {
+        let (app, _, _dir) = test_app();
+
+        // peer-active
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/p2pcd/peer-active")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                serde_json::json!({
+                    "peer_id": "dGVzdHBlZXIx",
+                    "wg_address": "100.222.1.5",
+                    "capability": "howm.social.files.1",
+                })
+                .to_string(),
+            ))
+            .unwrap();
+
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // peer-inactive
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/p2pcd/peer-inactive")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                serde_json::json!({
+                    "peer_id": "dGVzdHBlZXIx",
+                    "capability": "howm.social.files.1",
+                    "reason": "disconnect",
+                })
+                .to_string(),
+            ))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn http_inbound_bad_base64() {
+        let (app, _, _dir) = test_app();
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/p2pcd/inbound")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                serde_json::json!({
+                    "peer_id": "dGVzdHBlZXIx",
+                    "message_type": 1,
+                    "payload": "!!!not-base64!!!",
+                    "capability": "howm.social.files.1",
+                })
+                .to_string(),
+            ))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn http_inbound_unknown_method() {
+        let (app, _, _dir) = test_app();
+
+        // Encode a CBOR payload with an unknown method
+        use ciborium::value::Value;
+        let map = Value::Map(vec![(
+            Value::Integer(CBOR_KEY_METHOD.into()),
+            Value::Text("unknown.method".to_string()),
+        )]);
+        let mut buf = Vec::new();
+        ciborium::into_writer(&map, &mut buf).unwrap();
+        let payload_b64 = base64_encode(&buf);
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/p2pcd/inbound")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                serde_json::json!({
+                    "peer_id": "dGVzdHBlZXIx",
+                    "message_type": 1,
+                    "payload": payload_b64,
+                    "capability": "howm.social.files.1",
+                })
+                .to_string(),
+            ))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn http_inbound_catalogue_list() {
+        let (app, db, _dir) = test_app();
+        seed_offering(&db, "shared.txt", "public");
+
+        // Encode a catalogue.list CBOR request
+        let payload = encode_catalogue_list_request(0, 10);
+        let payload_b64 = base64_encode(&payload);
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/p2pcd/inbound")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                serde_json::json!({
+                    "peer_id": "dGVzdHBlZXIx",
+                    "message_type": 1,
+                    "payload": payload_b64,
+                    "capability": "howm.social.files.1",
+                })
+                .to_string(),
+            ))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = http_body_util::BodyExt::collect(resp.into_body())
+            .await
+            .unwrap()
+            .to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        // Should contain a base64-encoded CBOR response
+        assert!(json["response"].is_string());
+
+        // Decode the CBOR response
+        let response_b64 = json["response"].as_str().unwrap();
+        let response_bytes = base64_decode(response_b64).unwrap();
+        let value: ciborium::value::Value =
+            ciborium::from_reader(response_bytes.as_slice()).unwrap();
+        if let ciborium::value::Value::Map(map) = value {
+            // Find offerings array
+            let offerings_entry = map.iter().find(|(k, _)| {
+                if let ciborium::value::Value::Integer(i) = k {
+                    let key: i128 = (*i).into();
+                    key as u64 == CBOR_KEY_OFFERINGS
+                } else {
+                    false
+                }
+            });
+            assert!(offerings_entry.is_some());
+            if let Some((_, ciborium::value::Value::Array(arr))) = offerings_entry {
+                assert_eq!(arr.len(), 1); // the seeded public offering
+            }
+        } else {
+            panic!("expected CBOR map in response");
+        }
+    }
+
+    #[tokio::test]
+    async fn http_inbound_has_blob() {
+        let (app, db, _dir) = test_app();
+        let o = seed_offering(&db, "file.txt", "public");
+
+        // Encode a catalogue.has_blob CBOR request
+        let payload = encode_has_blob_request(&[o.blob_id.clone(), "nonexistent".to_string()]);
+        let payload_b64 = base64_encode(&payload);
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/p2pcd/inbound")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                serde_json::json!({
+                    "peer_id": "dGVzdHBlZXIx",
+                    "message_type": 1,
+                    "payload": payload_b64,
+                    "capability": "howm.social.files.1",
+                })
+                .to_string(),
+            ))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = http_body_util::BodyExt::collect(resp.into_body())
+            .await
+            .unwrap()
+            .to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let response_b64 = json["response"].as_str().unwrap();
+        let response_bytes = base64_decode(response_b64).unwrap();
+        let value: ciborium::value::Value =
+            ciborium::from_reader(response_bytes.as_slice()).unwrap();
+        if let ciborium::value::Value::Map(map) = value {
+            let has_entry = map.iter().find(|(k, _)| {
+                if let ciborium::value::Value::Integer(i) = k {
+                    let key: i128 = (*i).into();
+                    key as u64 == CBOR_KEY_HAS
+                } else {
+                    false
+                }
+            });
+            assert!(has_entry.is_some());
+            if let Some((_, ciborium::value::Value::Array(arr))) = has_entry {
+                // Bridge is not running, so blob_status calls fail — results in empty has list.
+                // This still verifies the RPC routing + CBOR encode/decode work end-to-end.
+                assert_eq!(arr.len(), 0);
+            }
+        } else {
+            panic!("expected CBOR map in response");
+        }
+    }
+
+    #[tokio::test]
+    async fn http_delete_without_retain_blob_best_effort() {
+        // When retain_blob is not set, delete_offering tries to call bridge
+        // (which will fail since daemon isn't running). The offering should
+        // still be removed — blob deletion is best-effort.
+        let (app, db, _dir) = test_app();
+        let o = seed_offering(&db, "doomed.txt", "public");
+
+        let req = axum::http::Request::builder()
+            .method("DELETE")
+            .uri(format!("/offerings/{}", o.offering_id))
+            .body(axum::body::Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+        // Offering is gone from DB even though blob deletion failed
+        assert!(db.list_offerings().unwrap().is_empty());
     }
 }

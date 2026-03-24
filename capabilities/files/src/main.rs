@@ -1,5 +1,5 @@
 use axum::{
-    routing::{get, patch, post},
+    routing::{get, patch, post, put},
     Router,
 };
 use clap::Parser;
@@ -37,7 +37,13 @@ async fn main() -> anyhow::Result<()> {
     let files_db = db::FilesDb::open(&config.data_dir)?;
     let bridge = p2pcd::bridge_client::BridgeClient::new(config.daemon_port);
 
-    let state = api::AppState::new(files_db, bridge, config.daemon_port, config.port);
+    let state = api::AppState::new(
+        files_db,
+        bridge,
+        config.daemon_port,
+        config.port,
+        config.data_dir.clone(),
+    );
 
     // Restore active peers from daemon on startup
     {
@@ -50,8 +56,10 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         // Health
         .route("/health", get(api::health))
-        // Operator offerings API (wired in FEAT-003-D)
+        // Operator offerings API
         .route("/offerings", get(api::list_offerings).post(api::create_offering))
+        // JSON path for creating from pre-registered blob
+        .route("/offerings/json", put(api::create_offering_json))
         .route(
             "/offerings/{offering_id}",
             patch(api::update_offering).delete(api::delete_offering),
