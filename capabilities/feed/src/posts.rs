@@ -62,7 +62,7 @@ pub fn allowed_mime_types() -> Vec<&'static str> {
     v
 }
 
-/// Configurable media limits for the social feed.
+/// Configurable media limits for the feed.
 /// Exposed via `GET /post/limits` so the UI can enforce client-side.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MediaLimits {

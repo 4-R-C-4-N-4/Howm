@@ -1,6 +1,6 @@
 name: feed
 version: 0.1.0
-description: Distributed social feed
+description: Distributed feed
 
 api:
   base_path: /cap/feed

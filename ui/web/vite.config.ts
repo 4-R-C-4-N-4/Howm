@@ -10,6 +10,7 @@ export default defineConfig({
       '/capabilities': { target: 'http://localhost:7000', changeOrigin: true },
       '/network':      { target: 'http://localhost:7000', changeOrigin: true },
       '/settings':     { target: 'http://localhost:7000', changeOrigin: true },
+      '/access':       { target: 'http://localhost:7000', changeOrigin: true },
       '/theme.css':    { target: 'http://localhost:7000', changeOrigin: true },
     }
   }

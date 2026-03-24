@@ -1,6 +1,6 @@
 // P2PCD Bridge — HTTP interface for out-of-process capabilities
 //
-// Capabilities like social-feed run as separate processes. They talk to the
+// Capabilities like feed run as separate processes. They talk to the
 // daemon over localhost HTTP to send/receive p2pcd messages:
 //
 //   POST /p2pcd/bridge/send    — send a CapabilityMsg to a peer
@@ -8,7 +8,7 @@
 //   POST /p2pcd/bridge/event   — broadcast an event to peers with a given capability
 //   GET  /p2pcd/bridge/peers   — list active peers (optionally filtered by capability)
 //
-// This replaces the old direct-IPC approach where social-feed opened its own
+// This replaces the old direct-IPC approach where feed opened its own
 // TCP connections. Now all wire traffic goes through the engine's session mux.
 
 use std::collections::HashMap;
@@ -189,7 +189,7 @@ fn default_rpc_timeout() -> u64 {
 /// Broadcast an event to all peers that negotiated a specific capability.
 #[derive(Debug, Deserialize)]
 pub struct EventRequest {
-    /// Capability name to filter peers (e.g. "app.social-feed.1").
+    /// Capability name to filter peers (e.g. "howm.social.feed.1").
     pub capability: String,
     /// Message type number for the event.
     pub message_type: u64,

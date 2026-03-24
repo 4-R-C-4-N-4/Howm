@@ -1,6 +1,6 @@
 // Bridge client — HTTP interface for out-of-process capabilities
 //
-// Any capability process (social-feed, etc.) uses this client to talk to the
+// Any capability process (feed, messaging, etc.) uses this client to talk to the
 // daemon's bridge endpoints:
 //
 //   send_msg()        — send a raw CapabilityMsg to a specific peer

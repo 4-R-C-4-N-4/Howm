@@ -49,7 +49,7 @@ export const TIER_CAPABILITIES: Record<string, string[]> = {
     'core.session.latency.1',
     'core.network.endpoint.1',
     'core.session.timesync.1',
-    'howm.feed.1',
+    'howm.social.feed.1',
     'howm.social.messaging.1',
     'howm.social.files.1',
     'howm.world.room.1',
@@ -61,7 +61,7 @@ export const TIER_CAPABILITIES: Record<string, string[]> = {
     'core.session.latency.1',
     'core.network.endpoint.1',
     'core.session.timesync.1',
-    'howm.feed.1',
+    'howm.social.feed.1',
     'howm.social.messaging.1',
     'howm.social.files.1',
     'howm.world.room.1',
@@ -86,7 +86,10 @@ export const updateAccessGroup = (groupId: string, updates: {
   description?: string | null;
   capabilities?: CapabilityRule[];
 }) =>
-  api.put<AccessGroup>(`/access/groups/${groupId}`, updates).then(r => r.data);
+  api.patch<AccessGroup>(`/access/groups/${groupId}`, updates).then(r => r.data);
+
+export const getGroupMembers = (groupId: string) =>
+  api.get<{ group_id: string; members: string[] }>(`/access/groups/${groupId}/members`).then(r => r.data);
 
 export const deleteAccessGroup = (groupId: string) =>
   api.delete(`/access/groups/${groupId}`).then(r => r.data);

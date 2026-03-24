@@ -116,7 +116,9 @@ mod tests {
             .is_allowed());
 
         // Should be denied (not in howm.default rules)
-        assert!(!db.resolve_permission(&peer, "howm.feed.1").is_allowed());
+        assert!(!db
+            .resolve_permission(&peer, "howm.social.feed.1")
+            .is_allowed());
         assert!(!db
             .resolve_permission(&peer, "howm.social.messaging.1")
             .is_allowed());
@@ -157,7 +159,9 @@ mod tests {
             .is_allowed());
 
         // Friends caps now work
-        assert!(db.resolve_permission(&peer, "howm.feed.1").is_allowed());
+        assert!(db
+            .resolve_permission(&peer, "howm.social.feed.1")
+            .is_allowed());
         assert!(db
             .resolve_permission(&peer, "howm.social.messaging.1")
             .is_allowed());
@@ -197,7 +201,9 @@ mod tests {
 
         // Friends caps NOT allowed (trusted only adds relay, doesn't include friends caps)
         // Peer needs to be in BOTH trusted and friends for social caps
-        assert!(!db.resolve_permission(&peer, "howm.feed.1").is_allowed());
+        assert!(!db
+            .resolve_permission(&peer, "howm.social.feed.1")
+            .is_allowed());
     }
 
     #[test]
@@ -210,7 +216,9 @@ mod tests {
         assert!(db
             .resolve_permission(&peer, "core.session.heartbeat.1")
             .is_allowed());
-        assert!(db.resolve_permission(&peer, "howm.feed.1").is_allowed());
+        assert!(db
+            .resolve_permission(&peer, "howm.social.feed.1")
+            .is_allowed());
         assert!(db
             .resolve_permission(&peer, "core.network.relay.1")
             .is_allowed());
@@ -246,7 +254,9 @@ mod tests {
             .is_allowed());
 
         // Other social caps still denied
-        assert!(!db.resolve_permission(&peer, "howm.feed.1").is_allowed());
+        assert!(!db
+            .resolve_permission(&peer, "howm.social.feed.1")
+            .is_allowed());
 
         // Default caps still allowed
         assert!(db
@@ -264,7 +274,7 @@ mod tests {
                 "testers",
                 Some("QA team"),
                 &[CapabilityRule {
-                    capability_name: "howm.feed.1".to_string(),
+                    capability_name: "howm.social.feed.1".to_string(),
                     allow: true,
                     rate_limit: None,
                     ttl: None,
@@ -296,7 +306,7 @@ mod tests {
         // Add rules
         let new_rules = vec![
             CapabilityRule {
-                capability_name: "howm.feed.1".to_string(),
+                capability_name: "howm.social.feed.1".to_string(),
                 allow: true,
                 rate_limit: None,
                 ttl: None,
@@ -376,15 +386,21 @@ mod tests {
         let peer = fake_peer(20);
 
         // Initially denied social
-        assert!(!db.resolve_permission(&peer, "howm.feed.1").is_allowed());
+        assert!(!db
+            .resolve_permission(&peer, "howm.social.feed.1")
+            .is_allowed());
 
         // Promote to friends
         db.assign_peer_to_group(&peer, &GROUP_FRIENDS).unwrap();
-        assert!(db.resolve_permission(&peer, "howm.feed.1").is_allowed());
+        assert!(db
+            .resolve_permission(&peer, "howm.social.feed.1")
+            .is_allowed());
 
         // Demote back
         db.remove_peer_from_group(&peer, &GROUP_FRIENDS).unwrap();
-        assert!(!db.resolve_permission(&peer, "howm.feed.1").is_allowed());
+        assert!(!db
+            .resolve_permission(&peer, "howm.social.feed.1")
+            .is_allowed());
     }
 
     // ── Effective permissions ────────────────────────────────────────────
@@ -399,7 +415,7 @@ mod tests {
         // Should have entries for all capabilities defined in rules
         assert!(perms["core.session.heartbeat.1"].is_allowed());
         assert!(perms["core.session.attest.1"].is_allowed());
-        assert!(!perms["howm.feed.1"].is_allowed());
+        assert!(!perms["howm.social.feed.1"].is_allowed());
         assert!(!perms["core.network.relay.1"].is_allowed());
     }
 
@@ -412,7 +428,7 @@ mod tests {
         let perms = db.get_peer_effective_permissions(&peer).unwrap();
 
         assert!(perms["core.session.heartbeat.1"].is_allowed());
-        assert!(perms["howm.feed.1"].is_allowed());
+        assert!(perms["howm.social.feed.1"].is_allowed());
         assert!(perms["howm.social.messaging.1"].is_allowed());
         assert!(!perms["core.network.relay.1"].is_allowed());
     }
@@ -426,14 +442,14 @@ mod tests {
 
         let caps = &[
             "core.session.heartbeat.1",
-            "howm.feed.1",
+            "howm.social.feed.1",
             "core.network.relay.1",
         ];
         let perms = db.resolve_all_permissions(&peer, caps);
 
         assert_eq!(perms.len(), 3);
         assert!(perms["core.session.heartbeat.1"].is_allowed());
-        assert!(!perms["howm.feed.1"].is_allowed());
+        assert!(!perms["howm.social.feed.1"].is_allowed());
         assert!(!perms["core.network.relay.1"].is_allowed());
     }
 

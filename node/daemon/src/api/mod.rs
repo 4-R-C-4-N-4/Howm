@@ -182,6 +182,10 @@ pub fn build_router(state: AppState, ui_dir: Option<PathBuf>) -> Router {
                 .delete(access_routes::delete_group),
         )
         .route(
+            "/access/groups/:group_id/members",
+            get(access_routes::list_group_members),
+        )
+        .route(
             "/access/peers/:peer_id/groups",
             get(access_routes::list_peer_groups).post(access_routes::assign_peer_to_group),
         )
