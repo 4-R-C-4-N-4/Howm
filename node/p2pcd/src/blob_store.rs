@@ -56,6 +56,17 @@ impl BlobStore {
         Ok(buf)
     }
 
+    /// Delete a blob from the store. Returns true if the blob existed and was deleted.
+    pub async fn delete(&self, hash: &[u8; 32]) -> anyhow::Result<bool> {
+        let path = self.path_for(hash);
+        if path.exists() {
+            fs::remove_file(&path).await?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
     /// Read the entire blob as bytes. Returns None if not found.
     pub async fn read_all(&self, hash: &[u8; 32]) -> Option<Vec<u8>> {
         let path = self.path_for(hash);

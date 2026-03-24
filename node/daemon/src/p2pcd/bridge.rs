@@ -103,6 +103,21 @@ pub struct BlobRequestRequest {
     pub hash: String,
     /// Transfer ID.
     pub transfer_id: u64,
+    /// Optional callback URL for transfer-complete notification.
+    #[serde(default)]
+    pub callback_url: Option<String>,
+}
+
+/// Bulk blob status request.
+#[derive(Debug, Deserialize)]
+pub struct BulkBlobStatusRequest {
+    pub hashes: Vec<String>,
+}
+
+/// Latency query for a single peer.
+#[derive(Debug, Deserialize)]
+pub struct LatencyQuery {
+    pub peer_id: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -213,7 +228,12 @@ pub fn bridge_routes(engine: Arc<ProtocolEngine>) -> Router {
         .route("/blob/store", post(handle_blob_store))
         .route("/blob/request", post(handle_blob_request))
         .route("/blob/status", get(handle_blob_status))
+        .route("/blob/status/bulk", post(handle_bulk_blob_status))
         .route("/blob/data", get(handle_blob_data))
+        .route("/blob/{hash}", axum::routing::delete(handle_blob_delete))
+        // Latency endpoints
+        .route("/latency", get(handle_bulk_latency))
+        .route("/latency/{peer_id}", get(handle_peer_latency))
         .with_state(engine)
 }
 
@@ -731,6 +751,166 @@ async fn handle_blob_data(
         )
             .into_response(),
     }
+}
+
+// ── New bridge endpoints (FEAT-003-B) ────────────────────────────────────────
+
+/// POST /p2pcd/bridge/blob/status/bulk — check multiple blobs at once.
+async fn handle_bulk_blob_status(
+    State(engine): State<Arc<ProtocolEngine>>,
+    Json(req): Json<BulkBlobStatusRequest>,
+) -> impl IntoResponse {
+    let store = match get_blob_store(&engine) {
+        Ok(s) => s,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": e })),
+            )
+        }
+    };
+
+    let mut results = serde_json::Map::new();
+    for hex_hash in &req.hashes {
+        if let Ok(hash) = decode_hex_hash(hex_hash) {
+            let exists = store.has(&hash).await;
+            let size = if exists {
+                store.size(&hash).await
+            } else {
+                None
+            };
+            results.insert(
+                hex_hash.clone(),
+                serde_json::json!({ "exists": exists, "size": size }),
+            );
+        }
+    }
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({ "results": results })),
+    )
+}
+
+/// DELETE /p2pcd/bridge/blob/{hash} — delete a blob from the store.
+async fn handle_blob_delete(
+    State(engine): State<Arc<ProtocolEngine>>,
+    Path(hash_hex): Path<String>,
+) -> impl IntoResponse {
+    let hash = match decode_hex_hash(&hash_hex) {
+        Ok(h) => h,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "ok": false, "error": e })),
+            )
+        }
+    };
+
+    let store = match get_blob_store(&engine) {
+        Ok(s) => s,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "ok": false, "error": e })),
+            )
+        }
+    };
+
+    match store.delete(&hash).await {
+        Ok(deleted) => (
+            StatusCode::OK,
+            Json(serde_json::json!({ "ok": true, "deleted": deleted })),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "ok": false, "error": e.to_string() })),
+        ),
+    }
+}
+
+/// Helper: get the LatencyHandler from the engine.
+fn get_latency_handler(
+    engine: &ProtocolEngine,
+) -> Result<std::sync::Arc<dyn p2pcd_types::CapabilityHandler>, String> {
+    engine
+        .cap_router()
+        .handler_by_name("core.session.latency.1")
+        .ok_or_else(|| "core.session.latency.1 not registered".to_string())
+}
+
+/// GET /p2pcd/bridge/latency/{peer_id} — RTT data for a single peer.
+async fn handle_peer_latency(
+    State(engine): State<Arc<ProtocolEngine>>,
+    Path(peer_id_b64): Path<String>,
+) -> impl IntoResponse {
+    let peer_id = match decode_peer_id(&peer_id_b64) {
+        Ok(id) => id,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": e })),
+            )
+        }
+    };
+
+    let handler = match get_latency_handler(&engine) {
+        Ok(h) => h,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": e })),
+            )
+        }
+    };
+
+    let latency = handler
+        .as_any()
+        .downcast_ref::<p2pcd::capabilities::latency::LatencyHandler>()
+        .unwrap();
+
+    let average_rtt_ms = latency.average_rtt(&peer_id).await;
+    let samples = latency.get_samples(&peer_id).await;
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "peer_id": peer_id_b64,
+            "average_rtt_ms": average_rtt_ms,
+            "samples": samples,
+        })),
+    )
+}
+
+/// GET /p2pcd/bridge/latency — RTT data for all active peers.
+async fn handle_bulk_latency(State(engine): State<Arc<ProtocolEngine>>) -> impl IntoResponse {
+    let handler = match get_latency_handler(&engine) {
+        Ok(h) => h,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": e })),
+            )
+        }
+    };
+
+    let latency = handler
+        .as_any()
+        .downcast_ref::<p2pcd::capabilities::latency::LatencyHandler>()
+        .unwrap();
+
+    // Get all active peers and their latency
+    let active_peers = engine.active_peer_ids().await;
+    let mut peers = Vec::new();
+    for peer_id in &active_peers {
+        let avg = latency.average_rtt(peer_id).await;
+        peers.push(serde_json::json!({
+            "peer_id": encode_b64(peer_id),
+            "average_rtt_ms": avg,
+        }));
+    }
+
+    (StatusCode::OK, Json(serde_json::json!({ "peers": peers })))
 }
 
 #[cfg(test)]

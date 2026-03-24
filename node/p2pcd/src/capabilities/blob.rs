@@ -119,21 +119,65 @@ struct OutboundTransfer {
 
 // ── BlobHandler ──────────────────────────────────────────────────────────────
 
+/// Payload sent via the transfer completion channel.
+#[derive(Debug, Clone)]
+pub struct TransferEvent {
+    pub transfer_id: u64,
+    pub blob_hash: [u8; 32],
+    pub status: TransferStatus,
+    pub size: u64,
+    pub error: Option<String>,
+}
+
+/// Transfer completion status.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TransferStatus {
+    Complete,
+    Failed,
+}
+
 pub struct BlobHandler {
     inbound: Arc<RwLock<HashMap<u64, InboundTransfer>>>,
     outbound: Arc<RwLock<HashMap<u64, OutboundTransfer>>>,
     store: Arc<BlobStore>,
     send_tx: RwLock<Option<tokio::sync::mpsc::Sender<ProtocolMessage>>>,
+    /// Channel for transfer completion events (consumed by bridge for callbacks).
+    transfer_event_tx: tokio::sync::broadcast::Sender<TransferEvent>,
 }
 
 impl BlobHandler {
     pub fn new(data_dir: PathBuf) -> Self {
+        let (tx, _) = tokio::sync::broadcast::channel(64);
         Self {
             inbound: Arc::new(RwLock::new(HashMap::new())),
             outbound: Arc::new(RwLock::new(HashMap::new())),
             store: Arc::new(BlobStore::new(&data_dir)),
             send_tx: RwLock::new(None),
+            transfer_event_tx: tx,
         }
+    }
+
+    /// Subscribe to transfer completion events (used by bridge for callbacks).
+    pub fn subscribe_transfer_events(&self) -> tokio::sync::broadcast::Receiver<TransferEvent> {
+        self.transfer_event_tx.subscribe()
+    }
+
+    /// Emit a transfer event.
+    fn emit_transfer_event(
+        &self,
+        transfer_id: u64,
+        blob_hash: [u8; 32],
+        status: TransferStatus,
+        size: u64,
+        error: Option<String>,
+    ) {
+        let _ = self.transfer_event_tx.send(TransferEvent {
+            transfer_id,
+            blob_hash,
+            status,
+            size,
+            error,
+        });
     }
 
     /// Access the underlying blob store (for bridge endpoints).
@@ -376,6 +420,13 @@ impl BlobHandler {
                         transfer_id,
                         bytes,
                         hex::encode(&blob_hash[..8])
+                    );
+                    self.emit_transfer_event(
+                        transfer_id,
+                        blob_hash,
+                        TransferStatus::Complete,
+                        bytes,
+                        None,
                     );
                     let ack = cbor_encode_map(vec![
                         (
