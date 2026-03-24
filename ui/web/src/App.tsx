@@ -5,6 +5,10 @@ import { Dashboard } from './pages/Dashboard';
 import { Connection } from './pages/Connection';
 import { Settings } from './pages/Settings';
 import { CapabilityPage } from './pages/CapabilityPage';
+import { PeersPage } from './pages/PeersPage';
+import { PeerDetail } from './pages/PeerDetail';
+import { GroupsPage } from './pages/GroupsPage';
+import { GroupDetail } from './pages/GroupDetail';
 import { getCapabilities } from './api/capabilities';
 import { getApiToken } from './api/client';
 import { listenFromCapabilities, type NotifyLevel } from './lib/postMessage';
@@ -86,7 +90,9 @@ function NavBar() {
     <nav style={navStyle}>
       <span style={brandStyle}>howm</span>
       <NavLink to="/dashboard" style={linkStyle}>Dashboard</NavLink>
+      <NavLink to="/peers" style={linkStyle}>Peers</NavLink>
       <NavLink to="/connection" style={linkStyle}>Connection</NavLink>
+      <NavLink to="/access/groups" style={linkStyle}>Groups</NavLink>
       {capabilities?.filter(c => c.ui).map(cap => (
         <NavLink key={cap.name} to={`/cap/${cap.name}`} style={linkStyle}>
           {cap.ui!.label}
@@ -165,7 +171,11 @@ function Shell() {
         <Routes>
           <Route path="/" element={<Navigate to="/dashboard" replace />} />
           <Route path="/dashboard" element={<Dashboard />} />
+          <Route path="/peers" element={<PeersPage />} />
+          <Route path="/peers/:peerId" element={<PeerDetail />} />
           <Route path="/connection" element={<Connection />} />
+          <Route path="/access/groups" element={<GroupsPage />} />
+          <Route path="/access/groups/:groupId" element={<GroupDetail />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="/cap/:name" element={<CapabilityPage />} />
         </Routes>
