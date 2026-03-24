@@ -194,6 +194,13 @@ pub async fn assign_peer_to_group(
         .assign_peer_to_group(&peer_bytes, &group_uuid)
         .map_err(|e| AppError::Internal(format!("access_db: {}", e)))?;
 
+    // Phase 5: Trigger rebroadcast so the peer's capabilities are re-evaluated
+    if let Some(engine) = &state.p2pcd_engine {
+        if let Ok(pid) = try_peer_id_array(&peer_bytes) {
+            engine.on_membership_changed(&pid).await;
+        }
+    }
+
     Ok(Json(json!({
         "status": "assigned",
         "peer_id": peer_id,
@@ -217,6 +224,13 @@ pub async fn remove_peer_from_group(
         .map_err(|e| AppError::Internal(format!("access_db: {}", e)))?;
 
     if removed {
+        // Phase 5: Trigger rebroadcast so the peer's capabilities are re-evaluated
+        if let Some(engine) = &state.p2pcd_engine {
+            if let Ok(pid) = try_peer_id_array(&peer_bytes) {
+                engine.on_membership_changed(&pid).await;
+            }
+        }
+
         Ok(Json(
             json!({ "status": "removed", "peer_id": peer_id, "group_id": group_id }),
         ))
@@ -261,7 +275,7 @@ pub async fn get_effective_permissions(
     })))
 }
 
-// ── Deny peer (stub — lifecycle hooks in Phase 5) ────────────────────────────
+// ── Deny peer — revoke access, close session, cache as Denied ────────────────
 
 pub async fn deny_peer(
     State(state): State<AppState>,
@@ -269,19 +283,26 @@ pub async fn deny_peer(
 ) -> Result<Json<Value>, AppError> {
     let peer_bytes = parse_peer_id(&peer_id)?;
 
-    // Remove from all groups
+    // 1. Remove from all groups
     let removed = state
         .access_db
         .remove_peer_from_all_groups(&peer_bytes)
         .map_err(|e| AppError::Internal(format!("access_db: {}", e)))?;
 
-    // TODO (Phase 5): Send P2P-CD CLOSE with reason_code 2, cache outcome as NONE
+    // 2. Close active P2P-CD session with AuthFailure + cache as Denied
+    let mut session_closed = false;
+    if let Some(engine) = &state.p2pcd_engine {
+        if let Ok(pid) = try_peer_id_array(&peer_bytes) {
+            engine.deny_session(&pid).await;
+            session_closed = true;
+        }
+    }
 
     Ok(Json(json!({
         "status": "denied",
         "peer_id": peer_id,
         "groups_removed": removed,
-        "note": "session close + cache not yet implemented (Phase 5)",
+        "session_closed": session_closed,
     })))
 }
 
@@ -300,4 +321,14 @@ fn parse_peer_id(hex_str: &str) -> Result<Vec<u8>, AppError> {
         ));
     }
     Ok(bytes)
+}
+
+/// Convert Vec<u8> to fixed-size [u8; 32] PeerId for engine calls.
+fn try_peer_id_array(bytes: &[u8]) -> Result<p2pcd_types::PeerId, AppError> {
+    if bytes.len() != 32 {
+        return Err(AppError::Internal("peer_id not 32 bytes".to_string()));
+    }
+    let mut arr = [0u8; 32];
+    arr.copy_from_slice(bytes);
+    Ok(arr)
 }

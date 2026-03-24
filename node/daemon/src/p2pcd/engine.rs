@@ -731,9 +731,50 @@ impl ProtocolEngine {
     }
 
     /// Invalidate a peer's cache entry (e.g. when we know their manifest changed).
-    #[allow(dead_code)]
     pub async fn invalidate_cache(&self, peer_id: &PeerId) {
         self.peer_cache.lock().await.remove(peer_id);
+    }
+
+    /// Deny a peer: send CLOSE with AuthFailure, tear down session, cache as Denied.
+    /// Called when access is revoked (e.g. POST /access/peers/:id/deny).
+    pub async fn deny_session(&self, peer_id: &PeerId) {
+        tracing::info!("engine: deny_session {}", short(*peer_id));
+
+        // Send CLOSE(AuthFailure) and tear down like on_peer_unreachable
+        self.on_peer_unreachable(*peer_id, CloseReason::AuthFailure)
+            .await;
+
+        // Cache as Denied so we don't reconnect
+        let personal_hash = {
+            let sessions = self.sessions.read().await;
+            sessions
+                .get(peer_id)
+                .and_then(|s| s.remote_manifest.as_ref())
+                .map(|m| m.personal_hash.clone())
+                .unwrap_or_default()
+        };
+
+        {
+            let mut cache = self.peer_cache.lock().await;
+            cache.insert(
+                *peer_id,
+                PeerCacheEntry {
+                    personal_hash,
+                    last_outcome: SessionOutcome::Denied,
+                    timestamp: unix_now(),
+                },
+            );
+        }
+
+        // Remove session record
+        self.sessions.write().await.remove(peer_id);
+    }
+
+    /// Trigger cache invalidation + rebroadcast for a specific peer.
+    /// Called when group membership changes to re-evaluate permissions.
+    pub async fn on_membership_changed(&self, peer_id: &PeerId) {
+        self.invalidate_cache(peer_id).await;
+        self.rebroadcast().await;
     }
 
     // ── Friends management (AccessDb-backed) ───────────────────────────────────
