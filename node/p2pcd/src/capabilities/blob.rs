@@ -263,6 +263,14 @@ impl BlobHandler {
                 ),
             ]);
             self.send_msg(message_types::BLOB_ACK, ack).await;
+            // Emit failed event so bridge callback can notify the requesting capability
+            self.emit_transfer_event(
+                transfer_id,
+                hash,
+                TransferStatus::Failed,
+                0,
+                Some("blob not found on provider".to_string()),
+            );
             return Ok(());
         }
 
@@ -351,10 +359,16 @@ impl BlobHandler {
             return Ok(());
         }
 
-        let mut hash = [0u8; 32];
-        if blob_hash_bytes.len() == 32 {
-            hash.copy_from_slice(&blob_hash_bytes);
+        if blob_hash_bytes.len() != 32 {
+            tracing::warn!(
+                "blob: OFFER with invalid hash length {} from {}",
+                blob_hash_bytes.len(),
+                hex::encode(&ctx.peer_id[..4])
+            );
+            return Ok(());
         }
+        let mut hash = [0u8; 32];
+        hash.copy_from_slice(&blob_hash_bytes);
 
         // Create inbound transfer state
         self.inbound.write().await.insert(
@@ -408,6 +422,7 @@ impl BlobHandler {
             let assembled = transfer.assembled_data();
             let blob_hash = transfer.blob_hash;
             let transfer_id = transfer.transfer_id;
+            let chunk_count = transfer.chunk_count;
             drop(inbound);
 
             // Write to store and verify hash
@@ -447,7 +462,7 @@ impl BlobHandler {
                         e
                     );
                     // Request retransmit of all chunks (hash mismatch = data corruption)
-                    let all: Vec<ciborium::value::Value> = (0..assembled.len() as u64)
+                    let all: Vec<ciborium::value::Value> = (0..chunk_count)
                         .map(|i| ciborium::value::Value::Integer(i.into()))
                         .collect();
                     let ack = cbor_encode_map(vec![

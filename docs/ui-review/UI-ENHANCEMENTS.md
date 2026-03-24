@@ -22,32 +22,20 @@
   constants) would make the UI feel more polished and cohesive without a full framework
  adoption.
 
- 2. Empty States & Onboarding
- Currently, pages like Peers, Messages, and Files show bare empty lists when a node is
- fresh. Adding illustrated empty states with a call-to-action ("No peers yet — create an
- invite to get started →") would make the first-run experience much more welcoming and
- guide users through the flow.
-
- 3. Navigation Improvements
+ 2. Navigation Improvements
   - The NavBar is a simple 48px sticky bar. Adding active route highlighting with a
     visible indicator (accent-colored left border or underline) would improve
   - Capability nav items are dynamically injected — they could benefit from icons or a
      visual grouping separator to distinguish built-in pages from capability pages.
 
- 4. Peer List UX
+ 3. Peer List UX
   - Avatar/identicon generation from peer IDs — right now peers are just text rows. Even
     simple geometric identicons would make peers instantly distinguishable.
-  - Bulk actions — selecting multiple peers for tier changes instead of one-at-a-time via
-    overflow menus.
   - Peer detail preview panel — a slide-out drawer on click instead of a full page
     navigation, keeping the list visible.
 
- 5. Messaging Polish
-  - Typing indicators if supported by the protocol
-  - Message grouping — consecutive messages from the same sender should visually collapse
-    (no repeated name/avatar)
-  - Emoji reactions or at minimum a more visual delivery status (replace ⏳/✓/⚠ text
-     symbols with styled icons)
+ 4. Messaging Polish
+  - More visual delivery status (replace ⏳/✓/⚠ text symbols with styled icons)
   - Unread count in the NavBar — the Messages page shows unread badges inside the page,
     but there's no indicator in the navbar itself. A small badge dot on the Messages nav
     link would surface this.
@@ -71,14 +59,13 @@
   - The layout appears fixed-width oriented. Adding responsive breakpoints for
     tablet/mobile use would broaden usability (especially for checking your node from a
     phone).
+    
  9. Toast Notifications — Richer Feedback
  Toasts currently auto-dismiss in 5 seconds at bottom-right. Enhancement: add a persistent 
  notification drawer (bell icon in navbar) so users don't miss important events like new
  peer connections or failed messages that happened while they were on another tab.
 
  10. Settings — Config Validation & UX
- The Settings page has a raw JSON textarea for P2P-CD config editing. Replacing this with a
-  structured form (or at minimum adding JSON syntax validation with error highlighting
- before save) would prevent configuration mistakes and feel much more professional.
+ The Settings page has a raw JSON textarea for P2P-CD config editing. Adding JSON syntax validation with error highlighting before save would prevent configuration mistakes and feel much more professional.
 
 

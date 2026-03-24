@@ -1097,12 +1097,12 @@ pub async fn initiate_download(
     let mut peer_id_bytes = [0u8; 32];
     peer_id_bytes.copy_from_slice(&peer_id_bytes_vec);
 
-    // Generate transfer_id from timestamp
-    let now = std::time::SystemTime::now()
+    // Generate transfer_id from timestamp + nanos to avoid collisions
+    let now_dur = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs() as i64;
-    let transfer_id = now;
+        .unwrap();
+    let now = now_dur.as_secs() as i64;
+    let transfer_id = now_dur.as_millis() as i64;
 
     // Call bridge to start the P2P transfer, with callback for completion notification
     let callback = Some(state.callback_url());
