@@ -1,6 +1,6 @@
 import { useParams, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   getConversation,
   sendMessage,
@@ -60,10 +60,12 @@ export function ConversationView() {
 
   const peerName = peers.find(p => p.wg_pubkey === decodedPeerId)?.name
     ?? decodedPeerId.slice(0, 12) + '…';
-  const peerOnline = useMemo(
-    () => peers.some(p => p.wg_pubkey === decodedPeerId && Date.now() - p.last_seen * 1000 < 120_000),
-    [peers, decodedPeerId],
-  );
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(id);
+  }, []);
+  const peerOnline = peers.some(p => p.wg_pubkey === decodedPeerId && now - p.last_seen * 1000 < 120_000);
 
   // Mark as read on open
   useEffect(() => {
@@ -87,13 +89,6 @@ export function ConversationView() {
     ...serverMsgs,
     ...optimistic.filter(m => !serverIds.has(m.msg_id)),
   ].sort((a, b) => a.sent_at - b.sent_at);
-
-  // Clean up delivered optimistic messages
-  useEffect(() => {
-    if (optimistic.length > 0) {
-      setOptimistic(prev => prev.filter(m => !serverIds.has(m.msg_id)));
-    }
-  }, [serverIds.size]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto-scroll to bottom
   useEffect(() => {
@@ -144,8 +139,6 @@ export function ConversationView() {
   const nearLimit = byteLen > 4000;
 
   // Group messages by date
-  let lastDate = '';
-
   return (
     <div style={pageStyle}>
       {/* Header */}
@@ -159,10 +152,10 @@ export function ConversationView() {
       <div ref={scrollRef} style={messagesContainerStyle}>
         {isLoading && <p style={mutedStyle}>Loading…</p>}
 
-        {allMessages.map(msg => {
+        {allMessages.map((msg, idx) => {
           const dateStr = formatDate(msg.sent_at);
-          const showDate = dateStr !== lastDate;
-          lastDate = dateStr;
+          const prevDate = idx > 0 ? formatDate(allMessages[idx - 1].sent_at) : '';
+          const showDate = dateStr !== prevDate;
           const isSent = msg.direction === 'sent';
 
           return (
