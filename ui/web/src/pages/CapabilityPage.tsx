@@ -7,10 +7,11 @@ import { getApiToken } from '../api/client';
 
 /**
  * Full-height iframe wrapper for a capability UI.
- * Route: /cap/:name
+ * Route: /app/:name   (SPA route — distinct from daemon's /cap/:name API proxy)
  *
- * The iframe src is the capability's ui.entry URL (routed through the daemon
- * at /cap/<name>/ui/ by default).
+ * The iframe src is built from the capability's ui.entry and routed through
+ * the daemon proxy at /cap/<prefix>/ui/. The prefix is the last dot-segment
+ * of the capability name (e.g. "social.feed" → prefix "feed").
  *
  * Token handshake: capability posts howm:token:request → shell listens and
  * calls sendTokenReply on the iframe. We also pass it as a URL param as a

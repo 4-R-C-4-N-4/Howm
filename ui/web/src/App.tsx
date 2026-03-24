@@ -117,7 +117,7 @@ function NavBar() {
       <NavLink to="/connection" style={linkStyle}>Connection</NavLink>
       <NavLink to="/access/groups" style={linkStyle}>Groups</NavLink>
       {capabilities?.filter(c => c.ui).map(cap => (
-        <NavLink key={cap.name} to={`/cap/${cap.name}`} style={linkStyle}>
+        <NavLink key={cap.name} to={`/app/${cap.name}`} style={linkStyle}>
           {cap.ui!.label}
         </NavLink>
       ))}

@@ -1,22 +1,10 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
-// Proxy API requests to the Howm daemon.
-// '/cap' is special: it's both an API prefix (iframe/XHR → daemon proxy)
-// and a React route (/cap/:name → SPA page). We only proxy requests that
-// look like API/asset fetches (not HTML page navigations) so the SPA
-// fallback works for browser navigation.
-const capProxy = {
-  target: 'http://localhost:7000',
-  changeOrigin: true,
-  // Skip proxying when the browser is navigating (wants HTML) — let Vite
-  // serve the SPA index.html so React Router can handle /cap/:name.
-  bypass(req: any) {
-    const accept = req.headers.accept || '';
-    if (accept.includes('text/html')) return req.url;    // serve SPA
-  },
-};
-
+// Proxy API and capability requests to the Howm daemon.
+// SPA routes live under /app, /dashboard, /peers, etc. — no conflict with
+// these proxy prefixes. The /cap prefix is exclusively for the daemon's
+// capability proxy (iframe content + API calls from capability UIs).
 const daemon = { target: 'http://localhost:7000', changeOrigin: true };
 
 export default defineConfig({
@@ -24,7 +12,7 @@ export default defineConfig({
   server: {
     proxy: {
       '/node':         daemon,
-      '/cap':          capProxy,
+      '/cap':          daemon,
       '/capabilities': daemon,
       '/network':      daemon,
       '/settings':     daemon,

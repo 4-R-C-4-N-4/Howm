@@ -21,7 +21,7 @@ The UI is the operator's dashboard for managing their file catalogue AND a brows
 
 Embedded in the `files` binary via `include_dir!()`, served at `/ui/*` with a fallback handler (same pattern as feed). The daemon proxy routes `/cap/files/ui/` to the capability process on port 7003.
 
-The shell app (React) renders an iframe at `/app/social.files` pointing to `/cap/files/ui/`.
+The shell app (React) renders an iframe at `/app/social.files` (SPA route, distinct from the daemon's `/cap` API proxy) pointing to `/cap/files/ui/`.
 
 ### 2.2 Token handshake
 
