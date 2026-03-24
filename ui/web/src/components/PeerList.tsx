@@ -1,119 +1,114 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { getPeers, removePeer, updatePeerTrust } from '../api/nodes';
-import type { Peer, TrustLevel } from '../api/nodes';
+import { useQuery } from '@tanstack/react-query';
+import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-
-function formatLastSeen(ts: number, now: number) {
-  if (!ts) return 'never';
-  const delta = Math.floor(now / 1000 - ts);
-  if (delta < 60) return 'just now';
-  if (delta < 3600) return `${Math.floor(delta / 60)}m ago`;
-  if (delta < 86400) return `${Math.floor(delta / 3600)}h ago`;
-  return `${Math.floor(delta / 86400)}d ago`;
-}
-
-const trustBadge: Record<TrustLevel, { label: string; color: string; bg: string }> = {
-  friend:     { label: 'Friend',     color: 'var(--howm-success, #4ade80)',  bg: 'rgba(74,222,128,0.12)'  },
-  public:     { label: 'Public',     color: 'var(--howm-warning, #fbbf24)',  bg: 'rgba(251,191,36,0.12)'  },
-  restricted: { label: 'Restricted', color: 'var(--howm-error, #f87171)',    bg: 'rgba(248,113,113,0.12)' },
-};
+import { getPeers } from '../api/nodes';
+import { getPeerGroups } from '../api/access';
+import type { AccessGroup } from '../api/access';
+import {
+  effectiveTier, peerIdToHex, formatLastSeen, isOnline,
+} from '../lib/access';
 
 export function PeerList() {
-  const queryClient = useQueryClient();
-  const { data: peers = [], isLoading, dataUpdatedAt } = useQuery({
+  const { data: peers = [], dataUpdatedAt } = useQuery({
     queryKey: ['peers'],
     queryFn: getPeers,
-    refetchInterval: 30000,
+    refetchInterval: 30_000,
   });
+
+  const [peerGroupsMap, setPeerGroupsMap] = useState<Record<string, AccessGroup[]>>({});
+
+  const peerIds = peers.map(p => p.node_id).join(',');
+  useEffect(() => {
+    if (peers.length === 0) return;
+    const fetchAll = async () => {
+      const map: Record<string, AccessGroup[]> = {};
+      await Promise.all(peers.map(async peer => {
+        const hexId = peerIdToHex(peer.wg_pubkey);
+        try { map[hexId] = await getPeerGroups(hexId); } catch { map[hexId] = []; }
+      }));
+      setPeerGroupsMap(map);
+    };
+    fetchAll();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [peerIds]);
+
   const now = dataUpdatedAt;
+  const onlineCount = peers.filter(p => isOnline(p.last_seen, now)).length;
 
-  const removeMutation = useMutation({
-    mutationFn: removePeer,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['peers'] }),
-  });
+  // Count by tier
+  let friendsCount = 0, trustedCount = 0;
+  for (const peer of peers) {
+    const hexId = peerIdToHex(peer.wg_pubkey);
+    const groups = peerGroupsMap[hexId] || [];
+    const badge = effectiveTier(groups);
+    if (badge.label === 'Friends') friendsCount++;
+    if (badge.label === 'Trusted') trustedCount++;
+  }
 
-  const trustMutation = useMutation({
-    mutationFn: ({ node_id, trust }: { node_id: string; trust: TrustLevel }) =>
-      updatePeerTrust(node_id, trust),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['peers'] }),
-  });
+  // Top 3 most recently seen
+  const recent = [...peers]
+    .sort((a, b) => (b.last_seen || 0) - (a.last_seen || 0))
+    .slice(0, 3);
 
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-        <h3 style={{ margin: 0 }}>Peers ({peers.length})</h3>
+        <h3 style={{ margin: 0 }}>Peers</h3>
       </div>
 
-      {isLoading ? (
-        <p style={mutedStyle}>Loading peers…</p>
-      ) : peers.length === 0 ? (
-        <p style={mutedStyle}>
-          No peers yet. Go to{' '}
-          <Link to="/connection" style={linkStyle}>Connection</Link>
-          {' '}to create or redeem an invite.
-        </p>
-      ) : (
-        <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
-          {peers.map((peer: Peer) => {
-            const badge = trustBadge[peer.trust || 'friend'];
+      <p style={summaryStyle}>
+        {peers.length} peers  •  {onlineCount} online  •  {friendsCount} friends  •  {trustedCount} trusted
+      </p>
+
+      {recent.length > 0 && (
+        <div style={{ marginTop: '8px' }}>
+          <p style={{ ...mutedStyle, fontSize: '0.8rem', marginBottom: '6px' }}>Recent:</p>
+          {recent.map(peer => {
+            const hexId = peerIdToHex(peer.wg_pubkey);
+            const groups = peerGroupsMap[hexId] || [];
+            const badge = effectiveTier(groups);
+            const online = isOnline(peer.last_seen, now);
             return (
-              <li key={peer.node_id} style={peerRowStyle}>
-                <div>
-                  <strong>{peer.name}</strong>
-                  <span style={{ marginLeft: '8px', fontSize: '0.75em', padding: '2px 7px', borderRadius: '4px', background: badge.bg, color: badge.color }}>
+              <Link key={peer.node_id} to={`/peers/${hexId}`} style={{ textDecoration: 'none', color: 'inherit' }}>
+                <div style={recentRowStyle}>
+                  <span style={{ color: online ? '#4ade80' : '#5c6170', marginRight: '8px' }}>
+                    {online ? '●' : '○'}
+                  </span>
+                  <span style={{ fontWeight: 500, marginRight: '8px' }}>{peer.name}</span>
+                  <span style={{
+                    fontSize: '0.75rem', padding: '1px 7px', borderRadius: '4px',
+                    background: badge.bg, color: badge.color,
+                  }}>
                     {badge.label}
                   </span>
-                  <span style={{ color: 'var(--howm-text-muted, #5c6170)', marginLeft: '10px', fontSize: '0.85em', fontFamily: 'var(--howm-font-mono, monospace)' }}>
-                    {peer.wg_address}
-                  </span>
-                  <span style={{ color: 'var(--howm-text-muted, #5c6170)', marginLeft: '8px', fontSize: '0.8em' }}>
+                  <span style={{ marginLeft: 'auto', fontSize: '0.8rem', color: 'var(--howm-text-muted, #5c6170)' }}>
                     {formatLastSeen(peer.last_seen, now)}
                   </span>
                 </div>
-                <div style={{ display: 'flex', gap: '4px' }}>
-                  {peer.trust === 'public' && (
-                    <button onClick={() => trustMutation.mutate({ node_id: peer.node_id, trust: 'friend' })} style={trustBtnStyle('success')}>
-                      Promote
-                    </button>
-                  )}
-                  {peer.trust === 'friend' && (
-                    <button onClick={() => trustMutation.mutate({ node_id: peer.node_id, trust: 'restricted' })} style={trustBtnStyle('warning')}>
-                      Restrict
-                    </button>
-                  )}
-                  {peer.trust === 'restricted' && (
-                    <button onClick={() => trustMutation.mutate({ node_id: peer.node_id, trust: 'friend' })} style={trustBtnStyle('success')}>
-                      Restore
-                    </button>
-                  )}
-                  <button onClick={() => removeMutation.mutate(peer.node_id)} style={trustBtnStyle('error')}>
-                    Remove
-                  </button>
-                </div>
-              </li>
+              </Link>
             );
           })}
-        </ul>
+        </div>
       )}
+
+      <Link to="/peers" style={viewAllStyle}>View All Peers →</Link>
     </div>
   );
 }
 
-const trustBtnStyle = (variant: 'success' | 'warning' | 'error'): React.CSSProperties => {
-  const colors = {
-    success: { bg: 'rgba(74,222,128,0.12)',  color: 'var(--howm-success, #4ade80)',  border: 'rgba(74,222,128,0.3)'  },
-    warning: { bg: 'rgba(251,191,36,0.12)',  color: 'var(--howm-warning, #fbbf24)',  border: 'rgba(251,191,36,0.3)'  },
-    error:   { bg: 'rgba(248,113,113,0.12)', color: 'var(--howm-error, #f87171)',    border: 'rgba(248,113,113,0.3)' },
-  }[variant];
-  return { background: colors.bg, color: colors.color, border: `1px solid ${colors.border}`, borderRadius: '4px', padding: '3px 8px', cursor: 'pointer', fontSize: '0.8em' };
+const summaryStyle: React.CSSProperties = {
+  margin: 0, fontSize: '0.9rem', color: 'var(--howm-text-secondary, #8b91a0)',
 };
-
-const mutedStyle: React.CSSProperties = { color: 'var(--howm-text-muted, #5c6170)', margin: 0 };
-const linkStyle: React.CSSProperties = { color: 'var(--howm-accent, #6c8cff)', textDecoration: 'none' };
-const peerRowStyle: React.CSSProperties = {
-  display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-  padding: '10px 12px',
-  border: '1px solid var(--howm-border, #2e3341)',
-  borderRadius: 'var(--howm-radius-sm, 4px)', marginBottom: '6px',
-  background: 'var(--howm-bg-secondary, #1a1d27)',
+const mutedStyle: React.CSSProperties = {
+  color: 'var(--howm-text-muted, #5c6170)', margin: 0,
+};
+const recentRowStyle: React.CSSProperties = {
+  display: 'flex', alignItems: 'center', padding: '6px 8px',
+  borderRadius: '4px', marginBottom: '2px',
+  cursor: 'pointer',
+};
+const viewAllStyle: React.CSSProperties = {
+  display: 'inline-block', marginTop: '12px',
+  color: 'var(--howm-accent, #6c8cff)', textDecoration: 'none',
+  fontSize: '0.9rem', fontWeight: 500,
 };

@@ -12,6 +12,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tower_http::services::{ServeDir, ServeFile};
 
+pub mod access_routes;
 pub mod auth_layer;
 pub mod capability_routes;
 pub mod connection_routes;
@@ -25,6 +26,15 @@ pub mod settings_routes;
 pub(crate) fn is_local_or_wg(ip: &IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => v4.is_loopback() || is_wg_subnet(*v4),
+        IpAddr::V6(v6) => v6.is_loopback(),
+    }
+}
+
+/// Check if a source IP is localhost only (127.0.0.0/8 or ::1).
+/// Used for access control API — must NOT be reachable over WG tunnel (NFR-4).
+pub(crate) fn is_localhost_only(ip: &IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => v4.is_loopback(),
         IpAddr::V6(v6) => v6.is_loopback(),
     }
 }
@@ -155,10 +165,46 @@ pub fn build_router(state: AppState, ui_dir: Option<PathBuf>) -> Router {
         .route("/node/generate-accept", post(node_routes::generate_accept))
         .route("/node/redeem-accept", post(node_routes::redeem_accept));
 
+    // ── 4. Access control routes (localhost-only, bearer required) ──────────
+    // These MUST NOT be reachable over WG tunnel (NFR-4).
+    let access = Router::new()
+        .route(
+            "/access/groups",
+            get(access_routes::list_groups).post(access_routes::create_group),
+        )
+        .route(
+            "/access/groups/:group_id",
+            get(access_routes::get_group)
+                .patch(access_routes::update_group)
+                .delete(access_routes::delete_group),
+        )
+        .route(
+            "/access/peers/:peer_id/groups",
+            get(access_routes::list_peer_groups).post(access_routes::assign_peer_to_group),
+        )
+        .route(
+            "/access/peers/:peer_id/groups/:group_id",
+            delete(access_routes::remove_peer_from_group),
+        )
+        .route(
+            "/access/peers/:peer_id/permissions",
+            get(access_routes::get_effective_permissions),
+        )
+        .route(
+            "/access/peers/:peer_id/deny",
+            post(access_routes::deny_peer),
+        )
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            bearer_auth_middleware,
+        ))
+        .layer(middleware::from_fn(localhost_only_middleware));
+
     let mut router = Router::new()
         .merge(authenticated)
         .merge(local_or_wg)
-        .merge(peer_ceremony);
+        .merge(peer_ceremony)
+        .merge(access);
 
     // Serve static UI files if --ui-dir is provided; fall back to embedded UI.
     // Fallback must be set before .with_state() so embedded handler can access State<AppState>.
@@ -179,6 +225,20 @@ pub fn build_router(state: AppState, ui_dir: Option<PathBuf>) -> Router {
     }
 
     router.with_state(state)
+}
+
+/// Middleware: restrict to localhost only (127.0.0.0/8 or ::1).
+/// Used for /access/* routes — NFR-4: must not be reachable over WG tunnel.
+async fn localhost_only_middleware(
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    req: Request<axum::body::Body>,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    if is_localhost_only(&addr.ip()) {
+        Ok(next.run(req).await)
+    } else {
+        Err(StatusCode::FORBIDDEN)
+    }
 }
 
 /// Middleware: restrict to localhost or WireGuard subnet (100.222.0.0/16).

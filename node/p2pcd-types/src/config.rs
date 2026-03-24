@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 // p2pcd-peer.toml configuration schema and helpers.
 // This replaces the CLI-flag-based config in daemon/src/config.rs.
 
@@ -190,6 +191,10 @@ impl From<&ScopeConfig> for ScopeParams {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[deprecated(
+    since = "0.2.0",
+    note = "replaced by howm-access group-based permissions"
+)]
 pub struct ClassificationConfig {
     /// Default tier: "public" | "friends" | "blocked"
     pub default_tier: ClassificationTier,
@@ -308,6 +313,7 @@ impl PeerConfig {
     }
 
     /// Generate a default Normal User archetype config (POC §6.1).
+    #[allow(deprecated)]
     pub fn generate_default(data_dir: &Path) -> Self {
         PeerConfig {
             identity: IdentityConfig {
@@ -393,6 +399,11 @@ impl PeerConfig {
     }
 
     /// Build TrustPolicy map for all capabilities with classification config.
+    #[deprecated(
+        since = "0.2.0",
+        note = "trust gate now uses howm-access AccessDb; this method is unused"
+    )]
+    #[allow(deprecated)]
     pub fn trust_policies(&self) -> HashMap<String, TrustPolicy> {
         // Parse friends list once
         let friends_set: std::collections::HashSet<PeerId> = self
@@ -452,6 +463,7 @@ pub fn peer_id_to_base64(peer_id: &PeerId) -> String {
 
 #[cfg(test)]
 mod tests {
+    #![allow(deprecated)]
     use super::*;
 
     const SAMPLE_TOML: &str = r#"
@@ -498,6 +510,7 @@ list = []
 "#;
 
     #[test]
+    #[allow(deprecated)]
     fn parse_sample_config() {
         let cfg: PeerConfig = toml::from_str(SAMPLE_TOML).unwrap();
         assert_eq!(cfg.identity.display_name, "alice");
@@ -507,6 +520,7 @@ list = []
     }
 
     #[test]
+    #[allow(deprecated)]
     fn generate_default_round_trip() {
         let data_dir = PathBuf::from("/tmp/howm-test");
         let cfg = PeerConfig::generate_default(&data_dir);
@@ -537,6 +551,7 @@ list = []
     }
 
     #[test]
+    #[allow(deprecated)]
     fn trust_policies_built_correctly() {
         let cfg: PeerConfig = toml::from_str(SAMPLE_TOML).unwrap();
         let policies = cfg.trust_policies();

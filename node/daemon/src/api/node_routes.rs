@@ -273,6 +273,21 @@ pub async fn redeem_invite(
         }
     }
 
+    // Assign default access group based on trust level
+    if let Ok(peer_bytes) = hex::decode(&peer.wg_pubkey) {
+        if !state
+            .access_db
+            .peer_has_memberships(&peer_bytes)
+            .unwrap_or(true)
+        {
+            let group = match peer.trust {
+                TrustLevel::Friend => howm_access::GROUP_FRIENDS,
+                _ => howm_access::GROUP_DEFAULT,
+            };
+            let _ = state.access_db.assign_peer_to_group(&peer_bytes, &group);
+        }
+    }
+
     info!(
         "Redeemed invite — peered with {} ({})",
         peer_name, decoded.their_wg_address
@@ -346,9 +361,24 @@ pub async fn complete_invite(
     {
         let mut peers = state.peers.write().await;
         if !peers.iter().any(|p| p.wg_pubkey == peer.wg_pubkey) {
-            peers.push(peer);
+            peers.push(peer.clone());
             peers::save(&state.config.data_dir, &peers)
                 .map_err(|e| AppError::Internal(e.to_string()))?;
+        }
+    }
+
+    // Assign default access group based on trust level
+    if let Ok(peer_bytes) = hex::decode(&peer.wg_pubkey) {
+        if !state
+            .access_db
+            .peer_has_memberships(&peer_bytes)
+            .unwrap_or(true)
+        {
+            let group = match peer.trust {
+                TrustLevel::Friend => howm_access::GROUP_FRIENDS,
+                _ => howm_access::GROUP_DEFAULT,
+            };
+            let _ = state.access_db.assign_peer_to_group(&peer_bytes, &group);
         }
     }
 
@@ -589,9 +619,24 @@ pub async fn open_join(
 
     {
         let mut peers = state.peers.write().await;
-        peers.push(peer);
+        peers.push(peer.clone());
         peers::save(&state.config.data_dir, &peers)
             .map_err(|e| AppError::Internal(e.to_string()))?;
+    }
+
+    // Assign default access group based on trust level
+    if let Ok(peer_bytes) = hex::decode(&peer.wg_pubkey) {
+        if !state
+            .access_db
+            .peer_has_memberships(&peer_bytes)
+            .unwrap_or(true)
+        {
+            let group = match peer.trust {
+                TrustLevel::Friend => howm_access::GROUP_FRIENDS,
+                _ => howm_access::GROUP_DEFAULT,
+            };
+            let _ = state.access_db.assign_peer_to_group(&peer_bytes, &group);
+        }
     }
 
     // Update open invite peer count
@@ -779,6 +824,21 @@ pub async fn redeem_open_invite(
             peers.push(peer.clone());
             peers::save(&state.config.data_dir, &peers)
                 .map_err(|e| AppError::Internal(e.to_string()))?;
+        }
+    }
+
+    // Assign default access group based on trust level
+    if let Ok(peer_bytes) = hex::decode(&peer.wg_pubkey) {
+        if !state
+            .access_db
+            .peer_has_memberships(&peer_bytes)
+            .unwrap_or(true)
+        {
+            let group = match peer.trust {
+                TrustLevel::Friend => howm_access::GROUP_FRIENDS,
+                _ => howm_access::GROUP_DEFAULT,
+            };
+            let _ = state.access_db.assign_peer_to_group(&peer_bytes, &group);
         }
     }
 
@@ -1039,6 +1099,21 @@ pub async fn redeem_accept(
             peers.push(peer.clone());
             peers::save(&state.config.data_dir, &peers)
                 .map_err(|e| AppError::Internal(e.to_string()))?;
+        }
+    }
+
+    // Assign default access group based on trust level
+    if let Ok(peer_bytes) = hex::decode(&peer.wg_pubkey) {
+        if !state
+            .access_db
+            .peer_has_memberships(&peer_bytes)
+            .unwrap_or(true)
+        {
+            let group = match peer.trust {
+                TrustLevel::Friend => howm_access::GROUP_FRIENDS,
+                _ => howm_access::GROUP_DEFAULT,
+            };
+            let _ = state.access_db.assign_peer_to_group(&peer_bytes, &group);
         }
     }
 

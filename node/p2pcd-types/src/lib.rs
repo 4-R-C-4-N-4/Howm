@@ -224,6 +224,10 @@ impl Role {
 
 // ─── Classification tiers (application-level, NOT on wire) ───────────────────
 
+#[deprecated(
+    since = "0.2.0",
+    note = "replaced by howm-access group-based permissions"
+)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ClassificationTier {
@@ -523,6 +527,11 @@ pub trait CapabilityHandler: Send + Sync {
 /// Local trust gate configuration per capability.
 /// Uses WireGuard public keys for peer identification.
 #[derive(Debug, Clone)]
+#[deprecated(
+    since = "0.2.0",
+    note = "replaced by howm-access group-based permissions"
+)]
+#[allow(deprecated)]
 pub struct TrustPolicy {
     /// Default tier applied to peers not in overrides.
     pub default_tier: ClassificationTier,
@@ -532,6 +541,7 @@ pub struct TrustPolicy {
     pub friends: HashSet<PeerId>,
 }
 
+#[allow(deprecated)]
 impl TrustPolicy {
     /// Evaluate trust gate for a specific peer.
     /// Returns true for ALLOW, false for DENY.
@@ -553,14 +563,22 @@ impl TrustPolicy {
 
 // ─── Intersection computation (§7.4) ──────────────────────────────────────────
 
-/// Compute the active set from two manifests + local trust policies.
+/// Compute the active set from two manifests + a trust gate callback.
 /// Returns sorted list of capability names that both peers agreed on.
-/// Classification is NOT on the wire — trust gates use the WG public key.
-pub fn compute_intersection(
+///
+/// The `trust_gate` closure is called for each candidate capability:
+///   `trust_gate(capability_name, remote_peer_id) -> bool`
+/// Return `true` to allow, `false` to exclude from the active set.
+///
+/// `core.session.heartbeat.1` always passes regardless of the trust gate (FR-3.4).
+pub fn compute_intersection<F>(
     local: &DiscoveryManifest,
     remote: &DiscoveryManifest,
-    trust_policies: &HashMap<String, TrustPolicy>,
-) -> Vec<String> {
+    trust_gate: &F,
+) -> Vec<String>
+where
+    F: Fn(&str, &PeerId) -> bool,
+{
     let mut active = Vec::new();
 
     for local_cap in &local.capabilities {
@@ -575,11 +593,11 @@ pub fn compute_intersection(
             {
                 continue;
             }
-            // Trust gate check using remote manifest's peer_id (= WG public key)
-            if let Some(policy) = trust_policies.get(&local_cap.name) {
-                if !policy.evaluate(&remote.peer_id) {
-                    continue;
-                }
+            // Trust gate check — heartbeat always passes (FR-3.4)
+            if local_cap.name != "core.session.heartbeat.1"
+                && !trust_gate(&local_cap.name, &remote.peer_id)
+            {
+                continue;
             }
             active.push(local_cap.name.clone());
             break;
@@ -588,6 +606,24 @@ pub fn compute_intersection(
 
     active.sort();
     active
+}
+
+/// Legacy compute_intersection using HashMap<String, TrustPolicy>.
+/// Deprecated — use the closure-based version above.
+#[deprecated(since = "0.2.0", note = "use closure-based compute_intersection")]
+#[allow(deprecated)]
+pub fn compute_intersection_legacy(
+    local: &DiscoveryManifest,
+    remote: &DiscoveryManifest,
+    trust_policies: &HashMap<String, TrustPolicy>,
+) -> Vec<String> {
+    let gate = |cap_name: &str, peer_id: &PeerId| -> bool {
+        match trust_policies.get(cap_name) {
+            Some(policy) => policy.evaluate(peer_id),
+            None => true,
+        }
+    };
+    compute_intersection(local, remote, &gate)
 }
 
 // ─── WireGuard peer state ──────────────────────────────────────────────────────
@@ -617,6 +653,7 @@ impl WgPeerState {
 
 #[cfg(test)]
 mod tests {
+    #![allow(deprecated)]
     use super::*;
 
     // ── Role::matches tests ──────────────────────────────────────────────────
@@ -708,13 +745,14 @@ mod tests {
         assert_eq!(r.ttl, 0);
     }
 
-    // ── TrustPolicy::evaluate tests ──────────────────────────────────────────
+    // ── TrustPolicy::evaluate tests (deprecated, kept for backward compat) ───
 
     fn peer(b: u8) -> PeerId {
         [b; 32]
     }
 
     #[test]
+    #[allow(deprecated)]
     fn trust_public_allows_all() {
         let policy = TrustPolicy {
             default_tier: ClassificationTier::Public,
@@ -726,6 +764,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn trust_friends_blocks_stranger() {
         let policy = TrustPolicy {
             default_tier: ClassificationTier::Friends,
@@ -741,6 +780,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn trust_blocked_denies_all() {
         let policy = TrustPolicy {
             default_tier: ClassificationTier::Blocked,
@@ -751,6 +791,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn trust_override_takes_precedence() {
         let stranger = peer(0xFF);
         let policy = TrustPolicy {
@@ -810,8 +851,8 @@ mod tests {
     fn intersection_social_social() {
         let alice = social_peer(0xA1);
         let bob = social_peer(0xB0);
-        let policies = HashMap::new();
-        let active = compute_intersection(&alice, &bob, &policies);
+        let allow_all = |_: &str, _: &PeerId| true;
+        let active = compute_intersection(&alice, &bob, &allow_all);
         assert_eq!(
             active,
             vec!["core.session.heartbeat.1", "howm.social.feed.1"]
@@ -823,38 +864,32 @@ mod tests {
     fn intersection_social_no_social() {
         let alice = social_peer(0xA1);
         let bob = no_social_peer(0xB0);
-        let policies = HashMap::new();
-        let active = compute_intersection(&alice, &bob, &policies);
+        let allow_all = |_: &str, _: &PeerId| true;
+        let active = compute_intersection(&alice, &bob, &allow_all);
         assert_eq!(active, vec!["core.session.heartbeat.1"]);
     }
 
     /// §9.3: Private ↔ Stranger → heartbeat only (trust gate blocks social)
     #[test]
     fn intersection_private_stranger() {
-        let stranger_id = peer(0xFF);
         let friend_id = peer(0x01);
 
-        let private_user = social_peer(0xA1); // same caps, FRIENDS policy applied
+        let private_user = social_peer(0xA1);
         let stranger = DiscoveryManifest {
-            peer_id: stranger_id,
+            peer_id: peer(0xFF),
             ..social_peer(0xFF)
         };
 
-        let mut policies = HashMap::new();
-        policies.insert(
-            "howm.social.feed.1".to_string(),
-            TrustPolicy {
-                default_tier: ClassificationTier::Friends,
-                overrides: HashMap::new(),
-                friends: {
-                    let mut s = HashSet::new();
-                    s.insert(friend_id);
-                    s
-                },
-            },
-        );
+        // Trust gate: only friend_id is allowed social access
+        let gate = |cap: &str, pid: &PeerId| -> bool {
+            if cap == "howm.social.feed.1" {
+                *pid == friend_id
+            } else {
+                true
+            }
+        };
 
-        let active = compute_intersection(&private_user, &stranger, &policies);
+        let active = compute_intersection(&private_user, &stranger, &gate);
         assert_eq!(active, vec!["core.session.heartbeat.1"]);
     }
 
@@ -869,21 +904,16 @@ mod tests {
             ..social_peer(0x01)
         };
 
-        let mut policies = HashMap::new();
-        policies.insert(
-            "howm.social.feed.1".to_string(),
-            TrustPolicy {
-                default_tier: ClassificationTier::Friends,
-                overrides: HashMap::new(),
-                friends: {
-                    let mut s = HashSet::new();
-                    s.insert(friend_id);
-                    s
-                },
-            },
-        );
+        // Trust gate: only friend_id is allowed social access
+        let gate = |cap: &str, pid: &PeerId| -> bool {
+            if cap == "howm.social.feed.1" {
+                *pid == friend_id
+            } else {
+                true
+            }
+        };
 
-        let active = compute_intersection(&private_user, &friend, &policies);
+        let active = compute_intersection(&private_user, &friend, &gate);
         assert_eq!(
             active,
             vec!["core.session.heartbeat.1", "howm.social.feed.1"]
@@ -895,8 +925,8 @@ mod tests {
     fn intersection_no_social_no_social() {
         let a = no_social_peer(0xA1);
         let b = no_social_peer(0xB0);
-        let policies = HashMap::new();
-        let active = compute_intersection(&a, &b, &policies);
+        let allow_all = |_: &str, _: &PeerId| true;
+        let active = compute_intersection(&a, &b, &allow_all);
         assert_eq!(active, vec!["core.session.heartbeat.1"]);
     }
 
