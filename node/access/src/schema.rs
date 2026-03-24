@@ -68,15 +68,22 @@ pub fn seed_built_in_groups(conn: &Connection) -> rusqlite::Result<()> {
     ];
     seed_capability_rules(conn, &GROUP_DEFAULT.to_string(), default_caps)?;
 
-    // ── howm.friends ─────────────────────────────────────────────────────
+    // ── howm.friends (inherits default + social capabilities) ───────────
     upsert_group(
         conn,
         &GROUP_FRIENDS.to_string(),
         "howm.friends",
-        "Social capabilities + room access + peer exchange",
+        "Default capabilities + social, room access, and peer exchange",
         now,
     )?;
     let friends_caps = &[
+        // inherited from default
+        "core.session.heartbeat.1",
+        "core.session.attest.1",
+        "core.session.latency.1",
+        "core.network.endpoint.1",
+        "core.session.timesync.1",
+        // friends tier
         "howm.social.feed.1",
         "howm.social.messaging.1",
         "howm.social.files.1",
@@ -85,15 +92,30 @@ pub fn seed_built_in_groups(conn: &Connection) -> rusqlite::Result<()> {
     ];
     seed_capability_rules(conn, &GROUP_FRIENDS.to_string(), friends_caps)?;
 
-    // ── howm.trusted ─────────────────────────────────────────────────────
+    // ── howm.trusted (inherits all — default + friends + relay) ────────
     upsert_group(
         conn,
         &GROUP_TRUSTED.to_string(),
         "howm.trusted",
-        "Full application access including relay",
+        "Full application access — all capabilities including relay",
         now,
     )?;
-    let trusted_caps = &["core.network.relay.1"];
+    let trusted_caps = &[
+        // inherited from default
+        "core.session.heartbeat.1",
+        "core.session.attest.1",
+        "core.session.latency.1",
+        "core.network.endpoint.1",
+        "core.session.timesync.1",
+        // inherited from friends
+        "howm.social.feed.1",
+        "howm.social.messaging.1",
+        "howm.social.files.1",
+        "howm.world.room.1",
+        "core.network.peerexchange.1",
+        // trusted tier
+        "core.network.relay.1",
+    ];
     seed_capability_rules(conn, &GROUP_TRUSTED.to_string(), trusted_caps)?;
 
     Ok(())

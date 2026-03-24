@@ -40,7 +40,7 @@ export function CapabilityList() {
                 {/* Task 4: link to capability UI page if available */}
                 {cap.ui && (
                   <Link
-                    to={`/cap/${cap.name}`}
+                    to={`/app/${cap.name}`}
                     style={{
                       fontSize: '0.8em',
                       padding: '2px 8px',

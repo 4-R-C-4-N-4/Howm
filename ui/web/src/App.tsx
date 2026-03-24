@@ -202,7 +202,7 @@ function Shell() {
           <Route path="/access/groups" element={<GroupsPage />} />
           <Route path="/access/groups/:groupId" element={<GroupDetail />} />
           <Route path="/settings" element={<Settings />} />
-          <Route path="/cap/:name" element={<CapabilityPage />} />
+          <Route path="/app/:name" element={<CapabilityPage />} />
         </Routes>
       </div>
       <ToastContainer toasts={toasts} dismiss={dismissToast} />

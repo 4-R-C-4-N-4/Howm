@@ -25,11 +25,5 @@
   "resources": {
     "cpu": "low",
     "memory": "128MB"
-  },
-  "ui": {
-    "label": "Files",
-    "icon": "folder",
-    "entry": "/files",
-    "style": "route"
   }
 }
