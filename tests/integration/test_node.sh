@@ -154,13 +154,13 @@ else
         '{"image":"cap-social-feed:0.1"}' "$TOKEN_A")
     echo "Install response: $INSTALL_RESP"
     sleep 3  # Wait for container to start
-    assert_json "http://localhost:7000/capabilities" ".capabilities[0].name" "social.feed"
+    assert_json "http://localhost:7000/capabilities" ".capabilities[0].name" "feed"
     assert_json "http://localhost:7000/capabilities" ".capabilities[0].status" "Running"
 
     echo ""
     echo "--- Test: Post via proxy on node-a ---"
-    post_json "http://localhost:7000/cap/social/post" '{"content":"hello from node-a"}' > /dev/null
-    assert_json_contains "http://localhost:7000/cap/social/feed" ".posts[0].content" "hello from node-a"
+post_json "http://localhost:7000/cap/feed/post" '{\"content\":\"hello from node-a\"}' > /dev/null
+    assert_json_contains "http://localhost:7000/cap/feed/feed" ".posts[0].content" "hello from node-a"
 
     echo ""
     echo "--- Test: Health check ---"

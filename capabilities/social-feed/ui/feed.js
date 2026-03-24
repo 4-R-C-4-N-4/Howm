@@ -7,10 +7,10 @@ var pendingFiles = []; // files queued for upload
 var mediaLimits = null; // fetched from /post/limits
 
 // ── Base path detection ────────────────────────────────────────────────────────
-// When served through the daemon proxy: /cap/social/ui/ → base = /cap/social
+// When served through the daemon proxy: /cap/feed/ui/ → base = /cap/feed
 // When accessed directly on capability port: /ui/ → base = ''
 var BASE = (function () {
-  var path = window.location.pathname; // e.g. /cap/social/ui/ or /ui/
+  var path = window.location.pathname; // e.g. /cap/feed/ui/ or /ui/
   var uiIdx = path.indexOf('/ui');
   return uiIdx > 0 ? path.substring(0, uiIdx) : '';
 })();
@@ -39,7 +39,7 @@ var BASE = (function () {
   });
 
   // Signal to the shell that we loaded
-  window.parent.postMessage({ type: 'howm:ready', payload: { name: 'social.feed' } }, '*');
+  window.parent.postMessage({ type: 'howm:ready', payload: { name: 'feed' } }, '*');
 
   // File input change handler
   document.getElementById('file-input').addEventListener('change', onFilesSelected);

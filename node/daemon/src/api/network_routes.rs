@@ -68,10 +68,10 @@ pub async fn network_feed(
     let mut errors: Vec<String> = Vec::new();
     let timeout = std::time::Duration::from_millis(state.config.peer_timeout_ms);
 
-    // 1. Collect local posts from the social.feed capability
+    // 1. Collect local posts from the feed capability
     {
         let caps = state.capabilities.read().await;
-        if let Some(local_feed) = caps.iter().find(|c| c.name == "social.feed") {
+        if let Some(local_feed) = caps.iter().find(|c| c.name == "feed") {
             let url = format!("http://localhost:{}/feed", local_feed.port);
             let client = reqwest::Client::builder().timeout(timeout).build();
             if let Ok(client) = client {
@@ -103,7 +103,7 @@ pub async fn network_feed(
         peers.iter().collect()
     };
     for peer in &filtered_peers {
-        let url = format!("http://{}:{}/cap/social/feed", peer.wg_address, peer.port);
+        let url = format!("http://{}:{}/cap/feed/feed", peer.wg_address, peer.port);
         let client = reqwest::Client::builder().timeout(timeout).build();
         if let Ok(client) = client {
             match client.get(&url).send().await {

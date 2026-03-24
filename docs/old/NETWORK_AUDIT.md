@@ -222,7 +222,7 @@ not a vulnerability.
 **File:** `network_routes.rs:105-106`
 
 ```rust
-let url = format!("http://{}:{}/cap/social/feed", peer.wg_address, peer.port);
+let url = format!("http://{}:{}/cap/feed/feed", peer.wg_address, peer.port);
 ```
 
 ### Verdict: CORRECT

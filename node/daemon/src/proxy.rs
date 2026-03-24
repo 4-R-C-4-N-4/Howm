@@ -20,7 +20,7 @@ pub async fn proxy_request_with_peer(
     req: Request<Body>,
     peer_pubkey: Option<&str>,
 ) -> Result<Response<Body>, AppError> {
-    // Find capability by name — "social" matches "social.feed" (first segment before '.')
+    // Find capability by name — "feed" matches "feed" (first segment before '.')
     let cap = {
         let caps = state.capabilities.read().await;
         caps.iter()

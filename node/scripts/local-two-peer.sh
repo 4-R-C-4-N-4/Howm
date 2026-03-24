@@ -58,7 +58,7 @@ interval_ms = 2000
 timeout_ms  = 6000
 
 [capabilities.social]
-name  = "howm.social.feed.1"
+name  = "howm.feed.1"
 role  = "both"
 mutual = true
 
@@ -91,7 +91,7 @@ interval_ms = 2000
 timeout_ms  = 6000
 
 [capabilities.social]
-name  = "howm.social.feed.1"
+name  = "howm.feed.1"
 role  = "both"
 mutual = true
 

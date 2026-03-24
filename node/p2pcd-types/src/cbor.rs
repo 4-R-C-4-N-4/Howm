@@ -620,7 +620,7 @@ mod tests {
                 applicable_scope_keys: None,
             },
             CapabilityDeclaration {
-                name: "howm.social.feed.1".to_string(),
+                name: "howm.feed.1".to_string(),
                 role: Role::Provide,
                 mutual: false,
                 scope: Some(ScopeParams {
@@ -688,10 +688,7 @@ mod tests {
             .iter()
             .map(|c| c.name.as_str())
             .collect();
-        assert_eq!(
-            names,
-            vec!["core.session.heartbeat.1", "howm.social.feed.1"]
-        );
+        assert_eq!(names, vec!["core.session.heartbeat.1", "howm.feed.1"]);
     }
 
     #[test]
@@ -715,7 +712,7 @@ mod tests {
     fn confirm_round_trip() {
         let mut params = BTreeMap::new();
         params.insert(
-            "howm.social.feed.1".to_string(),
+            "howm.feed.1".to_string(),
             ScopeParams {
                 rate_limit: 5,
                 ttl: 3600,
@@ -726,7 +723,7 @@ mod tests {
             personal_hash: vec![0xDE, 0xAD],
             active_set: vec![
                 "core.session.heartbeat.1".to_string(),
-                "howm.social.feed.1".to_string(),
+                "howm.feed.1".to_string(),
             ],
             accepted_params: Some(params.clone()),
         };
@@ -741,7 +738,7 @@ mod tests {
                 assert_eq!(personal_hash, vec![0xDE, 0xAD]);
                 assert_eq!(active_set.len(), 2);
                 let ap = accepted_params.unwrap();
-                assert_eq!(ap["howm.social.feed.1"].rate_limit, 5);
+                assert_eq!(ap["howm.feed.1"].rate_limit, 5);
             }
             _ => panic!("expected Confirm"),
         }

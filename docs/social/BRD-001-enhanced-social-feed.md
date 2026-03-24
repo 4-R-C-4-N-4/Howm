@@ -6,7 +6,7 @@
 **Version:** 0.1
 **Date:** 2026-03-23
 **Capability path:** `capabilities/social-feed/`
-**P2P-CD name:** `howm.social.feed.1`
+**P2P-CD name:** `howm.feed.1`
 
 ---
 
@@ -66,10 +66,10 @@ Feed posts are text-only. Users cannot share images, GIFs, or short video clips 
 
 ### 6.1 Capability Declaration
 
-- **FR-0.1** The `social-feed` capability process SHALL advertise `howm.social.feed.1` in its P2P-CD capability manifest with the following declaration:
+- **FR-0.1** The `social-feed` capability process SHALL advertise `howm.feed.1` in its P2P-CD capability manifest with the following declaration:
   - `role: BOTH, mutual: true` — feed replication is symmetric; both peers provide posts to and consume posts from each other.
   - `scope.params: { methods: ["post.list", "post.get"] }` — declares the RPC method set used for feed sync, enabling intersection computation at CONFIRM time per §B.9 of the P2P-CD spec.
-- **FR-0.2** The `core.data.event.1` capability SHALL be used for `post.media_ready` notifications. The `social-feed` capability PROVIDEs events on topics prefixed `social.`; the UI and other capabilities CONSUME them. This requires `howm.social.feed.1` to also negotiate `core.data.event.1` as part of its active set.
+- **FR-0.2** The `core.data.event.1` capability SHALL be used for `post.media_ready` notifications. The `social-feed` capability PROVIDEs events on topics prefixed `social.`; the UI and other capabilities CONSUME them. This requires `howm.feed.1` to also negotiate `core.data.event.1` as part of its active set.
 - **FR-0.3** The `core.data.blob.1` capability SHALL be used for all attachment transfers. The `social-feed` capability CONSUMEs blob; the `core.data.blob.1` provider is the peer that originally posted the content.
 
 ### 6.2 Post Object Schema Extension
@@ -150,7 +150,7 @@ The capability daemon proxy handles routing via `/cap/social-feed/*`.
 
 - `core.data.blob.1` — content-addressed transfer; the social feed capability CONSUMEs this to fetch attachment blobs from posting peers.
 - `core.data.event.1` — pub/sub notifications; the social feed capability PROVIDEs `social.*` topic events (e.g. `post.media_ready`) for the UI and other capabilities to CONSUME.
-- `core.data.rpc.1` — used for feed sync methods (`post.list`, `post.get`) declared in the `howm.social.feed.1` manifest.
+- `core.data.rpc.1` — used for feed sync methods (`post.list`, `post.get`) declared in the `howm.feed.1` manifest.
 - Social feed post CBOR schema (key allocation for `attachments`; must not collide with existing fields).
 - Daemon capability spawn and proxy mechanism (`PORT`, `DATA_DIR`, `/cap/social-feed/*` routing).
 

@@ -54,7 +54,7 @@ export const ALL_CAPABILITIES = [
   'core.session.latency.1',
   'core.network.endpoint.1',
   'core.session.timesync.1',
-  'howm.social.feed.1',
+  'howm.feed.1',
   'howm.social.messaging.1',
   'howm.social.files.1',
   'howm.world.room.1',

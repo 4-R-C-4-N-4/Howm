@@ -75,7 +75,7 @@ Every peer that has completed a successful invite exchange lands in `howm.defaul
 | `core.session.latency.1` | ✓ Latency measurement |
 | `core.network.endpoint.1` | ✓ Endpoint reflection |
 | `core.session.timesync.1` | ✓ Clock offset estimation |
-| `howm.social.feed.1` | ✗ |
+| `howm.feed.1` | ✗ |
 | `howm.social.messaging.1` | ✗ |
 | `howm.social.files.1` | ✗ |
 | `howm.world.room.1` | ✗ |
@@ -90,7 +90,7 @@ Includes everything in `howm.default`, plus:
 
 | Capability | Access |
 |------------|--------|
-| `howm.social.feed.1` | ✓ |
+| `howm.feed.1` | ✓ |
 | `howm.social.messaging.1` | ✓ |
 | `howm.social.files.1` | ✓ (subject to per-offering access policy in BRD-003) |
 | `howm.world.room.1` | ✓ (subject to room access policy in BRD-004) |
@@ -133,7 +133,7 @@ Built-in groups are created at first run and cannot be deleted. Their `group_id`
 
 ```
 CapabilityRule {
-    capability_name : tstr          -- fully-qualified P2P-CD name, e.g. "howm.social.feed.1"
+    capability_name : tstr          -- fully-qualified P2P-CD name, e.g. "howm.feed.1"
     allow           : bool          -- grant or explicitly deny this capability
     scope_overrides : ScopeOverride?
 }
@@ -288,7 +288,7 @@ Custom group UUIDs are generated as UUIDv4 at creation time and are node-local.
 ## 9. Dependencies
 
 - P2P-CD spec §6 (Trust Gates and Peer Classification), §9 (Auto-Deny and Peer Cache).
-- All capability processes that enforce access control must link against or call the shared permission resolution interface (FR-2.1). This creates a compile-time or runtime dependency on the access system for: `howm.social.feed.1`, `howm.social.messaging.1`, `howm.social.files.1`, `howm.world.room.1`, `core.network.relay.1`, `core.network.peerexchange.1`.
+- All capability processes that enforce access control must link against or call the shared permission resolution interface (FR-2.1). This creates a compile-time or runtime dependency on the access system for: `howm.feed.1`, `howm.social.messaging.1`, `howm.social.files.1`, `howm.world.room.1`, `core.network.relay.1`, `core.network.peerexchange.1`.
 - `rusqlite` with `bundled` feature — `access.db` in WAL mode.
 - Daemon session lifecycle hooks — for deny (FR-5.2), rebroadcast on membership change (FR-5.3), and default group assignment on invite completion (FR-5.1).
 

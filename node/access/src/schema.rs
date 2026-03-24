@@ -77,7 +77,7 @@ pub fn seed_built_in_groups(conn: &Connection) -> rusqlite::Result<()> {
         now,
     )?;
     let friends_caps = &[
-        "howm.social.feed.1",
+        "howm.feed.1",
         "howm.social.messaging.1",
         "howm.social.files.1",
         "howm.world.room.1",

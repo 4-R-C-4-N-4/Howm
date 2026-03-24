@@ -17,8 +17,8 @@
 // use p2pcd::bridge_client::BridgeClient;
 //
 // let client = BridgeClient::new(7000);
-// let peers = client.list_peers(Some("howm.social.feed.1")).await?;
-// client.broadcast_event("howm.social.feed.1", 100, &payload).await?;
+// let peers = client.list_peers(Some("howm.feed.1")).await?;
+// client.broadcast_event("howm.feed.1", 100, &payload).await?;
 // ```
 
 use base64::Engine;

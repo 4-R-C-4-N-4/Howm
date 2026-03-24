@@ -68,7 +68,7 @@ pub struct InboundMessage {
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct CapabilityEndpoint {
-    /// Capability name (e.g. \"howm.social.feed.1\").
+    /// Capability name (e.g. \"howm.feed.1\").
     pub cap_name: String,
     /// Local port the capability is listening on.
     pub port: u16,
