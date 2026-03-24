@@ -444,7 +444,6 @@ mod tests {
     use p2pcd_types::{
         CapabilityDeclaration, CloseReason, DiscoveryManifest, Role, ScopeParams, PROTOCOL_VERSION,
     };
-    use std::collections::HashMap;
 
     fn make_manifest(id: u8, caps: Vec<CapabilityDeclaration>) -> DiscoveryManifest {
         DiscoveryManifest {

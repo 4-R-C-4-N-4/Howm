@@ -1057,7 +1057,6 @@ mod tests {
     use p2pcd::session::{run_initiator_exchange, run_responder_exchange, Session};
     use p2pcd::transport::{connect, P2pcdListener};
     use p2pcd_types::{CapabilityDeclaration, Role, PROTOCOL_VERSION};
-    use std::collections::HashMap;
 
     fn make_manifest(id: u8) -> DiscoveryManifest {
         DiscoveryManifest {

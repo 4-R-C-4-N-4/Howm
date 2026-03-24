@@ -521,7 +521,6 @@ list = []
 
     #[test]
     #[allow(deprecated)]
-    #[allow(deprecated)]
     fn generate_default_round_trip() {
         let data_dir = PathBuf::from("/tmp/howm-test");
         let cfg = PeerConfig::generate_default(&data_dir);

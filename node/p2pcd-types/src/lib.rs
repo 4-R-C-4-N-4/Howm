@@ -612,7 +612,6 @@ where
 /// Deprecated — use the closure-based version above.
 #[deprecated(since = "0.2.0", note = "use closure-based compute_intersection")]
 #[allow(deprecated)]
-#[allow(deprecated)]
 pub fn compute_intersection_legacy(
     local: &DiscoveryManifest,
     remote: &DiscoveryManifest,
