@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use axum::{
-    extract::{Query, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
@@ -96,6 +96,7 @@ pub struct BlobStoreResponse {
 
 /// Request a blob from a remote peer.
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 pub struct BlobRequestRequest {
     /// Base64-encoded 32-byte peer ID.
     pub peer_id: String,
@@ -116,6 +117,7 @@ pub struct BulkBlobStatusRequest {
 
 /// Latency query for a single peer.
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 pub struct LatencyQuery {
     pub peer_id: String,
 }
@@ -836,6 +838,7 @@ fn get_latency_handler(
     engine
         .cap_router()
         .handler_by_name("core.session.latency.1")
+        .cloned()
         .ok_or_else(|| "core.session.latency.1 not registered".to_string())
 }
 
@@ -900,7 +903,12 @@ async fn handle_bulk_latency(State(engine): State<Arc<ProtocolEngine>>) -> impl 
         .unwrap();
 
     // Get all active peers and their latency
-    let active_peers = engine.active_peer_ids().await;
+    let active_peers: Vec<PeerId> = engine
+        .active_sessions()
+        .await
+        .into_iter()
+        .map(|s| s.peer_id)
+        .collect();
     let mut peers = Vec::new();
     for peer_id in &active_peers {
         let avg = latency.average_rtt(peer_id).await;

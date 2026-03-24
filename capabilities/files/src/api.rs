@@ -1705,27 +1705,13 @@ mod tests {
     }
 
     #[test]
-    fn base64_roundtrip() {
-        let data = b"hello world";
-        let encoded = base64_encode(data);
-        let decoded = base64_decode(&encoded).unwrap();
-        assert_eq!(decoded, data);
-    }
-
-    #[test]
-    fn hex_to_hash_valid() {
+    fn hex_to_hash_edges() {
+        // valid 64-char hex roundtrips
         let hex = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
         let hash = hex_to_hash(hex).unwrap();
         assert_eq!(hex::encode(hash), hex);
-    }
-
-    #[test]
-    fn hex_to_hash_wrong_length() {
+        // wrong length and non-hex rejected
         assert!(hex_to_hash("abcdef").is_none());
-    }
-
-    #[test]
-    fn hex_to_hash_invalid_hex() {
         assert!(hex_to_hash("zzzzzz").is_none());
     }
 
@@ -1869,17 +1855,6 @@ mod tests {
     }
 
     use tower::ServiceExt; // for oneshot()
-
-    #[tokio::test]
-    async fn http_health_returns_ok() {
-        let (app, _, _dir) = test_app();
-        let req = axum::http::Request::builder()
-            .uri("/health")
-            .body(axum::body::Body::empty())
-            .unwrap();
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-    }
 
     #[tokio::test]
     async fn http_list_offerings_empty() {

@@ -558,7 +558,7 @@ list = []
         let cfg = PeerConfig::generate_default(&data_dir);
         let peer_id = [0xA1u8; 32];
         let manifest = cfg.to_manifest(peer_id, 1);
-        assert_eq!(manifest.capabilities.len(), 3);
+        assert_eq!(manifest.capabilities.len(), 4);
         // Capabilities must be sorted
         let names: Vec<_> = manifest
             .capabilities

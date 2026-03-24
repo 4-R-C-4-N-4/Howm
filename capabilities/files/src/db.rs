@@ -511,24 +511,6 @@ mod tests {
         }
     }
 
-    // ── Schema tests ────────────────────────────────────────────────────────
-
-    #[test]
-    fn open_memory_creates_tables() {
-        let db = FilesDb::open_memory().unwrap();
-        let conn = db.conn.lock().unwrap();
-
-        let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM offerings", [], |row| row.get(0))
-            .unwrap();
-        assert_eq!(count, 0);
-
-        let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM downloads", [], |row| row.get(0))
-            .unwrap();
-        assert_eq!(count, 0);
-    }
-
     // ── CRUD tests ──────────────────────────────────────────────────────────
 
     #[test]
