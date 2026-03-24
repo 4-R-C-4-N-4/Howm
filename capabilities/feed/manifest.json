@@ -1,8 +1,8 @@
 {
   "name": "feed",
   "version": "0.1.0",
-  "description": "Distributed social feed capability",
-  "binary": "./social-feed",
+  "description": "Distributed feed capability",
+  "binary": "./feed",
   "port": 7001,
   "api": {
     "base_path": "/cap/social",

@@ -1,7 +1,7 @@
-// SQLite storage for social feed posts and attachments.
+// SQLite storage for feed posts and attachments.
 //
 // Replaces the JSON flat-file storage (posts.json, peer_posts.json) with a
-// single SQLite database at $DATA_DIR/social_feed.db. WAL mode for concurrent
+// single SQLite database at $DATA_DIR/feed.db. WAL mode for concurrent
 // reads from SSE/status endpoints while writes happen on the ingest path.
 
 use std::path::Path;
@@ -30,16 +30,16 @@ pub struct BlobTransfer {
 
 // ── Database ─────────────────────────────────────────────────────────────────
 
-/// Thread-safe SQLite handle for social feed storage.
+/// Thread-safe SQLite handle for feed storage.
 #[derive(Clone)]
 pub struct FeedDb {
     conn: Arc<Mutex<Connection>>,
 }
 
 impl FeedDb {
-    /// Open (or create) the social feed database in the given directory.
+    /// Open (or create) the feed database in the given directory.
     pub fn open(data_dir: &Path) -> anyhow::Result<Self> {
-        let db_path = data_dir.join("social_feed.db");
+        let db_path = data_dir.join("feed.db");
         let conn = Connection::open(&db_path)?;
         conn.execute_batch(
             "PRAGMA journal_mode = WAL;

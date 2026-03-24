@@ -20,7 +20,7 @@ mod db;
 mod posts;
 
 #[derive(Parser, Debug)]
-#[command(name = "social-feed", about = "Howm social feed capability")]
+#[command(name = "feed", about = "Howm feed capability")]
 struct Config {
     #[arg(long, default_value = "7001", env = "PORT")]
     port: u16,
@@ -100,7 +100,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/blob/:hash", get(api::serve_blob))
         // Utility
         .route("/health", get(api::health))
-        .route("/peers", get(api::list_social_peers))
+        .route("/peers", get(api::list_peers))
         // P2P-CD daemon callbacks
         .route("/p2pcd/peer-active", post(api::p2pcd_peer_active))
         .route("/p2pcd/peer-inactive", post(api::p2pcd_peer_inactive))

@@ -1,10 +1,10 @@
 [package]
-name = "social-feed"
+name = "feed"
 version = "0.1.0"
 edition = "2021"
 
 [[bin]]
-name = "social-feed"
+name = "feed"
 path = "src/main.rs"
 
 [dependencies]

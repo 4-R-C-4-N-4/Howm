@@ -20,10 +20,10 @@ use crate::db::FeedDb;
 use crate::posts;
 use crate::posts::MediaLimits;
 
-/// P2P-CD social capability name as declared in p2pcd-peer.toml.
-pub const SOCIAL_CAP: &str = "howm.feed.1";
+/// P2P-CD feed capability name as declared in p2pcd-peer.toml.
+pub const FEED_CAP: &str = "howm.feed.1";
 
-/// Message type for social feed post broadcasts (application-level, 100+).
+/// Message type for feed post broadcasts (application-level, 100+).
 pub const MSG_TYPE_POST_BROADCAST: u64 = 100;
 
 // ── State ─────────────────────────────────────────────────────────────────────
@@ -43,7 +43,7 @@ impl FeedState {
         Self {
             data_dir,
             db,
-            runtime: CapabilityRuntime::new(SOCIAL_CAP, daemon_port),
+            runtime: CapabilityRuntime::new(FEED_CAP, daemon_port),
             limits: MediaLimits::default(),
         }
     }
@@ -398,7 +398,7 @@ async fn create_and_broadcast(
         post.attachments.len()
     );
 
-    // Broadcast the new post to all social peers via the bridge
+    // Broadcast the new post to all feed peers via the bridge
     let runtime = state.runtime.clone();
     let post_id = post.id.clone();
     let post_json = serde_json::to_vec(&post).unwrap_or_default();
@@ -463,7 +463,7 @@ pub async fn health() -> Json<Value> {
 // These use the SDK's PeerTracker for lifecycle management.
 // The daemon POSTs to these when peers come and go.
 
-/// Called by the daemon when a peer negotiates our social capability.
+/// Called by the daemon when a peer negotiates our feed capability.
 pub async fn p2pcd_peer_active(
     State(state): State<FeedState>,
     Json(body): Json<PeerActivePayload>,
@@ -471,7 +471,7 @@ pub async fn p2pcd_peer_active(
     let peer_id_short = body.peer_id[..8.min(body.peer_id.len())].to_string();
     let was_new = state.peers().on_peer_active(body).await;
     if was_new {
-        info!("p2pcd: new social peer {}", peer_id_short);
+        info!("p2pcd: new feed peer {}", peer_id_short);
     }
     StatusCode::OK
 }
@@ -481,7 +481,7 @@ pub async fn p2pcd_peer_inactive(
     State(state): State<FeedState>,
     Json(body): Json<PeerInactivePayload>,
 ) -> StatusCode {
-    if body.capability != SOCIAL_CAP {
+    if body.capability != FEED_CAP {
         return StatusCode::OK;
     }
     info!(
@@ -564,15 +564,15 @@ pub async fn p2pcd_inbound(
             tracing::debug!(
                 "inbound: unknown message type {} for {}",
                 body.message_type,
-                SOCIAL_CAP
+                FEED_CAP
             );
             Ok(StatusCode::OK)
         }
     }
 }
 
-/// List current active social peers (read by the feed UI / aggregation logic).
-pub async fn list_social_peers(State(state): State<FeedState>) -> Json<Value> {
+/// List current active feed peers (read by the feed UI / aggregation logic).
+pub async fn list_peers(State(state): State<FeedState>) -> Json<Value> {
     let peers: Vec<ActivePeer> = state.peers().peers().await;
     Json(json!({ "peers": peers }))
 }
