@@ -11,6 +11,7 @@
 // This replaces the old direct-IPC approach where social-feed opened its own
 // TCP connections. Now all wire traffic goes through the engine's session mux.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -22,12 +23,134 @@ use axum::{
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
+use tokio::sync::RwLock;
 
 use p2pcd_types::{PeerId, ProtocolMessage};
 
 use p2pcd::blob_store::BlobStore;
+use p2pcd::capabilities::blob::{TransferEvent, TransferStatus};
 
 use super::engine::ProtocolEngine;
+
+// ── Transfer callback registry ──────────────────────────────────────────────
+
+/// Tracks callback URLs for pending blob transfers.
+/// When a capability calls blob/request with a callback_url, the bridge
+/// stores it here. The transfer watcher task fires the callback when done.
+#[derive(Default)]
+pub struct TransferCallbackRegistry {
+    /// transfer_id → callback_url
+    callbacks: RwLock<HashMap<u64, String>>,
+}
+
+impl TransferCallbackRegistry {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self {
+            callbacks: RwLock::new(HashMap::new()),
+        })
+    }
+
+    /// Register a callback for a transfer.
+    pub async fn register(&self, transfer_id: u64, callback_url: String) {
+        self.callbacks
+            .write()
+            .await
+            .insert(transfer_id, callback_url);
+    }
+
+    /// Remove and return the callback for a transfer (consumes it).
+    pub async fn take(&self, transfer_id: u64) -> Option<String> {
+        self.callbacks.write().await.remove(&transfer_id)
+    }
+}
+
+/// Spawn the background task that watches for blob transfer completion events
+/// and fires HTTP callbacks to capabilities that registered them.
+pub fn spawn_transfer_watcher(
+    engine: &Arc<ProtocolEngine>,
+    registry: Arc<TransferCallbackRegistry>,
+) {
+    let handler = engine
+        .cap_router()
+        .handler_by_name("core.data.blob.1")
+        .and_then(|h| {
+            h.as_any()
+                .downcast_ref::<p2pcd::capabilities::blob::BlobHandler>()
+        });
+
+    let Some(blob_handler) = handler else {
+        tracing::warn!("bridge: BlobHandler not found, transfer watcher not started");
+        return;
+    };
+
+    let mut rx = blob_handler.subscribe_transfer_events();
+
+    tokio::spawn(async move {
+        loop {
+            match rx.recv().await {
+                Ok(event) => {
+                    if let Some(url) = registry.take(event.transfer_id).await {
+                        tokio::spawn(fire_transfer_callback(url, event));
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    tracing::warn!("bridge: transfer watcher lagged, missed {} events", n);
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    tracing::debug!("bridge: transfer event channel closed, watcher exiting");
+                    break;
+                }
+            }
+        }
+    });
+}
+
+/// Fire-and-forget HTTP POST to the capability's transfer-complete callback.
+async fn fire_transfer_callback(url: String, event: TransferEvent) {
+    let status_str = match event.status {
+        TransferStatus::Complete => "complete",
+        TransferStatus::Failed => "failed",
+    };
+    let body = serde_json::json!({
+        "blob_id": hex::encode(event.blob_hash),
+        "transfer_id": event.transfer_id,
+        "status": status_str,
+        "size": event.size,
+        "error": event.error,
+    });
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap_or_default();
+
+    match client.post(&url).json(&body).send().await {
+        Ok(resp) if resp.status().is_success() => {
+            tracing::debug!(
+                "bridge: transfer callback {} → {} (transfer {})",
+                url,
+                resp.status(),
+                event.transfer_id,
+            );
+        }
+        Ok(resp) => {
+            tracing::warn!(
+                "bridge: transfer callback {} returned {} (transfer {})",
+                url,
+                resp.status(),
+                event.transfer_id,
+            );
+        }
+        Err(e) => {
+            tracing::warn!(
+                "bridge: transfer callback {} failed: {} (transfer {})",
+                url,
+                e,
+                event.transfer_id,
+            );
+        }
+    }
+}
 
 /// Monotonic counter for bridge-generated RPC request IDs.
 static RPC_REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1_000_000);
@@ -96,7 +219,6 @@ pub struct BlobStoreResponse {
 
 /// Request a blob from a remote peer.
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
 pub struct BlobRequestRequest {
     /// Base64-encoded 32-byte peer ID.
     pub peer_id: String,
@@ -105,6 +227,7 @@ pub struct BlobRequestRequest {
     /// Transfer ID.
     pub transfer_id: u64,
     /// Optional callback URL for transfer-complete notification.
+    /// If set, the bridge will POST to this URL when the transfer finishes.
     #[serde(default)]
     pub callback_url: Option<String>,
 }
@@ -220,7 +343,21 @@ fn encode_b64(data: &[u8]) -> String {
 
 // ── Axum routes ─────────────────────────────────────────────────────────────
 
-pub fn bridge_routes(engine: Arc<ProtocolEngine>) -> Router {
+/// Shared state for bridge route handlers.
+#[derive(Clone)]
+pub struct BridgeState {
+    pub engine: Arc<ProtocolEngine>,
+    pub callback_registry: Arc<TransferCallbackRegistry>,
+}
+
+pub fn bridge_routes(
+    engine: Arc<ProtocolEngine>,
+    callback_registry: Arc<TransferCallbackRegistry>,
+) -> Router {
+    let state = BridgeState {
+        engine,
+        callback_registry,
+    };
     Router::new()
         .route("/send", post(handle_send))
         .route("/rpc", post(handle_rpc))
@@ -236,12 +373,12 @@ pub fn bridge_routes(engine: Arc<ProtocolEngine>) -> Router {
         // Latency endpoints
         .route("/latency", get(handle_bulk_latency))
         .route("/latency/{peer_id}", get(handle_peer_latency))
-        .with_state(engine)
+        .with_state(state)
 }
 
 /// POST /p2pcd/bridge/send — send a raw CapabilityMsg to a specific peer.
 async fn handle_send(
-    State(engine): State<Arc<ProtocolEngine>>,
+    State(BridgeState { engine, .. }): State<BridgeState>,
     Json(req): Json<SendRequest>,
 ) -> impl IntoResponse {
     let peer_id = match decode_peer_id(&req.peer_id) {
@@ -299,7 +436,7 @@ async fn handle_send(
 /// and waits for the matching RPC_RESP (msg type 23) via a oneshot channel
 /// registered with the RPC handler.
 async fn handle_rpc(
-    State(engine): State<Arc<ProtocolEngine>>,
+    State(BridgeState { engine, .. }): State<BridgeState>,
     Json(req): Json<RpcRequest>,
 ) -> impl IntoResponse {
     let peer_id = match decode_peer_id(&req.peer_id) {
@@ -422,7 +559,7 @@ async fn handle_rpc(
 
 /// POST /p2pcd/bridge/event — broadcast an event to peers with a given capability.
 async fn handle_event(
-    State(engine): State<Arc<ProtocolEngine>>,
+    State(BridgeState { engine, .. }): State<BridgeState>,
     Json(req): Json<EventRequest>,
 ) -> impl IntoResponse {
     let payload = match decode_payload(&req.payload) {
@@ -465,7 +602,7 @@ async fn handle_event(
 
 /// GET /p2pcd/bridge/peers — list active peers, optionally filtered by capability.
 async fn handle_peers(
-    State(engine): State<Arc<ProtocolEngine>>,
+    State(BridgeState { engine, .. }): State<BridgeState>,
     Query(query): Query<PeersQuery>,
 ) -> impl IntoResponse {
     let sessions = engine.active_sessions().await;
@@ -518,7 +655,7 @@ fn get_blob_store(engine: &ProtocolEngine) -> Result<std::sync::Arc<BlobStore>, 
 
 /// POST /p2pcd/bridge/blob/store — store a blob by hash.
 async fn handle_blob_store(
-    State(engine): State<Arc<ProtocolEngine>>,
+    State(BridgeState { engine, .. }): State<BridgeState>,
     Json(req): Json<BlobStoreRequest>,
 ) -> impl IntoResponse {
     let hash = match decode_hex_hash(&req.hash) {
@@ -597,7 +734,10 @@ async fn handle_blob_store(
 
 /// POST /p2pcd/bridge/blob/request — request a blob from a remote peer.
 async fn handle_blob_request(
-    State(engine): State<Arc<ProtocolEngine>>,
+    State(BridgeState {
+        engine,
+        callback_registry,
+    }): State<BridgeState>,
     Json(req): Json<BlobRequestRequest>,
 ) -> impl IntoResponse {
     let peer_id = match decode_peer_id(&req.peer_id) {
@@ -625,6 +765,11 @@ async fn handle_blob_request(
             )
         }
     };
+
+    // Register callback if provided
+    if let Some(url) = req.callback_url {
+        callback_registry.register(req.transfer_id, url).await;
+    }
 
     // Build BLOB_REQ message: { 1: transfer_id, 2: blob_hash }
     use p2pcd::cbor_helpers::{cbor_encode_map, make_capability_msg};
@@ -660,7 +805,7 @@ async fn handle_blob_request(
 
 /// GET /p2pcd/bridge/blob/status — check if a blob exists locally.
 async fn handle_blob_status(
-    State(engine): State<Arc<ProtocolEngine>>,
+    State(BridgeState { engine, .. }): State<BridgeState>,
     Query(query): Query<BlobStatusQuery>,
 ) -> impl IntoResponse {
     let hash = match decode_hex_hash(&query.hash) {
@@ -708,7 +853,7 @@ async fn handle_blob_status(
 
 /// GET /p2pcd/bridge/blob/data — read blob data.
 async fn handle_blob_data(
-    State(engine): State<Arc<ProtocolEngine>>,
+    State(BridgeState { engine, .. }): State<BridgeState>,
     Query(query): Query<BlobDataQuery>,
 ) -> axum::response::Response {
     use axum::http::header;
@@ -759,7 +904,7 @@ async fn handle_blob_data(
 
 /// POST /p2pcd/bridge/blob/status/bulk — check multiple blobs at once.
 async fn handle_bulk_blob_status(
-    State(engine): State<Arc<ProtocolEngine>>,
+    State(BridgeState { engine, .. }): State<BridgeState>,
     Json(req): Json<BulkBlobStatusRequest>,
 ) -> impl IntoResponse {
     let store = match get_blob_store(&engine) {
@@ -796,7 +941,7 @@ async fn handle_bulk_blob_status(
 
 /// DELETE /p2pcd/bridge/blob/{hash} — delete a blob from the store.
 async fn handle_blob_delete(
-    State(engine): State<Arc<ProtocolEngine>>,
+    State(BridgeState { engine, .. }): State<BridgeState>,
     Path(hash_hex): Path<String>,
 ) -> impl IntoResponse {
     let hash = match decode_hex_hash(&hash_hex) {
@@ -844,7 +989,7 @@ fn get_latency_handler(
 
 /// GET /p2pcd/bridge/latency/{peer_id} — RTT data for a single peer.
 async fn handle_peer_latency(
-    State(engine): State<Arc<ProtocolEngine>>,
+    State(BridgeState { engine, .. }): State<BridgeState>,
     Path(peer_id_b64): Path<String>,
 ) -> impl IntoResponse {
     let peer_id = match decode_peer_id(&peer_id_b64) {
@@ -886,7 +1031,9 @@ async fn handle_peer_latency(
 }
 
 /// GET /p2pcd/bridge/latency — RTT data for all active peers.
-async fn handle_bulk_latency(State(engine): State<Arc<ProtocolEngine>>) -> impl IntoResponse {
+async fn handle_bulk_latency(
+    State(BridgeState { engine, .. }): State<BridgeState>,
+) -> impl IntoResponse {
     let handler = match get_latency_handler(&engine) {
         Ok(h) => h,
         Err(e) => {
@@ -950,5 +1097,36 @@ mod tests {
         let b64 = encode_b64(&data);
         let decoded = decode_payload(&b64).unwrap();
         assert_eq!(decoded, data);
+    }
+
+    #[tokio::test]
+    async fn callback_registry_register_and_take() {
+        let reg = TransferCallbackRegistry::new();
+        reg.register(
+            42,
+            "http://localhost:7003/internal/transfer-complete".to_string(),
+        )
+        .await;
+        reg.register(43, "http://localhost:7003/other-callback".to_string())
+            .await;
+
+        // take returns and removes
+        let url = reg.take(42).await;
+        assert_eq!(
+            url,
+            Some("http://localhost:7003/internal/transfer-complete".to_string())
+        );
+
+        // second take returns None (consumed)
+        assert!(reg.take(42).await.is_none());
+
+        // other entry still there
+        assert!(reg.take(43).await.is_some());
+    }
+
+    #[tokio::test]
+    async fn callback_registry_take_missing() {
+        let reg = TransferCallbackRegistry::new();
+        assert!(reg.take(999).await.is_none());
     }
 }

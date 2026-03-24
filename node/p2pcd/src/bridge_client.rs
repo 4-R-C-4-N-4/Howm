@@ -248,16 +248,32 @@ impl BridgeClient {
     }
 
     /// Request a blob from a remote peer via the daemon.
+    ///
+    /// If `callback_url` is provided, the daemon will POST a transfer-complete
+    /// notification to that URL when the transfer finishes (or fails).
     pub async fn blob_request(
         &self,
         peer_id: &[u8; 32],
         hash: &[u8; 32],
         transfer_id: u64,
     ) -> Result<(), BridgeError> {
+        self.blob_request_with_callback(peer_id, hash, transfer_id, None)
+            .await
+    }
+
+    /// Request a blob from a remote peer, with an optional completion callback.
+    pub async fn blob_request_with_callback(
+        &self,
+        peer_id: &[u8; 32],
+        hash: &[u8; 32],
+        transfer_id: u64,
+        callback_url: Option<String>,
+    ) -> Result<(), BridgeError> {
         let body = BlobRequestRequest {
             peer_id: encode_b64(peer_id),
             hash: hex::encode(hash),
             transfer_id,
+            callback_url,
         };
 
         let resp = self
@@ -431,6 +447,8 @@ struct BlobRequestRequest {
     peer_id: String,
     hash: String,
     transfer_id: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    callback_url: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

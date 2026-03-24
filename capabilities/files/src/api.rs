@@ -69,8 +69,7 @@ impl AppState {
         }
     }
 
-    /// Build the callback URL for transfer-complete notifications (used in FEAT-003-E).
-    #[allow(dead_code)]
+    /// Build the callback URL for transfer-complete notifications.
     pub fn callback_url(&self) -> String {
         format!(
             "http://127.0.0.1:{}/internal/transfer-complete",
@@ -1105,10 +1104,11 @@ pub async fn initiate_download(
         .as_secs() as i64;
     let transfer_id = now;
 
-    // Call bridge to start the P2P transfer
+    // Call bridge to start the P2P transfer, with callback for completion notification
+    let callback = Some(state.callback_url());
     state
         .bridge
-        .blob_request(&peer_id_bytes, &hash, transfer_id as u64)
+        .blob_request_with_callback(&peer_id_bytes, &hash, transfer_id as u64, callback)
         .await
         .map_err(|e| {
             (
