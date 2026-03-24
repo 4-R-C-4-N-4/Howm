@@ -1,6 +1,6 @@
 import { useParams, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   getConversation,
   sendMessage,
@@ -60,7 +60,10 @@ export function ConversationView() {
 
   const peerName = peers.find(p => p.wg_pubkey === decodedPeerId)?.name
     ?? decodedPeerId.slice(0, 12) + '…';
-  const peerOnline = peers.some(p => p.wg_pubkey === decodedPeerId && Date.now() - p.last_seen * 1000 < 120_000);
+  const peerOnline = useMemo(
+    () => peers.some(p => p.wg_pubkey === decodedPeerId && Date.now() - p.last_seen * 1000 < 120_000),
+    [peers, decodedPeerId],
+  );
 
   // Mark as read on open
   useEffect(() => {
