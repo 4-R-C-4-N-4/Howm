@@ -76,6 +76,7 @@ async fn main() -> anyhow::Result<()> {
         )
         // Embedded UI
         .route("/ui", get(serve_ui_index))
+        .route("/ui/", get(serve_ui_index))
         .route("/ui/{*path}", get(serve_ui_asset))
         // Health
         .route("/health", get(api::health))
