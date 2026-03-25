@@ -35,6 +35,11 @@ async fn main() -> anyhow::Result<()> {
     // Set up logging: file-based with optional stdout in debug mode
     let log_dir = config.data_dir.join("logs");
     std::fs::create_dir_all(&log_dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&log_dir, std::fs::Permissions::from_mode(0o700));
+    }
     let file_appender = tracing_appender::rolling::daily(&log_dir, "howm.log");
     let env_filter = EnvFilter::from_default_env().add_directive("info".parse()?);
 
@@ -154,7 +159,10 @@ async fn main() -> anyhow::Result<()> {
 
     // Generate or load API bearer token (S2)
     let api_token = api::auth_layer::load_or_create_token(&config.data_dir)?;
-    info!("API bearer token: {}", api_token);
+    info!(
+        "API bearer token loaded ({}…)",
+        &api_token[..8.min(api_token.len())]
+    );
 
     // Initialise access control database (group-based permissions)
     let access_db = {

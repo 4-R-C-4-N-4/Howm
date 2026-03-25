@@ -87,7 +87,7 @@ async fn main() -> anyhow::Result<()> {
         .with_state(state)
         .layer(DefaultBodyLimit::max(1_048_576)); // 1 MB for text messages
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
+    let addr = SocketAddr::from(([127, 0, 0, 1], config.port));
     info!("Messaging capability listening on {}", addr);
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;

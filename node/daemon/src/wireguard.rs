@@ -324,10 +324,21 @@ pub async fn add_peer(data_dir: &Path, peer: &WgPeerConfig) -> anyhow::Result<()
     // Persist peer config to disk
     let peers_dir = data_dir.join("wireguard").join("peers");
     std::fs::create_dir_all(&peers_dir)?;
+    // Restrict peers dir — contains PSKs
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&peers_dir, std::fs::Permissions::from_mode(0o700));
+    }
     let peer_file = peers_dir.join(format!("{}.json", peer.node_id));
     let tmp = peers_dir.join(format!("{}.json.tmp", peer.node_id));
     std::fs::write(&tmp, serde_json::to_string_pretty(peer)?)?;
     std::fs::rename(&tmp, &peer_file)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&peer_file, std::fs::Permissions::from_mode(0o600));
+    }
 
     info!(
         "Added WG peer: {} ({})",
