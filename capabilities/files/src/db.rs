@@ -356,7 +356,12 @@ PRAGMA journal_mode = WAL;
          PRAGMA busy_timeout = 5000;
          PRAGMA foreign_keys = ON;
 
-        CREATE TABLE IF NOT EXISTS offerings (
+         CREATE TABLE IF NOT EXISTS schema_version (
+            version INTEGER NOT NULL
+         );
+         INSERT OR IGNORE INTO schema_version (rowid, version) VALUES (1, 1);
+
+         CREATE TABLE IF NOT EXISTS offerings (
             offering_id TEXT PRIMARY KEY,
             blob_id     TEXT NOT NULL,
             name        TEXT NOT NULL UNIQUE,

@@ -102,6 +102,26 @@ struct DmEnvelope {
     body: String,
 }
 
+/// Test helper: expose encode for unit tests.
+#[cfg(test)]
+pub fn encode_dm_envelope_for_test(
+    msg_id: &[u8; 16],
+    sender: &[u8],
+    sent_at: u64,
+    body: &str,
+) -> Vec<u8> {
+    encode_dm_envelope(msg_id, sender, sent_at, body)
+}
+
+/// Test helper: expose decode for unit tests.
+#[cfg(test)]
+pub fn decode_dm_envelope_for_test(
+    data: &[u8],
+) -> Result<([u8; 16], Vec<u8>, u64, String), String> {
+    let env = decode_dm_envelope(data)?;
+    Ok((env.msg_id, env.sender_peer_id, env.sent_at, env.body))
+}
+
 fn decode_dm_envelope(data: &[u8]) -> Result<DmEnvelope, String> {
     use ciborium::value::Value;
     let value: Value =
@@ -173,8 +193,7 @@ pub struct SendRequest {
     pub body: String,
 }
 
-#[derive(Debug, Serialize)]
-#[derive(Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct PaginationParams {
     pub cursor: Option<i64>,
     #[serde(default = "default_limit")]

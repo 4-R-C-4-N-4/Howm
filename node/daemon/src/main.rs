@@ -285,6 +285,71 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    // Background: capability health check loop (every 30s)
+    {
+        let health_state = state.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+            interval.tick().await; // skip first immediate tick
+            loop {
+                interval.tick().await;
+                let mut caps = health_state.capabilities.write().await;
+                let mut any_changed = false;
+                for cap in caps.iter_mut() {
+                    if !matches!(cap.status, capabilities::CapStatus::Running) {
+                        continue;
+                    }
+                    let alive = cap.pid.map(executor::check_health).unwrap_or(false);
+                    if !alive {
+                        tracing::warn!(
+                            "Capability '{}' (pid={:?}) crashed — restarting",
+                            cap.name,
+                            cap.pid
+                        );
+                        let data_dir = &cap.data_dir;
+                        match executor::start_capability(
+                            &cap.binary_path,
+                            &cap.name,
+                            cap.port,
+                            data_dir,
+                            std::collections::HashMap::new(),
+                        )
+                        .await
+                        {
+                            Ok(new_pid) => {
+                                tracing::info!(
+                                    "Capability '{}' restarted (pid={})",
+                                    cap.name,
+                                    new_pid
+                                );
+                                cap.pid = Some(new_pid);
+                            }
+                            Err(e) => {
+                                tracing::error!(
+                                    "Failed to restart capability '{}': {}",
+                                    cap.name,
+                                    e
+                                );
+                                cap.status = capabilities::CapStatus::Error(format!(
+                                    "restart failed: {}",
+                                    e
+                                ));
+                                cap.pid = None;
+                            }
+                        }
+                        any_changed = true;
+                    }
+                }
+                if any_changed {
+                    let caps_clone = caps.clone();
+                    drop(caps);
+                    let _ = capabilities::save(&health_state.config.data_dir, &caps_clone);
+                }
+            }
+        });
+        info!("Capability health check loop started (30s interval)");
+    }
+
     // Start HTTP server with graceful shutdown
     let addr: SocketAddr = format!("0.0.0.0:{}", config.port).parse()?;
     info!("Starting Howm daemon on {}", addr);

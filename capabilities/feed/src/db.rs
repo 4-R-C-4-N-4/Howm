@@ -66,7 +66,12 @@ impl FeedDb {
 
     fn migrate(conn: &Connection) -> anyhow::Result<()> {
         conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS posts (
+            "CREATE TABLE IF NOT EXISTS schema_version (
+                version INTEGER NOT NULL
+            );
+            INSERT OR IGNORE INTO schema_version (rowid, version) VALUES (1, 1);
+
+            CREATE TABLE IF NOT EXISTS posts (
                 id            TEXT PRIMARY KEY,
                 author_id     TEXT NOT NULL,
                 author_name   TEXT NOT NULL,

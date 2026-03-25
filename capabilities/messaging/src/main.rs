@@ -1,9 +1,12 @@
 use axum::{
-    extract::DefaultBodyLimit,
+    extract::{DefaultBodyLimit, Path as AxumPath},
+    http::StatusCode,
+    response::{Html, IntoResponse, Response},
     routing::{delete, get, post},
     Router,
 };
 use clap::Parser;
+use include_dir::{include_dir, Dir};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use tracing::info;
@@ -11,6 +14,8 @@ use tracing_subscriber::EnvFilter;
 
 mod api;
 mod db;
+
+static UI_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/ui");
 
 #[derive(Parser, Debug)]
 #[command(name = "messaging", about = "Howm peer messaging capability")]
@@ -58,6 +63,9 @@ async fn main() -> anyhow::Result<()> {
             "/conversations/{peer_id}/messages/{msg_id}",
             delete(api::delete_message),
         )
+        // Embedded UI
+        .route("/ui", get(serve_ui_index))
+        .route("/ui/{*path}", get(serve_ui_asset))
         // Health
         .route("/health", get(api::health))
         // P2P-CD lifecycle hooks (called by daemon cap_notify)
@@ -72,4 +80,32 @@ async fn main() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+async fn serve_ui_index() -> impl IntoResponse {
+    match UI_DIR.get_file("index.html") {
+        Some(f) => Html(f.contents_utf8().unwrap_or("")).into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+async fn serve_ui_asset(AxumPath(path): AxumPath<String>) -> impl IntoResponse {
+    let rel = path.strip_prefix("/ui").unwrap_or(&path);
+    let rel = rel.strip_prefix('/').unwrap_or(rel);
+    match UI_DIR.get_file(rel) {
+        Some(f) => {
+            let mime = if rel.ends_with(".js") {
+                "application/javascript"
+            } else if rel.ends_with(".css") {
+                "text/css"
+            } else {
+                "application/octet-stream"
+            };
+            Response::builder()
+                .header("content-type", mime)
+                .body(axum::body::Body::from(f.contents().to_vec()))
+                .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+        }
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
 }
