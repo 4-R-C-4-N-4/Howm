@@ -157,11 +157,6 @@ if [[ -n "$STALE_PID" ]]; then
     sleep 0.5
 fi
 
-# Clear cached capability state so the daemon starts fresh and the install
-# loop below re-reads every manifest.json (picking up entry/style/port changes).
-EFFECTIVE_DATA_DIR_PRE="${DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/howm}"
-rm -f "$EFFECTIVE_DATA_DIR_PRE/capabilities.json"
-
 info "Starting howm on port $PORT..."
 cd "$ROOT_DIR"
 "$HOWM_BIN" "${DAEMON_ARGS[@]}" &
@@ -242,31 +237,27 @@ if [[ -d "$CAP_DIR" ]] && [[ -n "$API_TOKEN" ]]; then
         fi
 
         # Install via the daemon API.
-        # Always uninstall first if already present — this ensures manifest
-        # changes (UI entry, port, visibility, etc.) are picked up fresh.
-        INSTALL_RESP=$(curl -sf -X POST "http://localhost:$PORT/capabilities/install" \
-            -H "Authorization: Bearer $API_TOKEN" \
-            -H "Content-Type: application/json" \
-            -d "{\"path\": \"$cap_root\"}" 2>&1) || true
-        if echo "$INSTALL_RESP" | grep -q '"capability"'; then
-            success "Capability '$cap_name' installed"
-        elif echo "$INSTALL_RESP" | grep -q 'already installed'; then
-            # Uninstall then reinstall to pick up any manifest changes
-            info "Capability '$cap_name' already installed — reinstalling..."
-            curl -sf -X DELETE "http://localhost:$PORT/capabilities/$cap_api_name" \
-                -H "Authorization: Bearer $API_TOKEN" &>/dev/null || true
-            sleep 0.5
-            REINSTALL_RESP=$(curl -sf -X POST "http://localhost:$PORT/capabilities/install" \
+        # Always uninstall first to pick up manifest/binary changes cleanly.
+        curl -sf -X DELETE "http://localhost:$PORT/capabilities/$cap_api_name" \
+            -H "Authorization: Bearer $API_TOKEN" &>/dev/null || true
+        sleep 0.3
+
+        # Install with retry (the daemon may still be cleaning up the old process)
+        INSTALLED=0
+        for attempt in 1 2 3; do
+            INSTALL_RESP=$(curl -s -X POST "http://localhost:$PORT/capabilities/install" \
                 -H "Authorization: Bearer $API_TOKEN" \
                 -H "Content-Type: application/json" \
                 -d "{\"path\": \"$cap_root\"}" 2>&1) || true
-            if echo "$REINSTALL_RESP" | grep -q '"capability"'; then
-                success "Capability '$cap_name' reinstalled"
-            else
-                warn "Capability '$cap_name' reinstall: $REINSTALL_RESP"
+            if echo "$INSTALL_RESP" | grep -q '"capability"'; then
+                success "Capability '$cap_name' installed"
+                INSTALLED=1
+                break
             fi
-        else
-            warn "Capability '$cap_name' install: $INSTALL_RESP"
+            [[ $attempt -lt 3 ]] && sleep 1
+        done
+        if [[ $INSTALLED -eq 0 ]]; then
+            warn "Capability '$cap_name' install failed after 3 attempts: $INSTALL_RESP"
         fi
     done
 fi
