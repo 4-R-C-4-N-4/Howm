@@ -11,11 +11,12 @@ pub fn create_tables(conn: &Connection) -> rusqlite::Result<()> {
         PRAGMA foreign_keys = ON;
 
         CREATE TABLE IF NOT EXISTS groups (
-            group_id    TEXT PRIMARY KEY,
-            name        TEXT NOT NULL,
-            built_in    INTEGER NOT NULL DEFAULT 0,
-            created_at  INTEGER NOT NULL,
-            description TEXT
+            group_id        TEXT PRIMARY KEY,
+            name            TEXT NOT NULL,
+            built_in        INTEGER NOT NULL DEFAULT 0,
+            created_at      INTEGER NOT NULL,
+            description     TEXT,
+            parent_group_id TEXT REFERENCES groups(group_id) ON DELETE SET NULL
         );
 
         CREATE TABLE IF NOT EXISTS capability_rules (
@@ -51,13 +52,14 @@ pub fn seed_built_in_groups(conn: &Connection) -> rusqlite::Result<()> {
         .unwrap()
         .as_secs();
 
-    // ── howm.default ─────────────────────────────────────────────────────
+    // ── howm.default (no parent — base tier) ─────────────────────────────
     upsert_group(
         conn,
         &GROUP_DEFAULT.to_string(),
         "howm.default",
         "Session health + endpoint reflection only",
         now,
+        None,
     )?;
     let default_caps = &[
         "core.session.heartbeat.1",
@@ -68,22 +70,17 @@ pub fn seed_built_in_groups(conn: &Connection) -> rusqlite::Result<()> {
     ];
     seed_capability_rules(conn, &GROUP_DEFAULT.to_string(), default_caps)?;
 
-    // ── howm.friends (inherits default + social capabilities) ───────────
+    // ── howm.friends (inherits default) ─────────────────────────────────
     upsert_group(
         conn,
         &GROUP_FRIENDS.to_string(),
         "howm.friends",
-        "Default capabilities + social, room access, and peer exchange",
+        "Inherits default + social, room access, and peer exchange",
         now,
+        Some(&GROUP_DEFAULT.to_string()),
     )?;
+    // Only capabilities added at this tier (default caps inherited via parent)
     let friends_caps = &[
-        // inherited from default
-        "core.session.heartbeat.1",
-        "core.session.attest.1",
-        "core.session.latency.1",
-        "core.network.endpoint.1",
-        "core.session.timesync.1",
-        // friends tier
         "howm.social.feed.1",
         "howm.social.messaging.1",
         "howm.social.files.1",
@@ -92,30 +89,17 @@ pub fn seed_built_in_groups(conn: &Connection) -> rusqlite::Result<()> {
     ];
     seed_capability_rules(conn, &GROUP_FRIENDS.to_string(), friends_caps)?;
 
-    // ── howm.trusted (inherits all — default + friends + relay) ────────
+    // ── howm.trusted (inherits friends → default) ───────────────────────
     upsert_group(
         conn,
         &GROUP_TRUSTED.to_string(),
         "howm.trusted",
-        "Full application access — all capabilities including relay",
+        "Full access — inherits friends + relay",
         now,
+        Some(&GROUP_FRIENDS.to_string()),
     )?;
-    let trusted_caps = &[
-        // inherited from default
-        "core.session.heartbeat.1",
-        "core.session.attest.1",
-        "core.session.latency.1",
-        "core.network.endpoint.1",
-        "core.session.timesync.1",
-        // inherited from friends
-        "howm.social.feed.1",
-        "howm.social.messaging.1",
-        "howm.social.files.1",
-        "howm.world.room.1",
-        "core.network.peerexchange.1",
-        // trusted tier
-        "core.network.relay.1",
-    ];
+    // Only capabilities added at this tier (friends + default inherited)
+    let trusted_caps = &["core.network.relay.1"];
     seed_capability_rules(conn, &GROUP_TRUSTED.to_string(), trusted_caps)?;
 
     Ok(())
@@ -127,12 +111,20 @@ fn upsert_group(
     name: &str,
     description: &str,
     now: u64,
+    parent_group_id: Option<&str>,
 ) -> rusqlite::Result<()> {
     conn.execute(
-        "INSERT OR IGNORE INTO groups (group_id, name, built_in, created_at, description)
-         VALUES (?1, ?2, 1, ?3, ?4)",
-        rusqlite::params![group_id, name, now, description],
+        "INSERT OR IGNORE INTO groups (group_id, name, built_in, created_at, description, parent_group_id)
+         VALUES (?1, ?2, 1, ?3, ?4, ?5)",
+        rusqlite::params![group_id, name, now, description, parent_group_id],
     )?;
+    // Update parent if group already existed (migration path)
+    if let Some(pid) = parent_group_id {
+        conn.execute(
+            "UPDATE groups SET parent_group_id = ?1 WHERE group_id = ?2 AND parent_group_id IS NULL",
+            rusqlite::params![pid, group_id],
+        )?;
+    }
     Ok(())
 }
 

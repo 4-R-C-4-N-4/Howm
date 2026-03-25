@@ -22,6 +22,12 @@
   "permissions": {
     "visibility": "social"
   },
+  "ui": {
+    "label": "Files",
+    "icon": "folder",
+    "entry": "/ui/",
+    "style": "iframe"
+  },
   "resources": {
     "cpu": "low",
     "memory": "128MB"

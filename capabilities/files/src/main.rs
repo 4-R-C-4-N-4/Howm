@@ -1,12 +1,18 @@
 use axum::{
+    body::Body,
+    http::{header, Request, StatusCode},
+    response::{IntoResponse, Response},
     routing::{get, patch, post, put},
     Router,
 };
 use clap::Parser;
+use include_dir::{include_dir, Dir};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
+
+static UI_ASSETS: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/ui");
 
 mod api;
 mod db;
@@ -56,6 +62,8 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         // Health
         .route("/health", get(api::health))
+        // Active peers list (for UI)
+        .route("/peers", get(api::list_active_peers))
         // Operator offerings API
         .route(
             "/offerings",
@@ -82,11 +90,58 @@ async fn main() -> anyhow::Result<()> {
         .route("/p2pcd/inbound", post(api::inbound_message))
         // Internal: transfer-complete callback from daemon bridge
         .route("/internal/transfer-complete", post(api::transfer_complete))
-        .with_state(state);
+        .with_state(state)
+        // Embedded capability UI at /ui/*
+        .fallback(serve_ui);
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
+    let addr = SocketAddr::from(([127, 0, 0, 1], config.port));
     info!("Files capability listening on {}", addr);
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+// ── Embedded UI ──────────────────────────────────────────────────────────────
+
+async fn serve_ui(req: Request<Body>) -> Response {
+    let path = req.uri().path();
+    let rel = path.strip_prefix("/ui").unwrap_or(path);
+    let rel = rel.trim_start_matches('/');
+    let rel = if rel.is_empty() { "index.html" } else { rel };
+
+    match UI_ASSETS.get_file(rel) {
+        Some(file) => (
+            [(header::CONTENT_TYPE, ui_mime(rel))],
+            Body::from(file.contents()),
+        )
+            .into_response(),
+        None => {
+            if path.starts_with("/ui") {
+                match UI_ASSETS.get_file("index.html") {
+                    Some(index) => (
+                        [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+                        Body::from(index.contents()),
+                    )
+                        .into_response(),
+                    None => StatusCode::NOT_FOUND.into_response(),
+                }
+            } else {
+                StatusCode::NOT_FOUND.into_response()
+            }
+        }
+    }
+}
+
+fn ui_mime(path: &str) -> &'static str {
+    match path.rsplit('.').next() {
+        Some("html") => "text/html; charset=utf-8",
+        Some("css") => "text/css; charset=utf-8",
+        Some("js") => "application/javascript; charset=utf-8",
+        Some("json") => "application/json",
+        Some("png") => "image/png",
+        Some("svg") => "image/svg+xml",
+        Some("ico") => "image/x-icon",
+        Some("woff2") => "font/woff2",
+        _ => "application/octet-stream",
+    }
 }

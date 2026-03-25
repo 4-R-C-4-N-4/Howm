@@ -17,11 +17,12 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap = { version = "4", features = ["derive", "env"] }
 anyhow = "1"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 base64 = "0.22"
 rusqlite = { version = "0.31", features = ["bundled"] }
 sha2 = "0.10"
 hex = "0.4"
+include_dir = "0.7"
 ciborium = "0.2"
 p2pcd = { path = "../../node/p2pcd", features = ["bridge-client"] }
 

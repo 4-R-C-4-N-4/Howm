@@ -53,17 +53,23 @@ impl AccessDb {
     /// 4. Otherwise → Deny.
     pub fn resolve_permission(&self, peer_id: &[u8], capability_name: &str) -> PermissionResult {
         let conn = self.conn.lock().unwrap();
+        // Walk the parent_group_id chain so inherited capabilities resolve.
+        // The CTE collects all direct membership groups + howm.default, then
+        // recursively adds each group's parent.
         let result = conn.query_row(
-            "SELECT MAX(cr.allow), cr.rate_limit, cr.ttl
+            "WITH RECURSIVE member_groups(gid) AS (
+                 SELECT group_id FROM peer_group_memberships WHERE peer_id = ?2
+                 UNION
+                 SELECT ?3
+                 UNION
+                 SELECT g.parent_group_id FROM groups g
+                   JOIN member_groups mg ON g.group_id = mg.gid
+                  WHERE g.parent_group_id IS NOT NULL
+             )
+             SELECT MAX(cr.allow), cr.rate_limit, cr.ttl
              FROM capability_rules cr
-             JOIN groups g ON cr.group_id = g.group_id
              WHERE cr.capability_name = ?1
-               AND (
-                   g.group_id IN (
-                       SELECT group_id FROM peer_group_memberships WHERE peer_id = ?2
-                   )
-                   OR g.group_id = ?3
-               )",
+               AND cr.group_id IN (SELECT gid FROM member_groups)",
             params![capability_name, peer_id, GROUP_DEFAULT.to_string()],
             |row| {
                 let allow: Option<i32> = row.get(0)?;
@@ -117,7 +123,7 @@ impl AccessDb {
     pub fn list_groups(&self) -> rusqlite::Result<Vec<Group>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT group_id, name, built_in, created_at, description FROM groups ORDER BY built_in DESC, name",
+            "SELECT group_id, name, built_in, created_at, description, parent_group_id FROM groups ORDER BY built_in DESC, name",
         )?;
         let groups: Vec<Group> = stmt
             .query_map([], |row| {
@@ -129,6 +135,10 @@ impl AccessDb {
                     capabilities: Vec::new(),
                     created_at: row.get(3)?,
                     description: row.get(4)?,
+                    parent_group_id: {
+                        let s: Option<String> = row.get(5)?;
+                        s.and_then(|v| Uuid::parse_str(&v).ok())
+                    },
                 })
             })?
             .filter_map(|r| r.ok())
@@ -149,7 +159,7 @@ impl AccessDb {
         let group: Option<Group> = {
             let conn = self.conn.lock().unwrap();
             conn.query_row(
-                "SELECT group_id, name, built_in, created_at, description FROM groups WHERE group_id = ?1",
+                "SELECT group_id, name, built_in, created_at, description, parent_group_id FROM groups WHERE group_id = ?1",
                 params![group_id.to_string()],
                 |row| {
                     let group_id_str: String = row.get(0)?;
@@ -160,6 +170,10 @@ impl AccessDb {
                         capabilities: Vec::new(),
                         created_at: row.get(3)?,
                         description: row.get(4)?,
+                        parent_group_id: {
+                            let s: Option<String> = row.get(5)?;
+                            s.and_then(|v| Uuid::parse_str(&v).ok())
+                        },
                     })
                 },
             )
@@ -282,7 +296,7 @@ impl AccessDb {
     pub fn list_peer_groups(&self, peer_id: &[u8]) -> rusqlite::Result<Vec<Group>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT g.group_id, g.name, g.built_in, g.created_at, g.description
+            "SELECT g.group_id, g.name, g.built_in, g.created_at, g.description, g.parent_group_id
              FROM groups g
              JOIN peer_group_memberships pgm ON g.group_id = pgm.group_id
              WHERE pgm.peer_id = ?1
@@ -298,6 +312,10 @@ impl AccessDb {
                     capabilities: Vec::new(),
                     created_at: row.get(3)?,
                     description: row.get(4)?,
+                    parent_group_id: {
+                        let s: Option<String> = row.get(5)?;
+                        s.and_then(|v| Uuid::parse_str(&v).ok())
+                    },
                 })
             })?
             .filter_map(|r| r.ok())

@@ -1,8 +1,8 @@
 use axum::{
-    body::Bytes,
+    body::Body,
     extract::{Multipart, Path, Query, State},
-    http::StatusCode,
-    response::IntoResponse,
+    http::{header, StatusCode},
+    response::{IntoResponse, Response},
     Json,
 };
 use serde::Deserialize;
@@ -151,6 +151,23 @@ fn base64_to_hex(b64: &str) -> Option<String> {
 
 pub async fn health() -> impl IntoResponse {
     (StatusCode::OK, Json(serde_json::json!({ "status": "ok" })))
+}
+
+// ── Active peers list (for UI) ───────────────────────────────────────────────
+
+/// GET /peers — return active peers for the UI.
+pub async fn list_active_peers(State(state): State<AppState>) -> impl IntoResponse {
+    let active = state.active_peers.read().await;
+    let peers: Vec<serde_json::Value> = active
+        .iter()
+        .map(|(peer_id, ap)| {
+            serde_json::json!({
+                "peer_id": peer_id,
+                "wg_address": ap.wg_address,
+            })
+        })
+        .collect();
+    Json(serde_json::json!({ "peers": peers }))
 }
 
 // ── P2P-CD lifecycle hooks ───────────────────────────────────────────────────
@@ -1192,11 +1209,14 @@ pub async fn download_status(
     Ok(Json(serde_json::json!({ "download": download })))
 }
 
-/// GET /downloads/{blob_id}/data — fetch completed download data.
+/// GET /downloads/{blob_id}/data — stream completed download to browser.
+///
+/// Proxies the blob from the daemon's bridge endpoint as a chunked stream
+/// so arbitrarily large files don't buffer in capability memory.
 pub async fn download_data(
     State(state): State<AppState>,
     Path(blob_id): Path<String>,
-) -> Result<(StatusCode, [(String, String); 1], Bytes), (StatusCode, Json<serde_json::Value>)> {
+) -> Result<Response, (StatusCode, Json<serde_json::Value>)> {
     let download = state
         .db
         .get_download(&blob_id)
@@ -1221,19 +1241,64 @@ pub async fn download_data(
     }
 
     let hash = hex_to_hash(&blob_id).ok_or_else(|| bad_request("invalid blob_id"))?;
+    let hex_hash = hex::encode(hash);
 
-    let data = state.bridge.blob_data(&hash).await.map_err(|e| {
+    // Stream from the daemon bridge endpoint instead of buffering
+    let url = format!(
+        "http://127.0.0.1:{}/p2pcd/bridge/blob/data?hash={}",
+        state.daemon_port, hex_hash
+    );
+
+    let client = reqwest::Client::new();
+    let upstream = client.get(&url).send().await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": format!("blob_data failed: {}", e) })),
+            Json(serde_json::json!({ "error": format!("blob fetch failed: {}", e) })),
         )
     })?;
 
-    Ok((
-        StatusCode::OK,
-        [("content-type".to_string(), download.mime_type)],
-        Bytes::from(data),
-    ))
+    if !upstream.status().is_success() {
+        let status = upstream.status().as_u16();
+        let text = upstream.text().await.unwrap_or_default();
+        return Err((
+            StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+            Json(serde_json::json!({ "error": format!("blob fetch: {}", text) })),
+        ));
+    }
+
+    let safe_name = download
+        .name
+        .replace('"', "'")
+        .replace(['\\', '\n', '\r'], "_");
+
+    // Stream the upstream body through to the client
+    let stream = upstream.bytes_stream();
+    let body = Body::from_stream(stream);
+
+    let mut response = Response::new(body);
+    *response.status_mut() = StatusCode::OK;
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        download
+            .mime_type
+            .parse()
+            .unwrap_or_else(|_| "application/octet-stream".parse().unwrap()),
+    );
+    response.headers_mut().insert(
+        header::CONTENT_DISPOSITION,
+        format!("attachment; filename=\"{}\"", safe_name)
+            .parse()
+            .unwrap(),
+    );
+    // Forward Content-Length if known from the download record
+    if download.size > 0 {
+        response.headers_mut().insert(
+            header::CONTENT_LENGTH,
+            download.size.to_string().parse().unwrap(),
+        );
+    }
+
+    Ok(response)
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
