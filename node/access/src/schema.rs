@@ -3,6 +3,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::types::{GROUP_DEFAULT, GROUP_FRIENDS, GROUP_TRUSTED};
 
+/// Current schema version. Bump this when adding migrations.
+const CURRENT_SCHEMA_VERSION: i64 = 2;
+
 /// Create all tables and indexes. Idempotent (IF NOT EXISTS).
 pub fn create_tables(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
@@ -47,7 +50,44 @@ PRAGMA journal_mode = WAL;
         CREATE INDEX IF NOT EXISTS idx_pgm_group ON peer_group_memberships(group_id);
         CREATE INDEX IF NOT EXISTS idx_cr_group  ON capability_rules(group_id);
         ",
-    )
+    )?;
+
+    run_migrations(conn)
+}
+
+/// Run incremental schema migrations based on the stored version.
+fn run_migrations(conn: &Connection) -> rusqlite::Result<()> {
+    let version: i64 = conn.query_row(
+        "SELECT version FROM schema_version WHERE rowid = 1",
+        [],
+        |row| row.get(0),
+    )?;
+
+    if version < 2 {
+        // v2: add parent_group_id column for group inheritance.
+        // Check if the column already exists (the column was added to the
+        // CREATE TABLE statement before migrations existed, so fresh DBs
+        // already have it).
+        let has_column: bool = conn
+            .prepare("SELECT parent_group_id FROM groups LIMIT 0")
+            .is_ok();
+
+        if !has_column {
+            conn.execute_batch(
+                "ALTER TABLE groups ADD COLUMN parent_group_id TEXT REFERENCES groups(group_id) ON DELETE SET NULL;",
+            )?;
+        }
+    }
+
+    // Bump the stored version to current.
+    if version < CURRENT_SCHEMA_VERSION {
+        conn.execute(
+            "UPDATE schema_version SET version = ?1 WHERE rowid = 1",
+            [CURRENT_SCHEMA_VERSION],
+        )?;
+    }
+
+    Ok(())
 }
 
 /// Seed the three built-in groups with their fixed capability rules.

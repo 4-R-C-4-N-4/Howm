@@ -13,9 +13,9 @@ import { getApiToken } from '../api/client';
  * the daemon proxy at /cap/<prefix>/ui/. The prefix is the last dot-segment
  * of the capability name (e.g. "social.feed" → prefix "feed").
  *
- * Token handshake: capability posts howm:token:request → shell listens and
- * calls sendTokenReply on the iframe. We also pass it as a URL param as a
- * convenience for capabilities that prefer that.
+ * Token handshake: capability posts howm:token:request → shell replies via
+ * postMessage with same-origin check. Tokens are NEVER placed in URLs
+ * (they leak via Referer headers, browser history, and server logs).
  */
 export function CapabilityPage() {
   const { name } = useParams<{ name: string }>();
@@ -58,12 +58,9 @@ export function CapabilityPage() {
   // Capability name "social.feed" → proxy prefix "feed" (last segment after '.')
   const segments = cap.name.split('.');
   const proxyPrefix = segments[segments.length - 1];
-  const entry = cap.ui.entry.startsWith('/')
+  const src = cap.ui.entry.startsWith('/')
     ? `/cap/${proxyPrefix}${cap.ui.entry}`
     : `/cap/${proxyPrefix}/${cap.ui.entry}`;
-  const src = token
-    ? `${entry}?token=${encodeURIComponent(token)}`
-    : entry;
 
   return (
     <iframe

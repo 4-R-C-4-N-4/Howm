@@ -34,11 +34,20 @@ pub async fn proxy_request_with_peer(
         cap.ok_or_else(|| AppError::NotFound(format!("capability not found: {}", cap_name)))?;
 
     let port = cap.port;
-    let target_url = format!(
-        "http://localhost:{}/{}",
-        port,
-        rest_path.trim_start_matches('/')
-    );
+    let query_string = req.uri().query().map(|s| s.to_owned());
+    let target_url = match &query_string {
+        Some(q) => format!(
+            "http://localhost:{}/{}?{}",
+            port,
+            rest_path.trim_start_matches('/'),
+            q
+        ),
+        None => format!(
+            "http://localhost:{}/{}",
+            port,
+            rest_path.trim_start_matches('/')
+        ),
+    };
 
     let client = Client::builder()
         .timeout(Duration::from_secs(10))

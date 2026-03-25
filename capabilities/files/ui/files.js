@@ -22,16 +22,14 @@ var BASE = (function () {
 var MAX_FILE_SIZE = 500 * 1024 * 1024;
 
 // ── Init ─────────────────────────────────────────────────────────────────────
+// Token is delivered exclusively via postMessage from the parent shell.
+// NEVER placed in URLs (leaks via Referer headers, browser history, server logs).
 (function init() {
-  var params = new URLSearchParams(window.location.search);
-  var tokenParam = params.get('token');
-  if (tokenParam) {
-    apiToken = tokenParam;
-    startup();
-  } else {
-    window.parent.postMessage({ type: 'howm:token:request' }, '*');
-    setTimeout(function () { if (!apiToken) startup(); }, 500);
-  }
+  // Ask the parent shell for the token
+  window.parent.postMessage({ type: 'howm:token:request' }, window.location.origin);
+  // Start without auth after 500ms if no reply (read-only mode still works
+  // since the daemon proxy gates by IP, not bearer token for /cap/* routes)
+  setTimeout(function () { if (!apiToken) startup(); }, 500);
 
   window.addEventListener('message', function (e) {
     if (e.origin !== window.location.origin) return;
@@ -41,7 +39,7 @@ var MAX_FILE_SIZE = 500 * 1024 * 1024;
     }
   });
 
-  window.parent.postMessage({ type: 'howm:ready', payload: { name: 'files' } }, '*');
+  window.parent.postMessage({ type: 'howm:ready', payload: { name: 'files' } }, window.location.origin);
 
   document.getElementById('file-input').addEventListener('change', onFileSelected);
   document.getElementById('upload-access').addEventListener('change', onAccessChange);

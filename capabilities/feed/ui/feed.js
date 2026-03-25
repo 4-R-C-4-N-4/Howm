@@ -16,19 +16,14 @@ var BASE = (function () {
 })();
 
 // ── Initialise ─────────────────────────────────────────────────────────────────
+// Token is delivered exclusively via postMessage from the parent shell.
+// NEVER placed in URLs (leaks via Referer headers, browser history, server logs).
 (function init() {
-  // 1. Try URL param first (simplest path — shell passes ?token=***
-  var params = new URLSearchParams(window.location.search);
-  var tokenParam = params.get('token');
-  if (tokenParam) {
-    apiToken = tokenParam;
-    startup();
-  } else {
-    // 2. Ask parent shell via postMessage
-    window.parent.postMessage({ type: 'howm:token:request' }, '*');
-    // Start anyway after 500ms if no reply
-    setTimeout(function () { if (!apiToken) startup(); }, 500);
-  }
+  // Ask parent shell for the token
+  window.parent.postMessage({ type: 'howm:token:request' }, window.location.origin);
+  // Start without auth after 500ms if no reply (read-only mode still works
+  // since the daemon proxy gates by IP, not bearer token for /cap/* routes)
+  setTimeout(function () { if (!apiToken) startup(); }, 500);
 
   window.addEventListener('message', function (e) {
     if (e.origin !== window.location.origin) return;
@@ -39,7 +34,7 @@ var BASE = (function () {
   });
 
   // Signal to the shell that we loaded
-  window.parent.postMessage({ type: 'howm:ready', payload: { name: 'feed' } }, '*');
+  window.parent.postMessage({ type: 'howm:ready', payload: { name: 'feed' } }, window.location.origin);
 
   // File input change handler
   document.getElementById('file-input').addEventListener('change', onFilesSelected);

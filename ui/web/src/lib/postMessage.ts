@@ -26,14 +26,14 @@ export interface HowmMessage {
 export function sendTokenReply(iframe: HTMLIFrameElement, token: string) {
   iframe.contentWindow?.postMessage(
     { type: 'howm:token:reply', payload: { token } } satisfies HowmMessage,
-    '*',
+    window.location.origin,
   );
 }
 
 export function sendThemeChanged(iframe: HTMLIFrameElement) {
   iframe.contentWindow?.postMessage(
     { type: 'howm:theme:changed' } satisfies HowmMessage,
-    '*',
+    window.location.origin,
   );
 }
 
