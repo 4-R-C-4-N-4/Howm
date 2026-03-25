@@ -86,7 +86,10 @@ export const updateAccessGroup = (groupId: string, updates: {
   description?: string | null;
   capabilities?: CapabilityRule[];
 }) =>
-  api.put<AccessGroup>(`/access/groups/${groupId}`, updates).then(r => r.data);
+  api.patch<AccessGroup>(`/access/groups/${groupId}`, updates).then(r => r.data);
+
+export const getGroupMembers = (groupId: string) =>
+  api.get<{ group_id: string; members: string[] }>(`/access/groups/${groupId}/members`).then(r => r.data);
 
 export const deleteAccessGroup = (groupId: string) =>
   api.delete(`/access/groups/${groupId}`).then(r => r.data);

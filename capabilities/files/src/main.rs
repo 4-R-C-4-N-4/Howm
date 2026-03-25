@@ -1,8 +1,9 @@
 use axum::{
     body::Body,
+    extract::DefaultBodyLimit,
     http::{header, Request, StatusCode},
     response::{IntoResponse, Response},
-    routing::{delete, get, post},
+    routing::{get, patch, post, put},
     Router,
 };
 use clap::Parser;
@@ -15,34 +16,20 @@ use tracing_subscriber::EnvFilter;
 static UI_ASSETS: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/ui");
 
 mod api;
-mod blob_fetcher;
 mod db;
-mod posts;
 
 #[derive(Parser, Debug)]
-#[command(name = "social-feed", about = "Howm social feed capability")]
+#[command(name = "files", about = "Howm file transfer offerings capability")]
 struct Config {
-    #[arg(long, default_value = "7001", env = "PORT")]
+    #[arg(long, default_value = "7003", env = "PORT")]
     port: u16,
 
     #[arg(long, default_value = "/data", env = "DATA_DIR")]
     data_dir: PathBuf,
 
-    /// Port the Howm daemon HTTP API listens on (for P2P-CD peer queries).
+    /// Port the Howm daemon HTTP API listens on.
     #[arg(long, default_value = "7000", env = "HOWM_DAEMON_PORT")]
     daemon_port: u16,
-
-    /// Max number of attachments per post.
-    #[arg(long, default_value = "4", env = "MAX_ATTACHMENTS")]
-    max_attachments: usize,
-
-    /// Max image size in bytes (default 8 MiB).
-    #[arg(long, default_value = "8388608", env = "MAX_IMAGE_BYTES")]
-    max_image_bytes: u64,
-
-    /// Max video size in bytes (default 50 MiB).
-    #[arg(long, default_value = "52428800", env = "MAX_VIDEO_BYTES")]
-    max_video_bytes: u64,
 }
 
 #[tokio::main]
@@ -52,21 +39,18 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let config = Config::parse();
-
     std::fs::create_dir_all(&config.data_dir)?;
 
-    // Open SQLite database and run JSON migration if needed
-    let feed_db = db::FeedDb::open(&config.data_dir)?;
-    feed_db.migrate_from_json(&config.data_dir)?;
+    let files_db = db::FilesDb::open(&config.data_dir)?;
+    let bridge = p2pcd::bridge_client::BridgeClient::new(config.daemon_port);
 
-    let limits = posts::MediaLimits {
-        max_attachments: config.max_attachments,
-        max_image_bytes: config.max_image_bytes,
-        max_video_bytes: config.max_video_bytes,
-        ..Default::default()
-    };
-    let state = api::FeedState::new(config.data_dir.clone(), feed_db, config.daemon_port)
-        .with_limits(limits);
+    let state = api::AppState::new(
+        files_db,
+        bridge,
+        config.daemon_port,
+        config.port,
+        config.data_dir.clone(),
+    );
 
     // Restore active peers from daemon on startup
     {
@@ -76,45 +60,49 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    // Resume any pending blob transfers from a previous run
-    {
-        let db_clone = state.db.clone();
-        let bridge_clone = state.bridge().clone();
-        tokio::spawn(async move {
-            blob_fetcher::resume_active_transfers(db_clone, bridge_clone).await;
-        });
-    }
-
     let app = Router::new()
-        // Feed endpoints (all paginated via ?limit=N&offset=N)
-        .route("/feed", get(api::get_feed))
-        .route("/feed/mine", get(api::get_my_feed))
-        .route("/feed/peer/:peer_id", get(api::get_peer_feed))
-        // Post CRUD — JSON for text-only, multipart for media attachments
-        .route("/post", post(api::create_post))
-        .route("/post/upload", post(api::create_post_multipart))
-        .route("/post/limits", get(api::get_limits))
-        .route("/post/:id", delete(api::delete_post))
-        .route("/post/:id/attachments", get(api::get_attachment_status))
-        // Blob serving (content-addressed media)
-        .route("/blob/:hash", get(api::serve_blob))
-        // Utility
+        // Health
         .route("/health", get(api::health))
-        .route("/peers", get(api::list_social_peers))
-        // P2P-CD daemon callbacks
-        .route("/p2pcd/peer-active", post(api::p2pcd_peer_active))
-        .route("/p2pcd/peer-inactive", post(api::p2pcd_peer_inactive))
-        .route("/p2pcd/inbound", post(api::p2pcd_inbound))
+        // Active peers list (for UI)
+        .route("/peers", get(api::list_active_peers))
+        // Operator offerings API
+        .route(
+            "/offerings",
+            get(api::list_offerings).post(api::create_offering),
+        )
+        // JSON path for creating from pre-registered blob
+        .route("/offerings/json", put(api::create_offering_json))
+        .route(
+            "/offerings/{offering_id}",
+            patch(api::update_offering).delete(api::delete_offering),
+        )
+        // Peer catalogue browsing (wired in FEAT-003-E)
+        .route("/peer/{peer_id}/catalogue", get(api::peer_catalogue))
+        // Downloads (wired in FEAT-003-E)
+        .route(
+            "/downloads",
+            get(api::list_downloads).post(api::initiate_download),
+        )
+        .route("/downloads/{blob_id}/status", get(api::download_status))
+        .route("/downloads/{blob_id}/data", get(api::download_data))
+        // P2P-CD lifecycle hooks (called by daemon cap_notify)
+        .route("/p2pcd/peer-active", post(api::peer_active))
+        .route("/p2pcd/peer-inactive", post(api::peer_inactive))
+        .route("/p2pcd/inbound", post(api::inbound_message))
+        // Internal: transfer-complete callback from daemon bridge
+        .route("/internal/transfer-complete", post(api::transfer_complete))
         .with_state(state)
-        // Embedded capability UI — served at /ui/*
+        .layer(DefaultBodyLimit::disable()) // Disable axum's 2MB default body limit for Multipart
+        .layer(tower_http::limit::RequestBodyLimitLayer::new(
+            500 * 1024 * 1024,
+        )) // Hard 500MB cap on all requests
+        // Embedded capability UI at /ui/*
         .fallback(serve_ui);
 
-    let addr: SocketAddr = format!("127.0.0.1:{}", config.port).parse()?;
-    info!("Social feed capability starting on {}", addr);
-
+    let addr = SocketAddr::from(([127, 0, 0, 1], config.port));
+    info!("Files capability listening on {}", addr);
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
-
     Ok(())
 }
 
@@ -122,7 +110,6 @@ async fn main() -> anyhow::Result<()> {
 
 async fn serve_ui(req: Request<Body>) -> Response {
     let path = req.uri().path();
-    // Strip /ui prefix; treat /ui and /ui/ as index.html
     let rel = path.strip_prefix("/ui").unwrap_or(path);
     let rel = rel.trim_start_matches('/');
     let rel = if rel.is_empty() { "index.html" } else { rel };
@@ -134,7 +121,6 @@ async fn serve_ui(req: Request<Body>) -> Response {
         )
             .into_response(),
         None => {
-            // SPA fallback to index.html for unknown paths under /ui
             if path.starts_with("/ui") {
                 match UI_ASSETS.get_file("index.html") {
                     Some(index) => (

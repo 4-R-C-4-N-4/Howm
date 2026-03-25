@@ -1,0 +1,118 @@
+Good, I have everything I need. Here's the review:                                               
+                                                                                                    
+   ════════════════════════════════════════════════════                                             
+     CODE REVIEW — proxy layer + feed.js                                                            
+   ════════════════════════════════════════════════════                                             
+                                                                                                    
+   ## Summary                                                                                       
+                                                                                                    
+   The proxy layer is well-structured with good defense-in-depth                                    
+   (WG identity + AccessDb). The feed.js is solid vanilla JS.                                       
+   There are a few issues worth addressing — one critical                                           
+   ambiguity bug we just introduced, and some security hardening                                    
+   opportunities.                                                                                   
+                                                                                                    
+   ────────────────────────────────────────────────────                                             
+   ## Critical Issues (Must Fix)                                                                    
+   ────────────────────────────────────────────────────                                             
+                                                                                                    
+   1. CAPABILITY LOOKUP AMBIGUITY (proxy.rs:27-30)                                                  
+                                                                                                    
+      The new last_seg match creates a collision risk. If you have                                  
+      both "social.feed" and "files.feed", a request to /cap/feed                                   
+      would match whichever comes first in the vec — nondeterministic.                              
+                                                                                                    
+      Same issue already existed with first_seg ("social" matches                                   
+      both "social.feed" and "social.messaging"), but last_seg                                      
+      doubles the collision surface.                                                                
+                                                                                                    
+      Suggestion: match against the manifest's base_path instead of                                 
+      name-segment heuristics. The manifest already declares                                        
+      base_path: "/cap/messaging" — store that in CapabilityEntry                                   
+      and do an exact match. Failing that, at least log a warning                                   
+      when multiple capabilities match.                                                             
+                                                                                                    
+   2. UNBOUNDED BODY READ (proxy.rs:52)                                                             
+                                                                                                    
+      axum::body::to_bytes(req.into_body(), usize::MAX)                                             
+                                                                                                    
+      A malicious or buggy client can send a multi-GB body and                                      
+      OOM the daemon. Should cap this at a reasonable limit                                         
+      (e.g. 100MB or whatever the max attachment size is).                                          
+                                                                                                    
+   3. ACCESS CHECK BYPASS ON NO P2P-CD MAPPING (proxy_routes.rs:95-97)                              
+                                                                                                    
+      // If no P2P-CD name mapping found, fall through to proxy                                     
+                                                                                                    
+      If resolve_p2pcd_cap_name returns None (which it currently                                    
+      can't since the fallback always returns Some), a remote peer                                  
+      would skip permission checks entirely. The fallback on line                                   
+      147-148 papers over this, but if that logic changes, the                                      
+      fail-open behavior is dangerous. Should be fail-closed:                                       
+      deny if no mapping found.                                                                     
+                                                                                                    
+   ────────────────────────────────────────────────────                                             
+   ## Suggestions (Nice to Have)                                                                    
+   ────────────────────────────────────────────────────                                             
+                                                                                                    
+   4. CLIENT REUSE (proxy.rs:45-48)                                                                 
+                                                                                                    
+      A new reqwest::Client is built per request. Client holds a                                    
+      connection pool — creating it once in AppState and reusing it                                 
+      would improve performance and reduce TCP churn.                                               
+                                                                                                    
+   5. CONTENT-TYPE FORWARDING (proxy.rs:82-83)                                                      
+                                                                                                    
+      Body is only forwarded when non-empty, but a POST with                                        
+      Content-Length: 0 is valid and semantically different from                                    
+      no body. The check is fine in practice but worth a comment.                                   
+                                                                                                    
+   6. feed.js innerHTML USAGE (lines 128-134, 168, etc.)                                            
+                                                                                                    
+      renderPost() and renderAttachmentPreview() build HTML via                                     
+      string concatenation and assign to innerHTML. The escHtml()                                   
+      helper is used consistently which is good, but one miss                                       
+      anywhere is an XSS. The escHtml function also doesn't escape                                  
+      backtick (`) which matters in some older template contexts.                                   
+                                                                                                    
+      Lower risk since this is a local-only UI behind WG, but                                       
+      consider using textContent/createElement where possible.                                      
+                                                                                                    
+   7. feed.js postMessage ORIGIN CHECK (line 34)                                                    
+                                                                                                    
+      e.origin !== window.location.origin is good, but the                                          
+      outbound postMessages on lines 28, 42, 341, 351 all use                                       
+      '*' as targetOrigin. Should be window.location.origin to                                      
+      prevent token leakage if the iframe embedding context changes.                                
+                                                                                                    
+   8. PROXY_ROUTES PEER PUBKEY SLICE (line 86)                                                      
+                                                                                                    
+      &peer_pubkey[..8] — this slices bytes, not chars. Base64                                      
+      is ASCII so it works, but if the pubkey is somehow < 8 bytes                                  
+      (shouldn't happen after the len==32 check on the decoded                                      
+      bytes, but the string could be shorter than 8 chars if                                        
+      encoding changes), this panics. Use .get(..8).unwrap_or(&peer_pubkey).                        
+                                                                                                    
+   9. resolve_p2pcd_cap_name FIRST-MATCH AMBIGUITY (line 130-132)                                   
+                                                                                                    
+      "social" as short_name matches the first howm.social.*.1 it                                   
+      finds. If you have howm.social.feed.1 and                                                     
+      howm.social.messaging.1, which one gets the permission check                                  
+      is nondeterministic. This mirrors issue #1.                                                   
+                                                                                                    
+   ────────────────────────────────────────────────────                                             
+   ## Questions                                                                                     
+   ────────────────────────────────────────────────────                                             
+                                                                                                    
+   - Is the intent that each capability has a unique URL prefix                                     
+     derived from base_path in manifest.json? If so, storing that                                   
+     in CapabilityEntry and matching on it would eliminate all the                                  
+     segment-matching ambiguity.                                                                    
+                                                                                                    
+   - Should remote peers ever hit capabilities that don't have a                                    
+     P2P-CD mapping? The comment says "fall through" but that                                       
+     seems like it should be a deny.                                                                
+                                                                                                    
+   - Is there a max request body size defined elsewhere (e.g.                                       
+     axum layer)? If so, the usize::MAX in proxy.rs is less                                         
+     concerning.        

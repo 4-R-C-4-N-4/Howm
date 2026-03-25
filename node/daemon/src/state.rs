@@ -1,8 +1,14 @@
 use crate::{
-    api::auth_layer::RateLimiter, capabilities::CapabilityEntry, config::Config,
-    identity::NodeIdentity, p2pcd::engine::ProtocolEngine, peers::Peer,
+    api::auth_layer::RateLimiter,
+    capabilities::CapabilityEntry,
+    config::Config,
+    identity::NodeIdentity,
+    notifications::{NotificationBuffer, PushRateLimiter},
+    p2pcd::engine::ProtocolEngine,
+    peers::Peer,
 };
 use howm_access::AccessDb;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -30,6 +36,12 @@ pub struct AppState {
     pub matchmake_counter: Arc<RwLock<u64>>,
     /// Access control database (group-based peer permissions)
     pub access_db: Arc<AccessDb>,
+    /// Badge counts pushed by capabilities. Key: installed capability name.
+    pub badges: Arc<RwLock<HashMap<String, u32>>>,
+    /// Transient notification ring buffer.
+    pub notifications: Arc<RwLock<NotificationBuffer>>,
+    /// Per-capability rate limiter for notification pushes.
+    pub push_rate_limiter: Arc<RwLock<PushRateLimiter>>,
 }
 
 impl AppState {
@@ -52,12 +64,15 @@ impl AppState {
             wg_active: Arc::new(RwLock::new(false)),
             api_token,
             invite_rate_limiter: Arc::new(RateLimiter::new(5, 60)),
-            install_rate_limiter: Arc::new(RateLimiter::new(2, 60)),
+            install_rate_limiter: Arc::new(RateLimiter::new(10, 60)),
             open_join_rate_limiter,
             p2pcd_engine: None,
             allow_relay: Arc::new(RwLock::new(allow_relay)),
             matchmake_counter: Arc::new(RwLock::new(0)),
             access_db,
+            badges: Arc::new(RwLock::new(HashMap::new())),
+            notifications: Arc::new(RwLock::new(NotificationBuffer::new())),
+            push_rate_limiter: Arc::new(RwLock::new(PushRateLimiter::new(10, 10_000))),
         }
     }
 }

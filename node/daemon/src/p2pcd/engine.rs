@@ -1113,7 +1113,7 @@ mod tests {
     // Two ProtocolEngine instances on loopback. No WireGuard, no network.
     // Alice dials Bob; both should reach Active and fire HTTP callbacks.
 
-    /// Build a minimal PeerConfig for tests: one `howm.social.feed.1` capability.
+    /// Build a minimal PeerConfig for tests: one `howm.feed.1` capability.
     fn test_access_db() -> Arc<AccessDb> {
         let dir = tempfile::TempDir::new().unwrap();
         let db_path = dir.path().join("access.db");
@@ -1122,7 +1122,7 @@ mod tests {
         // so the trust gate doesn't block anything (tests focus on protocol, not access).
         let all_caps = vec![
             howm_access::CapabilityRule {
-                capability_name: "howm.social.feed.1".into(),
+                capability_name: "howm.feed.1".into(),
                 allow: true,
                 rate_limit: None,
                 ttl: None,
@@ -1196,7 +1196,7 @@ mod tests {
                 m.insert(
                     "social".to_string(),
                     CapabilityConfig {
-                        name: "howm.social.feed.1".to_string(),
+                        name: "howm.feed.1".to_string(),
                         role: RoleConfig::Both,
                         mutual: true,
                         scope: None,
@@ -1293,12 +1293,10 @@ mod tests {
 
         // ── Build Alice's engine ──
         let alice_notifier = Arc::new(CapabilityNotifier::new());
-        alice_notifier
-            .register("howm.social.feed.1".to_string(), 0)
-            .await;
+        alice_notifier.register("howm.feed.1".to_string(), 0).await;
         // Override notifier URL so callbacks reach our mock server
         alice_notifier
-            .register_with_url("howm.social.feed.1".to_string(), alice_notifier_url.clone())
+            .register_with_url("howm.feed.1".to_string(), alice_notifier_url.clone())
             .await;
 
         let alice_engine = Arc::new(ProtocolEngine::new(
@@ -1320,7 +1318,7 @@ mod tests {
         // ── Build Bob's engine ──
         let bob_notifier = Arc::new(CapabilityNotifier::new());
         bob_notifier
-            .register_with_url("howm.social.feed.1".to_string(), bob_notifier_url.clone())
+            .register_with_url("howm.feed.1".to_string(), bob_notifier_url.clone())
             .await;
 
         let bob_engine = Arc::new(ProtocolEngine::new(
@@ -1790,7 +1788,7 @@ mod tests {
         let (alice_notifier_url, _alice_active, alice_inactive) = spawn_mock_notifier().await;
         let alice_notifier = Arc::new(CapabilityNotifier::new());
         alice_notifier
-            .register_with_url("howm.social.feed.1".to_string(), alice_notifier_url.clone())
+            .register_with_url("howm.feed.1".to_string(), alice_notifier_url.clone())
             .await;
         alice_notifier
             .register_with_url(
@@ -1866,7 +1864,7 @@ mod tests {
         assert!(
             alice_session
                 .active_set
-                .contains(&"howm.social.feed.1".to_string()),
+                .contains(&"howm.feed.1".to_string()),
             "social feed should be active before rebroadcast"
         );
 

@@ -80,7 +80,10 @@ pub fn load(data_dir: &Path) -> anyhow::Result<Vec<CapabilityEntry>> {
         return Ok(vec![]);
     }
     let text = std::fs::read_to_string(&path)?;
-    Ok(serde_json::from_str(&text).unwrap_or_default())
+    Ok(serde_json::from_str(&text).unwrap_or_else(|e| {
+        tracing::warn!("Failed to parse capabilities.json, using empty list: {}", e);
+        Vec::new()
+    }))
 }
 
 /// Return the next port >= `start` that isn't already used by an installed capability.

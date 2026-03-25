@@ -1,24 +1,27 @@
 import { useEffect, useRef } from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams, useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { getCapabilities } from '../api/capabilities';
-import { sendTokenReply } from '../lib/postMessage';
+import { sendTokenReply, sendNavigateTo } from '../lib/postMessage';
 import { getApiToken } from '../api/client';
 
 /**
  * Full-height iframe wrapper for a capability UI.
- * Route: /cap/:name
+ * Route: /app/:name   (SPA route — distinct from daemon's /cap/:name API proxy)
  *
- * The iframe src is the capability's ui.entry URL (routed through the daemon
- * at /cap/<name>/ui/ by default).
+ * The iframe src is built from the capability's ui.entry and routed through
+ * the daemon proxy at /cap/<prefix>/ui/. The prefix is the last dot-segment
+ * of the capability name (e.g. "social.feed" → prefix "feed").
  *
- * Token handshake: capability posts howm:token:request → shell listens and
- * calls sendTokenReply on the iframe. We also pass it as a URL param as a
- * convenience for capabilities that prefer that.
+ * Token handshake: capability posts howm:token:request → shell replies via
+ * postMessage with same-origin check. Tokens are NEVER placed in URLs
+ * (they leak via Referer headers, browser history, and server logs).
  */
 export function CapabilityPage() {
   const { name } = useParams<{ name: string }>();
+  const [searchParams] = useSearchParams();
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const readySent = useRef(false);
 
   const { data: capabilities } = useQuery({
     queryKey: ['capabilities'],
@@ -28,7 +31,7 @@ export function CapabilityPage() {
   const cap = capabilities?.find(c => c.name === name);
   const token = getApiToken();
 
-  // Reply to token requests from the iframe
+  // Reply to token requests and send deep-link params after howm:ready
   useEffect(() => {
     if (!token) return;
     function handle(e: MessageEvent) {
@@ -36,10 +39,29 @@ export function CapabilityPage() {
       if (e.data?.type === 'howm:token:request' && iframeRef.current) {
         sendTokenReply(iframeRef.current, token!);
       }
+      // After capability signals ready, send any URL search params as deep-link
+      if (e.data?.type === 'howm:ready' && iframeRef.current && !readySent.current) {
+        readySent.current = true;
+        const params: Record<string, string> = {};
+        searchParams.forEach((v, k) => { params[k] = v; });
+        if (Object.keys(params).length > 0) {
+          sendNavigateTo(iframeRef.current, params);
+        }
+      }
     }
     window.addEventListener('message', handle);
     return () => window.removeEventListener('message', handle);
-  }, [token]);
+  }, [token, searchParams]);
+
+  // Re-send deep-link params when searchParams change while iframe is open
+  useEffect(() => {
+    if (!iframeRef.current || !readySent.current) return;
+    const params: Record<string, string> = {};
+    searchParams.forEach((v, k) => { params[k] = v; });
+    if (Object.keys(params).length > 0) {
+      sendNavigateTo(iframeRef.current, params);
+    }
+  }, [searchParams]);
 
   if (!capabilities) {
     return <div style={loadingStyle}>Loading…</div>;
@@ -54,14 +76,12 @@ export function CapabilityPage() {
   }
 
   // Build the iframe src — route through the daemon proxy at /cap/{prefix}/...
-  // Capability name "social.feed" → proxy prefix "social" (first segment before '.')
-  const proxyPrefix = cap.name.split('.')[0];
-  const entry = cap.ui.entry.startsWith('/')
+  // Capability name "social.feed" → proxy prefix "feed" (last segment after '.')
+  const segments = cap.name.split('.');
+  const proxyPrefix = segments[segments.length - 1];
+  const src = cap.ui.entry.startsWith('/')
     ? `/cap/${proxyPrefix}${cap.ui.entry}`
     : `/cap/${proxyPrefix}/${cap.ui.entry}`;
-  const src = token
-    ? `${entry}?token=${encodeURIComponent(token)}`
-    : entry;
 
   return (
     <iframe

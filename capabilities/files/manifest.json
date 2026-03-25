@@ -1,0 +1,35 @@
+{
+  "name": "social.files",
+  "version": "1.0.0",
+  "description": "File transfer offerings — publish a browseable catalogue of files for peers to download over WireGuard",
+  "binary": "files",
+  "port": 7003,
+  "api": {
+    "base_path": "/cap/files",
+    "endpoints": [
+      { "name": "health", "method": "GET", "path": "/health" },
+      { "name": "list_offerings", "method": "GET", "path": "/offerings" },
+      { "name": "create_offering", "method": "POST", "path": "/offerings" },
+      { "name": "update_offering", "method": "PATCH", "path": "/offerings/:offering_id" },
+      { "name": "delete_offering", "method": "DELETE", "path": "/offerings/:offering_id" },
+      { "name": "peer_catalogue", "method": "GET", "path": "/peer/:peer_id/catalogue" },
+      { "name": "list_downloads", "method": "GET", "path": "/downloads" },
+      { "name": "initiate_download", "method": "POST", "path": "/downloads" },
+      { "name": "download_status", "method": "GET", "path": "/downloads/:blob_id/status" },
+      { "name": "download_data", "method": "GET", "path": "/downloads/:blob_id/data" }
+    ]
+  },
+  "permissions": {
+    "visibility": "social"
+  },
+  "ui": {
+    "label": "Files",
+    "icon": "folder",
+    "entry": "/ui/",
+    "style": "iframe"
+  },
+  "resources": {
+    "cpu": "low",
+    "memory": "128MB"
+  }
+}

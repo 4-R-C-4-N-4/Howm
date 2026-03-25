@@ -20,14 +20,13 @@ pub async fn proxy_request_with_peer(
     req: Request<Body>,
     peer_pubkey: Option<&str>,
 ) -> Result<Response<Body>, AppError> {
-    // Find capability by name — "social" matches "social.feed" (first segment before '.')
+    // Find capability by name — match against the installed name, or any
+    // dot-separated segment (e.g. "feed" matches installed name "feed",
+    // and a future "social.feed" would also match on "social" or "feed").
     let cap = {
         let caps = state.capabilities.read().await;
         caps.iter()
-            .find(|c| {
-                let first_seg = c.name.split('.').next().unwrap_or(&c.name);
-                first_seg == cap_name || c.name == cap_name
-            })
+            .find(|c| c.name == cap_name || c.name.split('.').any(|seg| seg == cap_name))
             .cloned()
     };
 
@@ -35,14 +34,30 @@ pub async fn proxy_request_with_peer(
         cap.ok_or_else(|| AppError::NotFound(format!("capability not found: {}", cap_name)))?;
 
     let port = cap.port;
-    let target_url = format!(
-        "http://localhost:{}/{}",
-        port,
-        rest_path.trim_start_matches('/')
-    );
+    // Cap query string length to prevent abuse (e.g. multi-MB strings via WG tunnel).
+    const MAX_QUERY_LEN: usize = 4096;
+    let query_string = req.uri().query().map(|s| s.to_owned());
+    if let Some(ref q) = query_string {
+        if q.len() > MAX_QUERY_LEN {
+            return Err(AppError::BadRequest("query string too long".to_string()));
+        }
+    }
+    let target_url = match &query_string {
+        Some(q) => format!(
+            "http://localhost:{}/{}?{}",
+            port,
+            rest_path.trim_start_matches('/'),
+            q
+        ),
+        None => format!(
+            "http://localhost:{}/{}",
+            port,
+            rest_path.trim_start_matches('/')
+        ),
+    };
 
     let client = Client::builder()
-        .timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(600))
         .build()
         .map_err(|e| AppError::Internal(e.to_string()))?;
 
@@ -53,16 +68,25 @@ pub async fn proxy_request_with_peer(
         .map_err(|e| AppError::Internal(e.to_string()))?;
 
     let mut proxy_req = client.request(
-        reqwest::Method::from_bytes(method.as_str().as_bytes()).unwrap(),
+        reqwest::Method::from_bytes(method.as_str().as_bytes()).expect("valid HTTP method"),
         &target_url,
     );
 
-    // Forward headers, skipping hop-by-hop ones
+    // Forward headers, skipping hop-by-hop and length headers.
+    // content-length is excluded because reqwest sets it automatically from the
+    // body; forwarding the original causes duplicate headers that break
+    // multipart parsing on the capability side.
     for (name, value) in headers.iter() {
         let name_str = name.as_str();
         if !matches!(
             name_str,
-            "host" | "connection" | "transfer-encoding" | "x-peer-id" | "x-node-id" | "x-node-name"
+            "host"
+                | "connection"
+                | "transfer-encoding"
+                | "content-length"
+                | "x-peer-id"
+                | "x-node-id"
+                | "x-node-name"
         ) {
             proxy_req = proxy_req.header(name_str, value.as_bytes());
         }

@@ -268,7 +268,13 @@ fn load_pending(data_dir: &Path) -> anyhow::Result<Vec<PendingInvite>> {
         return Ok(vec![]);
     }
     let text = std::fs::read_to_string(&path)?;
-    Ok(serde_json::from_str(&text).unwrap_or_default())
+    Ok(serde_json::from_str(&text).unwrap_or_else(|e| {
+        tracing::warn!(
+            "Failed to parse pending invites JSON, using empty list: {}",
+            e
+        );
+        Vec::new()
+    }))
 }
 
 fn save_pending(data_dir: &Path, invites: &[PendingInvite]) -> anyhow::Result<()> {

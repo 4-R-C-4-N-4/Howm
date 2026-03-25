@@ -1,45 +1,43 @@
 'use strict';
 
 // ── State ──────────────────────────────────────────────────────────────────────
-var apiToken=***
+var apiToken = null;
 var trustFilter = null;
 var pendingFiles = []; // files queued for upload
 var mediaLimits = null; // fetched from /post/limits
+var _started = false;
 
 // ── Base path detection ────────────────────────────────────────────────────────
-// When served through the daemon proxy: /cap/social/ui/ → base = /cap/social
+// When served through the daemon proxy: /cap/feed/ui/ → base = /cap/feed
 // When accessed directly on capability port: /ui/ → base = ''
 var BASE = (function () {
-  var path = window.location.pathname; // e.g. /cap/social/ui/ or /ui/
+  var path = window.location.pathname; // e.g. /cap/feed/ui/ or /ui/
   var uiIdx = path.indexOf('/ui');
   return uiIdx > 0 ? path.substring(0, uiIdx) : '';
 })();
 
 // ── Initialise ─────────────────────────────────────────────────────────────────
+// Token is delivered exclusively via postMessage from the parent shell.
+// NEVER placed in URLs (leaks via Referer headers, browser history, server logs).
 (function init() {
-  // 1. Try URL param first (simplest path — shell passes ?token=***
-  var params = new URLSearchParams(window.location.search);
-  var tokenParam=params...n');
-  if (tokenParam) {
-    apiToken=***
-    startup();
-  } else {
-    // 2. Ask parent shell via postMessage
-    window.parent.postMessage({ type: 'howm:token:request' }, '*');
-    // Start anyway after 500ms if no reply
-    setTimeout(function () { if (!apiToken) startup(); }, 500);
-  }
+  function startOnce() { if (!_started) { _started = true; startup(); } }
+
+  // Ask parent shell for the token
+  window.parent.postMessage({ type: 'howm:token:request' }, window.location.origin);
+  // Start without auth after 500ms if no reply (read-only mode still works
+  // since the daemon proxy gates by IP, not bearer token for /cap/* routes)
+  setTimeout(startOnce, 500);
 
   window.addEventListener('message', function (e) {
     if (e.origin !== window.location.origin) return;
     if (e.data && e.data.type === 'howm:token:reply') {
-      apiToken=*** && e.data.payload.token;
-      startup();
+      apiToken = e.data && e.data.payload && e.data.payload.token;
+      startOnce();
     }
   });
 
   // Signal to the shell that we loaded
-  window.parent.postMessage({ type: 'howm:ready', payload: { name: 'social.feed' } }, '*');
+  window.parent.postMessage({ type: 'howm:ready', payload: { name: 'feed' } }, window.location.origin);
 
   // File input change handler
   document.getElementById('file-input').addEventListener('change', onFilesSelected);
@@ -68,7 +66,7 @@ function onFilesSelected(e) {
   var maxCount = mediaLimits ? mediaLimits.max_attachments : 4;
 
   if (pendingFiles.length + files.length > maxCount) {
-    alert('Max ' + maxCount + ' attachments per post');
+    showFeedToast('Max ' + maxCount + ' attachments per post');
     e.target.value = '';
     return;
   }
@@ -83,14 +81,14 @@ function onFilesSelected(e) {
   for (var i = 0; i < files.length; i++) {
     var f = files[i];
     if (allowed.indexOf(f.type) === -1) {
-      alert('Unsupported file type: ' + f.type);
+      showFeedToast('Unsupported file type: ' + f.type);
       e.target.value = '';
       return;
     }
     var isVideo = f.type.startsWith('video/');
     var limit = isVideo ? maxVideo : maxImage;
     if (f.size > limit) {
-      alert(f.name + ' is too large (' + formatSize(f.size) + ', max ' + formatSize(limit) + ')');
+      showFeedToast(f.name + ' is too large (' + formatSize(f.size) + ', max ' + formatSize(limit) + ')');
       e.target.value = '';
       return;
     }
@@ -174,7 +172,7 @@ function renderPost(post) {
   var date = new Date(post.timestamp * 1000).toLocaleString();
   var mediaHtml = renderAttachments(post);
   var deleteBtn = post.origin === 'local'
-    ? '<button class="post-delete" onclick="deletePost(\'' + escAttr(post.id) + '\')" title="Delete">✕</button>'
+    ? '<button class="post-delete" onclick="confirmDeletePost(this, \'' + escAttr(post.id) + '\')" title="Delete">✕</button>'
     : '';
 
   return '<div class="post-card" id="post-' + escAttr(post.id) + '">' +
@@ -341,7 +339,7 @@ async function submitPost() {
     window.parent.postMessage({
       type: 'howm:notify',
       payload: { level: 'success', message: 'Post published' },
-    }, '*');
+    }, window.location.origin);
     loadFeed();
     setTimeout(function () { status.textContent = ''; status.className = ''; }, 3000);
   } catch (err) {
@@ -350,15 +348,49 @@ async function submitPost() {
     window.parent.postMessage({
       type: 'howm:notify',
       payload: { level: 'error', message: 'Failed to publish post' },
-    }, '*');
+    }, window.location.origin);
   } finally {
     btn.disabled = false;
   }
 }
 
-// ── Post deletion ──────────────────────────────────────────────────────────────
+// ── Toast (replaces alert — works in iframes) ──────────────────────────────────
+function showFeedToast(message) {
+  var el = document.getElementById('feed-toast');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'feed-toast';
+    el.style.cssText = 'position:fixed;top:12px;left:50%;transform:translateX(-50%);' +
+      'background:var(--howm-error,#f87171);color:#fff;padding:8px 16px;border-radius:6px;' +
+      'font-size:0.85rem;z-index:9999;opacity:0;transition:opacity 0.2s;pointer-events:none;';
+    document.body.appendChild(el);
+  }
+  el.textContent = message;
+  el.style.opacity = '1';
+  clearTimeout(el._timer);
+  el._timer = setTimeout(function () { el.style.opacity = '0'; }, 4000);
+}
+
+// ── Post deletion (inline confirm — no popups) ─────────────────────────────────
+function confirmDeletePost(btn, postId) {
+  var headerRight = btn.closest('.post-header-right');
+  if (!headerRight) return;
+  var original = headerRight.innerHTML;
+  headerRight.innerHTML =
+    '<span style="font-size:0.8rem;color:var(--howm-warning,#fbbf24)">Delete?</span> ' +
+    '<button class="post-delete" style="color:var(--howm-error,#f87171)">Yes</button> ' +
+    '<button class="post-delete">No</button>';
+  var buttons = headerRight.querySelectorAll('button');
+  buttons[0].onclick = function () {
+    headerRight.innerHTML = original;
+    deletePost(postId);
+  };
+  buttons[1].onclick = function () {
+    headerRight.innerHTML = original;
+  };
+}
+
 async function deletePost(postId) {
-  if (!confirm('Delete this post?')) return;
   try {
     var headers = {};
     if (apiToken) headers['Authorization'] = 'Bearer ' + apiToken;
@@ -369,7 +401,7 @@ async function deletePost(postId) {
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     loadFeed();
   } catch (err) {
-    alert('Failed to delete post');
+    showFeedToast('Failed to delete post');
   }
 }
 

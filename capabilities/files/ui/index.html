@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Files — Howm</title>
+  <link rel="stylesheet" href="/theme.css" />
+  <link rel="stylesheet" href="files.css" />
+</head>
+<body>
+  <div id="app">
+    <!-- Tab bar -->
+    <nav id="tabs">
+      <button class="tab active" onclick="switchTab('my-files', this)">My Files</button>
+      <button class="tab" onclick="switchTab('browse', this)">Browse Peers</button>
+      <button class="tab" id="downloads-tab" onclick="switchTab('downloads', this)">Downloads</button>
+    </nav>
+
+    <!-- ── My Files ─────────────────────────────────────────────────────────── -->
+    <section id="tab-my-files">
+      <div id="upload-zone">
+        <div id="drop-area" ondrop="onDrop(event)" ondragover="onDragOver(event)" ondragleave="onDragLeave(event)">
+          <p>Drop file here or <label id="file-label">click to browse<input type="file" id="file-input" /></label></p>
+        </div>
+        <div id="upload-form" class="hidden">
+          <div id="file-preview"></div>
+          <label>Name <input type="text" id="upload-name" maxlength="255" /></label>
+          <label>Description <input type="text" id="upload-desc" maxlength="1024" placeholder="optional" /></label>
+          <label>Access
+            <select id="upload-access">
+              <option value="public">Public</option>
+              <option value="friends">Friends</option>
+              <option value="trusted">Trusted</option>
+              <option value="peer">Specific peers…</option>
+            </select>
+          </label>
+          <div id="peer-select-row" class="hidden">
+            <select id="upload-peers" multiple></select>
+          </div>
+          <div id="upload-actions">
+            <button onclick="submitUpload()">Upload</button>
+            <button class="secondary" onclick="cancelUpload()">Cancel</button>
+            <span id="upload-status"></span>
+          </div>
+          <div id="upload-progress" class="hidden">
+            <div id="progress-bar"><div id="progress-fill"></div></div>
+          </div>
+        </div>
+      </div>
+
+      <h2 id="offerings-heading">Offerings</h2>
+      <div id="offerings-list"><p class="muted">Loading…</p></div>
+    </section>
+
+    <!-- ── Browse Peers ─────────────────────────────────────────────────────── -->
+    <section id="tab-browse" class="hidden">
+      <h2>Active Peers</h2>
+      <div id="peer-list"><p class="muted">Loading…</p></div>
+      <div id="peer-catalogue" class="hidden">
+        <h3 id="catalogue-heading"></h3>
+        <div id="catalogue-list"></div>
+        <button id="catalogue-more" class="hidden" onclick="loadMoreCatalogue()">Load more…</button>
+      </div>
+    </section>
+
+    <!-- ── Downloads ────────────────────────────────────────────────────────── -->
+    <section id="tab-downloads" class="hidden">
+      <h2>Downloads</h2>
+      <div id="downloads-list"><p class="muted">No downloads yet.</p></div>
+    </section>
+  </div>
+
+  <!-- Edit modal -->
+  <div id="edit-overlay" class="overlay hidden" onclick="if(event.target===this)closeEdit()">
+    <div class="modal">
+      <h3>Edit Offering</h3>
+      <input type="hidden" id="edit-id" />
+      <label>Name <input type="text" id="edit-name" maxlength="255" /></label>
+      <label>Description <input type="text" id="edit-desc" maxlength="1024" /></label>
+      <label>Access
+        <select id="edit-access">
+          <option value="public">Public</option>
+          <option value="friends">Friends</option>
+          <option value="trusted">Trusted</option>
+        </select>
+      </label>
+      <div class="modal-actions">
+        <button onclick="saveEdit()">Save</button>
+        <button class="secondary" onclick="closeEdit()">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast container -->
+  <div id="toast-container"></div>
+
+  <script src="files.js"></script>
+</body>
+</html>

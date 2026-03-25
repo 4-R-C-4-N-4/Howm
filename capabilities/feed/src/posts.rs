@@ -62,7 +62,7 @@ pub fn allowed_mime_types() -> Vec<&'static str> {
     v
 }
 
-/// Configurable media limits for the social feed.
+/// Configurable media limits for the feed.
 /// Exposed via `GET /post/limits` so the UI can enforce client-side.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MediaLimits {
@@ -83,63 +83,11 @@ impl Default for MediaLimits {
     }
 }
 
-/// Backward-compat aliases for tests that reference the old constants.
-pub const MAX_ATTACHMENTS: usize = DEFAULT_MAX_ATTACHMENTS;
-pub const MAX_IMAGE_SIZE: u64 = DEFAULT_MAX_IMAGE_SIZE;
-pub const MAX_VIDEO_SIZE: u64 = DEFAULT_MAX_VIDEO_SIZE;
-pub const ALLOWED_MIME_TYPES: &[&str] = &[
-    "image/jpeg",
-    "image/png",
-    "image/webp",
-    "image/gif",
-    "video/mp4",
-    "video/webm",
-];
-
 #[derive(Debug, Serialize)]
 pub struct AttachmentError {
     pub index: usize,
     pub constraint: String,
     pub message: String,
-}
-
-/// Validate attachment metadata. Returns a list of errors (empty = valid).
-pub fn validate_attachments(attachments: &[Attachment]) -> Vec<AttachmentError> {
-    let mut errors = Vec::new();
-
-    if attachments.len() > MAX_ATTACHMENTS {
-        errors.push(AttachmentError {
-            index: 0,
-            constraint: "max_count".to_string(),
-            message: format!("too many attachments (max {})", MAX_ATTACHMENTS),
-        });
-        return errors; // no point checking individual attachments
-    }
-
-    for (i, att) in attachments.iter().enumerate() {
-        if !ALLOWED_MIME_TYPES.contains(&att.mime_type.as_str()) {
-            errors.push(AttachmentError {
-                index: i,
-                constraint: "mime_type".to_string(),
-                message: format!("unsupported MIME type: {}", att.mime_type),
-            });
-        }
-
-        let max = if att.mime_type == "video/mp4" {
-            MAX_VIDEO_SIZE
-        } else {
-            MAX_IMAGE_SIZE
-        };
-        if att.size > max {
-            errors.push(AttachmentError {
-                index: i,
-                constraint: "max_size".to_string(),
-                message: format!("attachment too large ({} bytes, max {})", att.size, max),
-            });
-        }
-    }
-
-    errors
 }
 
 /// Build a new local post with a fresh UUID and current timestamp.
@@ -157,7 +105,7 @@ pub fn new_post(
         ));
     }
     Ok(Post {
-        id: Uuid::new_v4().to_string(),
+        id: Uuid::now_v7().to_string(),
         author_id,
         author_name,
         content,
@@ -277,6 +225,7 @@ mod tests {
 
     #[test]
     fn validate_attachments_all_ok() {
+        let limits = MediaLimits::default();
         let atts = vec![
             Attachment {
                 blob_id: "aa".into(),
@@ -286,10 +235,10 @@ mod tests {
             Attachment {
                 blob_id: "bb".into(),
                 mime_type: "video/mp4".into(),
-                size: MAX_VIDEO_SIZE,
+                size: DEFAULT_MAX_VIDEO_SIZE,
             },
         ];
-        assert!(validate_attachments(&atts).is_empty());
+        assert!(validate_attachments_with_limits(&atts, &limits).is_empty());
     }
 
     #[test]
@@ -301,7 +250,7 @@ mod tests {
                 size: 100,
             })
             .collect();
-        let errs = validate_attachments(&atts);
+        let errs = validate_attachments_with_limits(&atts, &MediaLimits::default());
         assert_eq!(errs.len(), 1);
         assert_eq!(errs[0].constraint, "max_count");
     }
@@ -313,7 +262,7 @@ mod tests {
             mime_type: "image/bmp".into(),
             size: 100,
         }];
-        let errs = validate_attachments(&atts);
+        let errs = validate_attachments_with_limits(&atts, &MediaLimits::default());
         assert_eq!(errs.len(), 1);
         assert_eq!(errs[0].constraint, "mime_type");
         assert_eq!(errs[0].index, 0);
@@ -324,9 +273,9 @@ mod tests {
         let atts = vec![Attachment {
             blob_id: "aa".into(),
             mime_type: "image/png".into(),
-            size: MAX_IMAGE_SIZE + 1,
+            size: DEFAULT_MAX_IMAGE_SIZE + 1,
         }];
-        let errs = validate_attachments(&atts);
+        let errs = validate_attachments_with_limits(&atts, &MediaLimits::default());
         assert_eq!(errs.len(), 1);
         assert_eq!(errs[0].constraint, "max_size");
     }
@@ -337,17 +286,20 @@ mod tests {
         let ok = vec![Attachment {
             blob_id: "aa".into(),
             mime_type: "video/mp4".into(),
-            size: MAX_VIDEO_SIZE,
+            size: DEFAULT_MAX_VIDEO_SIZE,
         }];
-        assert!(validate_attachments(&ok).is_empty());
+        assert!(validate_attachments_with_limits(&ok, &MediaLimits::default()).is_empty());
 
         // One byte over — fail
         let fail = vec![Attachment {
             blob_id: "aa".into(),
             mime_type: "video/mp4".into(),
-            size: MAX_VIDEO_SIZE + 1,
+            size: DEFAULT_MAX_VIDEO_SIZE + 1,
         }];
-        assert_eq!(validate_attachments(&fail).len(), 1);
+        assert_eq!(
+            validate_attachments_with_limits(&fail, &MediaLimits::default()).len(),
+            1
+        );
     }
 
     #[test]
@@ -355,16 +307,19 @@ mod tests {
         let ok = vec![Attachment {
             blob_id: "aa".into(),
             mime_type: "image/jpeg".into(),
-            size: MAX_IMAGE_SIZE,
+            size: DEFAULT_MAX_IMAGE_SIZE,
         }];
-        assert!(validate_attachments(&ok).is_empty());
+        assert!(validate_attachments_with_limits(&ok, &MediaLimits::default()).is_empty());
 
         let fail = vec![Attachment {
             blob_id: "aa".into(),
             mime_type: "image/jpeg".into(),
-            size: MAX_IMAGE_SIZE + 1,
+            size: DEFAULT_MAX_IMAGE_SIZE + 1,
         }];
-        assert_eq!(validate_attachments(&fail).len(), 1);
+        assert_eq!(
+            validate_attachments_with_limits(&fail, &MediaLimits::default()).len(),
+            1
+        );
     }
 
     #[test]

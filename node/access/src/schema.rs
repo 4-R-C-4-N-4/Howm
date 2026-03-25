@@ -3,19 +3,29 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::types::{GROUP_DEFAULT, GROUP_FRIENDS, GROUP_TRUSTED};
 
+/// Current schema version. Bump this when adding migrations.
+const CURRENT_SCHEMA_VERSION: i64 = 2;
+
 /// Create all tables and indexes. Idempotent (IF NOT EXISTS).
 pub fn create_tables(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "
-        PRAGMA journal_mode = WAL;
-        PRAGMA foreign_keys = ON;
+PRAGMA journal_mode = WAL;
+    PRAGMA busy_timeout = 5000;
+    PRAGMA foreign_keys = ON;
 
-        CREATE TABLE IF NOT EXISTS groups (
-            group_id    TEXT PRIMARY KEY,
-            name        TEXT NOT NULL,
-            built_in    INTEGER NOT NULL DEFAULT 0,
-            created_at  INTEGER NOT NULL,
-            description TEXT
+         CREATE TABLE IF NOT EXISTS schema_version (
+            version INTEGER NOT NULL
+         );
+         INSERT OR IGNORE INTO schema_version (rowid, version) VALUES (1, 1);
+
+         CREATE TABLE IF NOT EXISTS groups (
+            group_id        TEXT PRIMARY KEY,
+            name            TEXT NOT NULL,
+            built_in        INTEGER NOT NULL DEFAULT 0,
+            created_at      INTEGER NOT NULL,
+            description     TEXT,
+            parent_group_id TEXT REFERENCES groups(group_id) ON DELETE SET NULL
         );
 
         CREATE TABLE IF NOT EXISTS capability_rules (
@@ -40,7 +50,52 @@ pub fn create_tables(conn: &Connection) -> rusqlite::Result<()> {
         CREATE INDEX IF NOT EXISTS idx_pgm_group ON peer_group_memberships(group_id);
         CREATE INDEX IF NOT EXISTS idx_cr_group  ON capability_rules(group_id);
         ",
-    )
+    )?;
+
+    run_migrations(conn)
+}
+
+/// Run incremental schema migrations based on the stored version.
+///
+/// Wrapped in a transaction so the ALTER + version bump are atomic.
+/// If the process crashes mid-migration, the DB rolls back cleanly.
+fn run_migrations(conn: &Connection) -> rusqlite::Result<()> {
+    let version: i64 = conn.query_row(
+        "SELECT version FROM schema_version WHERE rowid = 1",
+        [],
+        |row| row.get(0),
+    )?;
+
+    if version >= CURRENT_SCHEMA_VERSION {
+        return Ok(());
+    }
+
+    // Use unchecked_transaction — we're not inside an existing transaction.
+    let tx = conn.unchecked_transaction()?;
+
+    if version < 2 {
+        // v2: add parent_group_id column for group inheritance.
+        // Check if the column already exists (the column was added to the
+        // CREATE TABLE statement before migrations existed, so fresh DBs
+        // already have it).
+        let has_column: bool = tx
+            .prepare("SELECT parent_group_id FROM groups LIMIT 0")
+            .is_ok();
+
+        if !has_column {
+            tx.execute_batch(
+                "ALTER TABLE groups ADD COLUMN parent_group_id TEXT REFERENCES groups(group_id) ON DELETE SET NULL;",
+            )?;
+        }
+    }
+
+    // Bump the stored version to current.
+    tx.execute(
+        "UPDATE schema_version SET version = ?1 WHERE rowid = 1",
+        [CURRENT_SCHEMA_VERSION],
+    )?;
+
+    tx.commit()
 }
 
 /// Seed the three built-in groups with their fixed capability rules.
@@ -51,13 +106,14 @@ pub fn seed_built_in_groups(conn: &Connection) -> rusqlite::Result<()> {
         .unwrap()
         .as_secs();
 
-    // ── howm.default ─────────────────────────────────────────────────────
+    // ── howm.default (no parent — base tier) ─────────────────────────────
     upsert_group(
         conn,
         &GROUP_DEFAULT.to_string(),
         "howm.default",
         "Session health + endpoint reflection only",
         now,
+        None,
     )?;
     let default_caps = &[
         "core.session.heartbeat.1",
@@ -68,14 +124,16 @@ pub fn seed_built_in_groups(conn: &Connection) -> rusqlite::Result<()> {
     ];
     seed_capability_rules(conn, &GROUP_DEFAULT.to_string(), default_caps)?;
 
-    // ── howm.friends ─────────────────────────────────────────────────────
+    // ── howm.friends (inherits default) ─────────────────────────────────
     upsert_group(
         conn,
         &GROUP_FRIENDS.to_string(),
         "howm.friends",
-        "Social capabilities + room access + peer exchange",
+        "Inherits default + social, room access, and peer exchange",
         now,
+        Some(&GROUP_DEFAULT.to_string()),
     )?;
+    // Only capabilities added at this tier (default caps inherited via parent)
     let friends_caps = &[
         "howm.social.feed.1",
         "howm.social.messaging.1",
@@ -85,14 +143,16 @@ pub fn seed_built_in_groups(conn: &Connection) -> rusqlite::Result<()> {
     ];
     seed_capability_rules(conn, &GROUP_FRIENDS.to_string(), friends_caps)?;
 
-    // ── howm.trusted ─────────────────────────────────────────────────────
+    // ── howm.trusted (inherits friends → default) ───────────────────────
     upsert_group(
         conn,
         &GROUP_TRUSTED.to_string(),
         "howm.trusted",
-        "Full application access including relay",
+        "Full access — inherits friends + relay",
         now,
+        Some(&GROUP_FRIENDS.to_string()),
     )?;
+    // Only capabilities added at this tier (friends + default inherited)
     let trusted_caps = &["core.network.relay.1"];
     seed_capability_rules(conn, &GROUP_TRUSTED.to_string(), trusted_caps)?;
 
@@ -105,12 +165,20 @@ fn upsert_group(
     name: &str,
     description: &str,
     now: u64,
+    parent_group_id: Option<&str>,
 ) -> rusqlite::Result<()> {
     conn.execute(
-        "INSERT OR IGNORE INTO groups (group_id, name, built_in, created_at, description)
-         VALUES (?1, ?2, 1, ?3, ?4)",
-        rusqlite::params![group_id, name, now, description],
+        "INSERT OR IGNORE INTO groups (group_id, name, built_in, created_at, description, parent_group_id)
+         VALUES (?1, ?2, 1, ?3, ?4, ?5)",
+        rusqlite::params![group_id, name, now, description, parent_group_id],
     )?;
+    // Update parent if group already existed (migration path)
+    if let Some(pid) = parent_group_id {
+        conn.execute(
+            "UPDATE groups SET parent_group_id = ?1 WHERE group_id = ?2 AND parent_group_id IS NULL",
+            rusqlite::params![pid, group_id],
+        )?;
+    }
     Ok(())
 }
 

@@ -184,35 +184,15 @@ mod tests {
     // ── Trusted tier ─────────────────────────────────────────────────────
 
     #[test]
-    fn trusted_peer_gets_relay() {
+    fn trusted_peer_gets_everything() {
         let (db, _dir) = test_db();
         let peer = fake_peer(3);
         db.assign_peer_to_group(&peer, &GROUP_TRUSTED).unwrap();
 
-        // Relay now allowed
+        // Trusted inherits ALL capabilities (default + friends + relay)
         assert!(db
             .resolve_permission(&peer, "core.network.relay.1")
             .is_allowed());
-
-        // Default caps still work
-        assert!(db
-            .resolve_permission(&peer, "core.session.heartbeat.1")
-            .is_allowed());
-
-        // Friends caps NOT allowed (trusted only adds relay, doesn't include friends caps)
-        // Peer needs to be in BOTH trusted and friends for social caps
-        assert!(!db
-            .resolve_permission(&peer, "howm.social.feed.1")
-            .is_allowed());
-    }
-
-    #[test]
-    fn trusted_plus_friends_gets_everything() {
-        let (db, _dir) = test_db();
-        let peer = fake_peer(4);
-        db.assign_peer_to_group(&peer, &GROUP_FRIENDS).unwrap();
-        db.assign_peer_to_group(&peer, &GROUP_TRUSTED).unwrap();
-
         assert!(db
             .resolve_permission(&peer, "core.session.heartbeat.1")
             .is_allowed());
@@ -220,7 +200,16 @@ mod tests {
             .resolve_permission(&peer, "howm.social.feed.1")
             .is_allowed());
         assert!(db
-            .resolve_permission(&peer, "core.network.relay.1")
+            .resolve_permission(&peer, "howm.social.messaging.1")
+            .is_allowed());
+        assert!(db
+            .resolve_permission(&peer, "howm.social.files.1")
+            .is_allowed());
+        assert!(db
+            .resolve_permission(&peer, "howm.world.room.1")
+            .is_allowed());
+        assert!(db
+            .resolve_permission(&peer, "core.network.peerexchange.1")
             .is_allowed());
     }
 

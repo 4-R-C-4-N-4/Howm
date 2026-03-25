@@ -307,7 +307,7 @@ mod tests {
         let mut client = connect(addr).await.unwrap();
         let msg = ProtocolMessage::Confirm {
             personal_hash: vec![1u8; 32],
-            active_set: vec!["howm.social.feed.1".to_string()],
+            active_set: vec!["howm.feed.1".to_string()],
             accepted_params: None,
         };
         client.send(&msg).await.unwrap();
@@ -315,7 +315,7 @@ mod tests {
         let received = accept_task.await.unwrap();
         match received {
             ProtocolMessage::Confirm { active_set, .. } => {
-                assert_eq!(active_set, vec!["howm.social.feed.1"]);
+                assert_eq!(active_set, vec!["howm.feed.1"]);
             }
             other => panic!("expected Confirm, got {:?}", other),
         }
@@ -418,7 +418,7 @@ mod tests {
 
         let mut params = BTreeMap::new();
         params.insert(
-            "howm.social.feed.1".to_string(),
+            "howm.feed.1".to_string(),
             ScopeParams {
                 rate_limit: 10,
                 ttl: 3600,
@@ -429,7 +429,7 @@ mod tests {
         let mut client = connect(addr).await.unwrap();
         let msg = ProtocolMessage::Confirm {
             personal_hash: vec![2u8; 32],
-            active_set: vec!["howm.social.feed.1".to_string()],
+            active_set: vec!["howm.feed.1".to_string()],
             accepted_params: Some(params),
         };
         client.send(&msg).await.unwrap();
@@ -440,7 +440,7 @@ mod tests {
                 accepted_params: Some(p),
                 ..
             } => {
-                let scope = p.get("howm.social.feed.1").unwrap();
+                let scope = p.get("howm.feed.1").unwrap();
                 assert_eq!(scope.rate_limit, 10);
                 assert_eq!(scope.ttl, 3600);
             }

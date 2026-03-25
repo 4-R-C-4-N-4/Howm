@@ -1,7 +1,7 @@
+use parking_lot::Mutex;
 use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 use std::path::Path;
-use std::sync::Mutex;
 
 /// Local message storage backed by SQLite.
 pub struct MessageDb {
@@ -49,7 +49,9 @@ impl MessageDb {
     pub fn open(data_dir: &Path) -> anyhow::Result<Self> {
         let db_path = data_dir.join("messaging.db");
         let conn = Connection::open(db_path)?;
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
+        conn.execute_batch(
+            "PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;",
+        )?;
         Self::migrate(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
@@ -58,7 +60,12 @@ impl MessageDb {
 
     fn migrate(conn: &Connection) -> anyhow::Result<()> {
         conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS messages (
+            "CREATE TABLE IF NOT EXISTS schema_version (
+                version INTEGER NOT NULL
+            );
+            INSERT OR IGNORE INTO schema_version (rowid, version) VALUES (1, 1);
+
+            CREATE TABLE IF NOT EXISTS messages (
                 msg_id          TEXT PRIMARY KEY,
                 conversation_id TEXT NOT NULL,
                 direction       TEXT NOT NULL,
@@ -104,7 +111,7 @@ impl MessageDb {
     // ── Insert ───────────────────────────────────────────────────────────────
 
     pub fn insert_message(&self, msg: &Message) -> anyhow::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         conn.execute(
             "INSERT INTO messages (msg_id, conversation_id, direction, sender_peer_id, sent_at, body, delivery_status)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -124,7 +131,7 @@ impl MessageDb {
     // ── Update ───────────────────────────────────────────────────────────────
 
     pub fn update_delivery_status(&self, msg_id: &str, status: &str) -> anyhow::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         conn.execute(
             "UPDATE messages SET delivery_status = ?1 WHERE msg_id = ?2",
             params![status, msg_id],
@@ -135,7 +142,7 @@ impl MessageDb {
     /// Transition all pending messages to a peer to 'failed'.
     pub fn fail_pending_to_peer(&self, conversation_id: &str, reason: &str) -> anyhow::Result<u64> {
         let _ = reason; // stored in delivery_status as "failed"
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         let count = conn.execute(
             "UPDATE messages SET delivery_status = 'failed'
              WHERE conversation_id = ?1 AND direction = 'sent' AND delivery_status = 'pending'",
@@ -154,7 +161,7 @@ impl MessageDb {
         cursor: Option<i64>,
         limit: i64,
     ) -> anyhow::Result<(Vec<Message>, Option<i64>)> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "SELECT msg_id, conversation_id, direction, sender_peer_id, sent_at, body, delivery_status
              FROM messages
@@ -189,8 +196,11 @@ impl MessageDb {
     }
 
     /// List conversations with last message and unread count.
-    pub fn list_conversations(&self, local_peer_id: &str) -> anyhow::Result<Vec<ConversationSummary>> {
-        let conn = self.conn.lock().unwrap();
+    pub fn list_conversations(
+        &self,
+        local_peer_id: &str,
+    ) -> anyhow::Result<Vec<ConversationSummary>> {
+        let conn = self.conn.lock();
 
         // Get distinct conversation_ids with their latest message
         let mut stmt = conn.prepare(
@@ -284,25 +294,6 @@ impl MessageDb {
         Ok(count)
     }
 
-    pub fn unread_count(&self, conversation_id: &str) -> anyhow::Result<i64> {
-        let conn = self.conn.lock().unwrap();
-        self.unread_count_inner(&conn, conversation_id)
-    }
-
-    /// Total unread across all conversations.
-    pub fn total_unread(&self) -> anyhow::Result<i64> {
-        let conn = self.conn.lock().unwrap();
-        // This is a bit expensive but fine for polling
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM messages m
-             LEFT JOIN read_markers rm ON m.conversation_id = rm.conversation_id
-             WHERE m.direction = 'received' AND m.sent_at > COALESCE(rm.read_at, 0)",
-            [],
-            |row| row.get(0),
-        )?;
-        Ok(count)
-    }
-
     // ── Mark read ────────────────────────────────────────────────────────────
 
     pub fn mark_read(&self, conversation_id: &str) -> anyhow::Result<()> {
@@ -311,7 +302,7 @@ impl MessageDb {
             .unwrap()
             .as_millis() as i64;
 
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         conn.execute(
             "INSERT INTO read_markers (conversation_id, read_at) VALUES (?1, ?2)
              ON CONFLICT(conversation_id) DO UPDATE SET read_at = ?2",
@@ -320,11 +311,31 @@ impl MessageDb {
         Ok(())
     }
 
+    // ── Unread total ──────────────────────────────────────────────────────────
+
+    /// Total unread received messages across all conversations.
+    pub fn total_unread_count(&self) -> anyhow::Result<u64> {
+        let conn = self.conn.lock();
+        // A message is unread if it's received and its sent_at is after the
+        // conversation's read marker (or there is no read marker).
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM messages m
+             WHERE m.direction = 'received'
+               AND m.sent_at > COALESCE(
+                   (SELECT r.read_at FROM read_markers r WHERE r.conversation_id = m.conversation_id),
+                   0
+               )",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(count as u64)
+    }
+
     // ── Delete ───────────────────────────────────────────────────────────────
 
     /// Delete a message. Only the sender can delete their own sent messages.
     pub fn delete_message(&self, msg_id: &str, local_peer_id: &str) -> anyhow::Result<bool> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
 
         // Check that the message exists and was sent by us
         let row: Option<(String, String)> = conn
@@ -450,9 +461,15 @@ mod tests {
             .unwrap();
         }
 
-        assert_eq!(db.unread_count(&conv).unwrap(), 3);
+        // Check unread via list_conversations
+        let convos = db.list_conversations("cGVlcjE=").unwrap();
+        assert_eq!(convos.len(), 1);
+        assert_eq!(convos[0].unread_count, 3);
+
         db.mark_read(&conv).unwrap();
-        assert_eq!(db.unread_count(&conv).unwrap(), 0);
+
+        let convos = db.list_conversations("cGVlcjE=").unwrap();
+        assert_eq!(convos[0].unread_count, 0);
 
         // One more after mark-read — must be in the future relative to mark_read's now()
         std::thread::sleep(std::time::Duration::from_millis(10));
@@ -471,7 +488,9 @@ mod tests {
             delivery_status: "delivered".into(),
         })
         .unwrap();
-        assert_eq!(db.unread_count(&conv).unwrap(), 1);
+
+        let convos = db.list_conversations("cGVlcjE=").unwrap();
+        assert_eq!(convos[0].unread_count, 1);
     }
 
     #[test]
@@ -557,5 +576,279 @@ mod tests {
 
         let (msgs, _) = db.get_conversation(&conv, None, 50).unwrap();
         assert!(msgs.iter().all(|m| m.delivery_status == "failed"));
+    }
+
+    #[test]
+    fn conversation_id_different_peers_differ() {
+        // Valid 32-byte base64 keys
+        let a = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+        let b = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=";
+        let c = "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=";
+        assert_ne!(
+            MessageDb::conversation_id(a, b),
+            MessageDb::conversation_id(a, c),
+        );
+    }
+
+    #[test]
+    fn conversation_id_same_peer() {
+        let a = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+        let id = MessageDb::conversation_id(a, a);
+        assert_eq!(id.len(), 64); // SHA-256 hex
+    }
+
+    #[test]
+    fn insert_duplicate_msg_id_fails() {
+        let (db, _dir) = setup();
+        let conv = MessageDb::conversation_id("cGVlcjE=", "cGVlcjI=");
+        let msg = Message {
+            msg_id: "dup-1".into(),
+            conversation_id: conv.clone(),
+            direction: "sent".into(),
+            sender_peer_id: "cGVlcjE=".into(),
+            sent_at: 1000,
+            body: "hello".into(),
+            delivery_status: "pending".into(),
+        };
+        db.insert_message(&msg).unwrap();
+        assert!(db.insert_message(&msg).is_err());
+    }
+
+    #[test]
+    fn get_conversation_empty() {
+        let (db, _dir) = setup();
+        let conv = MessageDb::conversation_id("cGVlcjE=", "cGVlcjI=");
+        let (msgs, cursor) = db.get_conversation(&conv, None, 50).unwrap();
+        assert!(msgs.is_empty());
+        assert!(cursor.is_none());
+    }
+
+    #[test]
+    fn get_conversation_cursor_excludes_boundary() {
+        let (db, _dir) = setup();
+        let conv = MessageDb::conversation_id("cGVlcjE=", "cGVlcjI=");
+        for i in 0..5 {
+            db.insert_message(&Message {
+                msg_id: format!("msg-{}", i),
+                conversation_id: conv.clone(),
+                direction: "sent".into(),
+                sender_peer_id: "cGVlcjE=".into(),
+                sent_at: 1000 + i,
+                body: format!("msg {}", i),
+                delivery_status: "delivered".into(),
+            })
+            .unwrap();
+        }
+        let (msgs, _) = db.get_conversation(&conv, Some(1002), 50).unwrap();
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].sent_at, 1003);
+        assert_eq!(msgs[1].sent_at, 1004);
+    }
+
+    #[test]
+    fn list_conversations_empty() {
+        let (db, _dir) = setup();
+        let convos = db.list_conversations("cGVlcjE=").unwrap();
+        assert!(convos.is_empty());
+    }
+
+    #[test]
+    fn list_conversations_multiple() {
+        let (db, _dir) = setup();
+        let local = "cGVlcjE=";
+        let conv1 = MessageDb::conversation_id(local, "cGVlcjI=");
+        db.insert_message(&Message {
+            msg_id: "m1".into(),
+            conversation_id: conv1.clone(),
+            direction: "received".into(),
+            sender_peer_id: "cGVlcjI=".into(),
+            sent_at: 1000,
+            body: "hello from peer2".into(),
+            delivery_status: "delivered".into(),
+        })
+        .unwrap();
+        let conv2 = MessageDb::conversation_id(local, "cGVlcjM=");
+        db.insert_message(&Message {
+            msg_id: "m2".into(),
+            conversation_id: conv2.clone(),
+            direction: "received".into(),
+            sender_peer_id: "cGVlcjM=".into(),
+            sent_at: 2000,
+            body: "hello from peer3".into(),
+            delivery_status: "delivered".into(),
+        })
+        .unwrap();
+        let convos = db.list_conversations(local).unwrap();
+        assert_eq!(convos.len(), 2);
+        assert_eq!(convos[0].conversation_id, conv2);
+        assert_eq!(convos[1].conversation_id, conv1);
+    }
+
+    #[test]
+    fn list_conversations_last_message_preview() {
+        let (db, _dir) = setup();
+        let local = "cGVlcjE=";
+        let conv = MessageDb::conversation_id(local, "cGVlcjI=");
+        db.insert_message(&Message {
+            msg_id: "m1".into(),
+            conversation_id: conv.clone(),
+            direction: "received".into(),
+            sender_peer_id: "cGVlcjI=".into(),
+            sent_at: 1000,
+            body: "first".into(),
+            delivery_status: "delivered".into(),
+        })
+        .unwrap();
+        db.insert_message(&Message {
+            msg_id: "m2".into(),
+            conversation_id: conv.clone(),
+            direction: "sent".into(),
+            sender_peer_id: local.into(),
+            sent_at: 2000,
+            body: "second".into(),
+            delivery_status: "delivered".into(),
+        })
+        .unwrap();
+        let convos = db.list_conversations(local).unwrap();
+        assert_eq!(convos.len(), 1);
+        let last = convos[0].last_message.as_ref().unwrap();
+        assert_eq!(last.body_preview, "second");
+        assert_eq!(last.direction, "sent");
+    }
+
+    #[test]
+    fn list_conversations_long_preview_truncated() {
+        let (db, _dir) = setup();
+        let local = "cGVlcjE=";
+        let conv = MessageDb::conversation_id(local, "cGVlcjI=");
+        let long_body = "x".repeat(200);
+        db.insert_message(&Message {
+            msg_id: "m1".into(),
+            conversation_id: conv.clone(),
+            direction: "received".into(),
+            sender_peer_id: "cGVlcjI=".into(),
+            sent_at: 1000,
+            body: long_body,
+            delivery_status: "delivered".into(),
+        })
+        .unwrap();
+        let convos = db.list_conversations(local).unwrap();
+        let preview = &convos[0].last_message.as_ref().unwrap().body_preview;
+        assert!(preview.len() < 200);
+        assert!(preview.ends_with('\u{2026}'));
+    }
+
+    #[test]
+    fn fail_pending_only_affects_pending_sent() {
+        let (db, _dir) = setup();
+        let conv = MessageDb::conversation_id("cGVlcjE=", "cGVlcjI=");
+        db.insert_message(&Message {
+            msg_id: "pending-1".into(),
+            conversation_id: conv.clone(),
+            direction: "sent".into(),
+            sender_peer_id: "cGVlcjE=".into(),
+            sent_at: 1000,
+            body: "pending".into(),
+            delivery_status: "pending".into(),
+        })
+        .unwrap();
+        db.insert_message(&Message {
+            msg_id: "delivered-1".into(),
+            conversation_id: conv.clone(),
+            direction: "sent".into(),
+            sender_peer_id: "cGVlcjE=".into(),
+            sent_at: 1001,
+            body: "delivered".into(),
+            delivery_status: "delivered".into(),
+        })
+        .unwrap();
+        db.insert_message(&Message {
+            msg_id: "recv-1".into(),
+            conversation_id: conv.clone(),
+            direction: "received".into(),
+            sender_peer_id: "cGVlcjI=".into(),
+            sent_at: 1002,
+            body: "from peer".into(),
+            delivery_status: "delivered".into(),
+        })
+        .unwrap();
+        let failed = db.fail_pending_to_peer(&conv, "peer_offline").unwrap();
+        assert_eq!(failed, 1);
+        let (msgs, _) = db.get_conversation(&conv, None, 50).unwrap();
+        assert_eq!(
+            msgs.iter()
+                .find(|m| m.msg_id == "pending-1")
+                .unwrap()
+                .delivery_status,
+            "failed"
+        );
+        assert_eq!(
+            msgs.iter()
+                .find(|m| m.msg_id == "delivered-1")
+                .unwrap()
+                .delivery_status,
+            "delivered"
+        );
+        assert_eq!(
+            msgs.iter()
+                .find(|m| m.msg_id == "recv-1")
+                .unwrap()
+                .delivery_status,
+            "delivered"
+        );
+    }
+
+    #[test]
+    fn fail_pending_no_pending_returns_zero() {
+        let (db, _dir) = setup();
+        let conv = MessageDb::conversation_id("cGVlcjE=", "cGVlcjI=");
+        db.insert_message(&Message {
+            msg_id: "m1".into(),
+            conversation_id: conv.clone(),
+            direction: "sent".into(),
+            sender_peer_id: "cGVlcjE=".into(),
+            sent_at: 1000,
+            body: "test".into(),
+            delivery_status: "delivered".into(),
+        })
+        .unwrap();
+        let failed = db.fail_pending_to_peer(&conv, "peer_offline").unwrap();
+        assert_eq!(failed, 0);
+    }
+
+    #[test]
+    fn delete_nonexistent_returns_false() {
+        let (db, _dir) = setup();
+        assert!(!db.delete_message("nope", "cGVlcjE=").unwrap());
+    }
+
+    #[test]
+    fn mark_read_idempotent() {
+        let (db, _dir) = setup();
+        let conv = MessageDb::conversation_id("cGVlcjE=", "cGVlcjI=");
+        db.mark_read(&conv).unwrap();
+        db.mark_read(&conv).unwrap();
+    }
+
+    #[test]
+    fn delivery_status_update_nonexistent() {
+        let (db, _dir) = setup();
+        db.update_delivery_status("nonexistent", "delivered")
+            .unwrap();
+    }
+
+    #[test]
+    fn cbor_envelope_roundtrip() {
+        use crate::api::{decode_dm_envelope_for_test, encode_dm_envelope_for_test};
+        let msg_id = [1u8; 16];
+        let sender = vec![2u8; 32];
+        let sent_at = 1700000000u64;
+        let body = "hello world";
+        let encoded = encode_dm_envelope_for_test(&msg_id, &sender, sent_at, body);
+        let (d_id, d_sender, d_sent, d_body) = decode_dm_envelope_for_test(&encoded).unwrap();
+        assert_eq!(d_id, msg_id);
+        assert_eq!(d_sender, sender);
+        assert_eq!(d_sent, sent_at);
+        assert_eq!(d_body, body);
     }
 }

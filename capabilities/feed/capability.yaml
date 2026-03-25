@@ -1,9 +1,9 @@
-name: social.feed
+name: feed
 version: 0.1.0
-description: Distributed social feed
+description: Distributed feed
 
 api:
-  base_path: /cap/social
+  base_path: /cap/feed
   endpoints:
     - name: get_feed
       method: GET

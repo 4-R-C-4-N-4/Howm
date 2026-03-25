@@ -153,6 +153,34 @@ pub async fn delete_group(
     Ok(Json(json!({ "status": "deleted", "group_id": group_id })))
 }
 
+// ── List group members (peer IDs) ─────────────────────────────────────────────
+
+pub async fn list_group_members(
+    State(state): State<AppState>,
+    Path(group_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let uuid = parse_uuid(&group_id)?;
+
+    // Verify group exists
+    state
+        .access_db
+        .get_group(&uuid)
+        .map_err(|e| AppError::Internal(format!("access_db: {}", e)))?
+        .ok_or_else(|| AppError::NotFound(format!("group {} not found", group_id)))?;
+
+    let member_ids = state
+        .access_db
+        .list_group_member_ids(&uuid)
+        .map_err(|e| AppError::Internal(format!("access_db: {}", e)))?;
+
+    let hex_ids: Vec<String> = member_ids.iter().map(hex::encode).collect();
+
+    Ok(Json(json!({
+        "group_id": group_id,
+        "members": hex_ids,
+    })))
+}
+
 // ── List peer groups ─────────────────────────────────────────────────────────
 
 pub async fn list_peer_groups(

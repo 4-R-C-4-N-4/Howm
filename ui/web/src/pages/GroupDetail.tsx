@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useState, useCallback, useRef, useEffect } from 'react';
 import {
   getAccessGroup, updateAccessGroup, deleteAccessGroup,
-  assignPeerToGroup, removePeerFromGroup,
+  assignPeerToGroup, removePeerFromGroup, getGroupMembers,
 } from '../api/access';
 import { getPeers } from '../api/nodes';
 import type { CapabilityRule } from '../api/access';
@@ -35,6 +35,12 @@ export function GroupDetail() {
   const { data: peers = [] } = useQuery({
     queryKey: ['peers'],
     queryFn: getPeers,
+  });
+
+  const { data: memberData } = useQuery({
+    queryKey: ['group-members', groupId],
+    queryFn: () => getGroupMembers(groupId!),
+    enabled: !!groupId,
   });
 
   // Editable name/description state for custom groups
@@ -73,6 +79,7 @@ export function GroupDetail() {
     mutationFn: (peerId: string) => assignPeerToGroup(peerId, groupId!),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['access-group', groupId] });
+      queryClient.invalidateQueries({ queryKey: ['group-members', groupId] });
       showToast('success', 'Peer added');
       setShowAddPeer(false);
       setPeerSearch('');
@@ -84,6 +91,7 @@ export function GroupDetail() {
     mutationFn: (peerId: string) => removePeerFromGroup(peerId, groupId!),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['access-group', groupId] });
+      queryClient.invalidateQueries({ queryKey: ['group-members', groupId] });
       showToast('success', 'Peer removed');
     },
     onError: () => showToast('error', 'Failed to remove peer'),
@@ -148,10 +156,10 @@ export function GroupDetail() {
     }
   };
 
-  // Members — group.capabilities contains member info via the detail endpoint
-  // We get member peer IDs from the group endpoint and cross-ref with /node/peers
-  // For now, list peers and show who's in this group
-  const memberPeerIds: string[] = []; // Will be populated from group detail endpoint
+  // Members — fetched from /access/groups/:id/members endpoint
+  const memberPeerIds: string[] = memberData?.members ?? [];
+
+  const memberPeers = peers.filter(p => memberPeerIds.includes(peerIdToHex(p.wg_pubkey)));
 
   const availablePeers = peers
     .filter(p => !memberPeerIds.includes(peerIdToHex(p.wg_pubkey)))
@@ -191,11 +199,11 @@ export function GroupDetail() {
       {/* Members */}
       <section style={cardStyle}>
         <h3 style={h3Style}>Members</h3>
-        {peers.length === 0 ? (
-          <p style={mutedStyle}>No peers to show</p>
+        {memberPeers.length === 0 ? (
+          <p style={mutedStyle}>No members in this group</p>
         ) : (
           <div>
-            {peers.map(p => {
+            {memberPeers.map(p => {
               const hexId = peerIdToHex(p.wg_pubkey);
               return (
                 <div key={p.node_id} style={memberRowStyle}>

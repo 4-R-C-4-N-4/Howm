@@ -2,22 +2,22 @@
 
 Linked BRD: `BRD-001-enhanced-social-feed.md`
 Capability: `capabilities/social-feed/`
-P2P-CD name: `howm.social.feed.1`
+P2P-CD name: `howm.feed.1`
 
 ---
 
-## FEAT-001-0: Capability Declaration — `howm.social.feed.1`
+## FEAT-001-0: Capability Declaration — `howm.feed.1`
 
-**Capability:** Register `howm.social.feed.1` in the P2P-CD capability manifest with the correct role, mutual flag, and methods param.
+**Capability:** Register `howm.feed.1` in the P2P-CD capability manifest with the correct role, mutual flag, and methods param.
 
 **Scope:**
-- Declare `howm.social.feed.1` with `role: BOTH`, `mutual: true`, and `scope.params: { methods: ["post.list", "post.get"] }` per FR-0.1.
+- Declare `howm.feed.1` with `role: BOTH`, `mutual: true`, and `scope.params: { methods: ["post.list", "post.get"] }` per FR-0.1.
 - Confirm the capability activates correctly in a BOTH + BOTH session with another node running the social feed capability.
-- Confirm `core.data.blob.1` (CONSUME) and `core.data.event.1` (PROVIDE on `social.*` topics) are negotiated as part of the active set alongside `howm.social.feed.1`.
+- Confirm `core.data.blob.1` (CONSUME) and `core.data.event.1` (PROVIDE on `social.*` topics) are negotiated as part of the active set alongside `howm.feed.1`.
 
 **Acceptance criteria:**
-- `howm.social.feed.1` appears in the local node's active capability set after handshake with a peer also running social-feed.
-- A peer not running social-feed produces no active set match for `howm.social.feed.1` (session continues on other capabilities).
+- `howm.feed.1` appears in the local node's active capability set after handshake with a peer also running social-feed.
+- A peer not running social-feed produces no active set match for `howm.feed.1` (session continues on other capabilities).
 - `post.list` and `post.get` are confirmed as the active RPC method intersection at CONFIRM time.
 
 ---

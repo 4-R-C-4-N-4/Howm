@@ -235,7 +235,7 @@ const { data: peerGroups } = useQuery({
 │  │  ✓ core.session.latency.1                          │ │
 │  │  ✓ core.network.endpoint.1                         │ │
 │  │  ✓ core.session.timesync.1                         │ │
-│  │  ✓ howm.social.feed.1                              │ │
+│  │  ✓ howm.feed.1                              │ │
 │  │  ✓ howm.social.messaging.1                         │ │
 │  │  ✓ howm.social.files.1                             │ │
 │  │  ✓ howm.world.room.1                               │ │
@@ -262,7 +262,7 @@ Fetched from `GET /access/peers/:peer_id/permissions`. Displayed as a capability
 
 - `✓` green — allowed
 - `✕` red — denied
-- Gray subtext for rate_limit/ttl if present: `✓ howm.social.feed.1  (rate: 100/min)`
+- Gray subtext for rate_limit/ttl if present: `✓ howm.feed.1  (rate: 100/min)`
 
 Capabilities are sorted: allowed first (alphabetical), then denied (alphabetical).
 
@@ -291,7 +291,7 @@ No confirmation modal for promotions — granting access is non-destructive.
 │                                                        │
 │  Moving alice to Default will remove access to:        │
 │                                                        │
-│  ✕ howm.social.feed.1                                  │
+│  ✕ howm.feed.1                                  │
 │  ✕ howm.social.messaging.1                             │
 │  ✕ howm.social.files.1                                 │
 │  ✕ howm.world.room.1                                   │
@@ -320,7 +320,7 @@ const TIER_CAPABILITIES: Record<string, string[]> = {
   ],
   [GROUP_FRIENDS]: [
     // includes all default caps, plus:
-    'howm.social.feed.1',
+    'howm.feed.1',
     'howm.social.messaging.1',
     'howm.social.files.1',
     'howm.world.room.1',
@@ -436,7 +436,7 @@ Triggered by `[+ Create Group]` button.
 │  │  ☑ core.session.latency.1                          │  │
 │  │  ☑ core.network.endpoint.1                         │  │
 │  │  ☑ core.session.timesync.1                         │  │
-│  │  ☐ howm.social.feed.1                              │  │
+│  │  ☐ howm.feed.1                              │  │
 │  │  ☐ howm.social.messaging.1                         │  │
 │  │  ☐ howm.social.files.1                             │  │
 │  │  ☐ howm.world.room.1                               │  │
@@ -496,7 +496,7 @@ const { data: groups } = useQuery({
 │  │  ✓ core.session.latency.1                          │  │
 │  │  ✓ core.network.endpoint.1                         │  │
 │  │  ✓ core.session.timesync.1                         │  │
-│  │  ✓ howm.social.feed.1                              │  │
+│  │  ✓ howm.feed.1                              │  │
 │  │  ✓ howm.social.messaging.1                         │  │
 │  │  ✓ howm.social.files.1                             │  │
 │  │  ✓ howm.world.room.1                               │  │
@@ -639,7 +639,7 @@ export const TIER_CAPABILITIES: Record<string, string[]> = {
   [GROUP_FRIENDS]: [
     ...['core.session.heartbeat.1', 'core.session.attest.1', 'core.session.latency.1',
         'core.network.endpoint.1', 'core.session.timesync.1'],
-    'howm.social.feed.1',
+    'howm.feed.1',
     'howm.social.messaging.1',
     'howm.social.files.1',
     'howm.world.room.1',
@@ -648,7 +648,7 @@ export const TIER_CAPABILITIES: Record<string, string[]> = {
   [GROUP_TRUSTED]: [
     ...['core.session.heartbeat.1', 'core.session.attest.1', 'core.session.latency.1',
         'core.network.endpoint.1', 'core.session.timesync.1',
-        'howm.social.feed.1', 'howm.social.messaging.1', 'howm.social.files.1',
+        'howm.feed.1', 'howm.social.messaging.1', 'howm.social.files.1',
         'howm.world.room.1', 'core.network.peerexchange.1'],
     'core.network.relay.1',
   ],

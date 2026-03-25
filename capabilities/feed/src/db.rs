@@ -1,11 +1,12 @@
-// SQLite storage for social feed posts and attachments.
+// SQLite storage for feed posts and attachments.
 //
 // Replaces the JSON flat-file storage (posts.json, peer_posts.json) with a
-// single SQLite database at $DATA_DIR/social_feed.db. WAL mode for concurrent
+// single SQLite database at $DATA_DIR/feed.db. WAL mode for concurrent
 // reads from SSE/status endpoints while writes happen on the ingest path.
 
+use parking_lot::Mutex;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use rusqlite::{params, Connection, OptionalExtension};
 
@@ -30,16 +31,16 @@ pub struct BlobTransfer {
 
 // ── Database ─────────────────────────────────────────────────────────────────
 
-/// Thread-safe SQLite handle for social feed storage.
+/// Thread-safe SQLite handle for feed storage.
 #[derive(Clone)]
 pub struct FeedDb {
     conn: Arc<Mutex<Connection>>,
 }
 
 impl FeedDb {
-    /// Open (or create) the social feed database in the given directory.
+    /// Open (or create) the feed database in the given directory.
     pub fn open(data_dir: &Path) -> anyhow::Result<Self> {
-        let db_path = data_dir.join("social_feed.db");
+        let db_path = data_dir.join("feed.db");
         let conn = Connection::open(&db_path)?;
         conn.execute_batch(
             "PRAGMA journal_mode = WAL;
@@ -65,7 +66,12 @@ impl FeedDb {
 
     fn migrate(conn: &Connection) -> anyhow::Result<()> {
         conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS posts (
+            "CREATE TABLE IF NOT EXISTS schema_version (
+                version INTEGER NOT NULL
+            );
+            INSERT OR IGNORE INTO schema_version (rowid, version) VALUES (1, 1);
+
+            CREATE TABLE IF NOT EXISTS posts (
                 id            TEXT PRIMARY KEY,
                 author_id     TEXT NOT NULL,
                 author_name   TEXT NOT NULL,
@@ -104,7 +110,7 @@ impl FeedDb {
     /// Insert a new post with optional attachments. Returns false if a post
     /// with the same ID already exists (dedup).
     pub fn insert_post(&self, post: &Post) -> anyhow::Result<bool> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         let tx = conn.unchecked_transaction()?;
 
         let inserted = tx.execute(
@@ -140,7 +146,7 @@ impl FeedDb {
     /// Pass `None` to delete regardless of origin.
     /// Returns true if a row was removed.
     pub fn delete_post(&self, post_id: &str, origin_filter: Option<&str>) -> anyhow::Result<bool> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         let removed = match origin_filter {
             Some("local") => conn.execute(
                 "DELETE FROM posts WHERE id = ?1 AND origin = 'local'",
@@ -157,7 +163,7 @@ impl FeedDb {
 
     /// Load all posts (local + peer), sorted newest first, with pagination.
     pub fn load_all(&self, limit: usize, offset: usize) -> anyhow::Result<(Vec<Post>, usize)> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         let total: usize = conn.query_row("SELECT COUNT(*) FROM posts", [], |r| r.get(0))?;
         let posts = Self::query_posts(
             &conn,
@@ -171,7 +177,7 @@ impl FeedDb {
 
     /// Load only local posts, sorted newest first, with pagination.
     pub fn load_mine(&self, limit: usize, offset: usize) -> anyhow::Result<(Vec<Post>, usize)> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         let total: usize = conn.query_row(
             "SELECT COUNT(*) FROM posts WHERE origin = 'local'",
             [],
@@ -195,7 +201,7 @@ impl FeedDb {
         offset: usize,
     ) -> anyhow::Result<(Vec<Post>, usize)> {
         let origin = format!("peer:{}", peer_id);
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         let total: usize = conn.query_row(
             "SELECT COUNT(*) FROM posts WHERE origin = ?1",
             params![origin],
@@ -213,7 +219,7 @@ impl FeedDb {
 
     /// Check if a post ID exists.
     pub fn post_exists(&self, post_id: &str) -> anyhow::Result<bool> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         let exists: bool = conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM posts WHERE id = ?1)",
             params![post_id],
@@ -257,7 +263,7 @@ impl FeedDb {
 
     /// Insert a pending blob transfer record for an inbound post attachment.
     pub fn insert_blob_transfer(&self, post_id: &str, blob_id: &str) -> anyhow::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         conn.execute(
             "INSERT OR IGNORE INTO blob_transfers (post_id, blob_id, status, bytes_received, updated_at)
              VALUES (?1, ?2, 'pending', 0, strftime('%s','now'))",
@@ -275,7 +281,7 @@ impl FeedDb {
         status: &str,
         bytes_received: u64,
     ) -> anyhow::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         conn.execute(
             "UPDATE blob_transfers SET status = ?3, bytes_received = ?4,
              updated_at = strftime('%s','now')
@@ -287,7 +293,7 @@ impl FeedDb {
 
     /// Get all blob transfer records for a post.
     pub fn get_post_transfers(&self, post_id: &str) -> anyhow::Result<Vec<BlobTransfer>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "SELECT bt.post_id, bt.blob_id, bt.status, bt.bytes_received, bt.updated_at,
                     a.mime_type, a.size
@@ -316,7 +322,7 @@ impl FeedDb {
 
     /// Get all pending or fetching transfers (for startup recovery / polling).
     pub fn get_active_transfers(&self) -> anyhow::Result<Vec<BlobTransfer>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "SELECT bt.post_id, bt.blob_id, bt.status, bt.bytes_received, bt.updated_at,
                     a.mime_type, a.size
@@ -345,7 +351,7 @@ impl FeedDb {
 
     /// Check if all blob transfers for a post are complete.
     pub fn are_all_transfers_complete(&self, post_id: &str) -> anyhow::Result<bool> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         let incomplete: i64 = conn.query_row(
             "SELECT COUNT(*) FROM blob_transfers WHERE post_id = ?1 AND status != 'complete'",
             params![post_id],
@@ -357,7 +363,7 @@ impl FeedDb {
     /// Look up the MIME type for a blob from the attachments table.
     /// Returns the first match (a blob may appear in multiple posts).
     pub fn get_attachment_mime(&self, blob_id: &str) -> anyhow::Result<Option<String>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         let mime: Option<String> = conn
             .query_row(
                 "SELECT mime_type FROM attachments WHERE blob_id = ?1 LIMIT 1",
@@ -370,7 +376,7 @@ impl FeedDb {
 
     /// Get the origin (peer_id) for a post. Returns the raw origin string.
     pub fn get_post_origin(&self, post_id: &str) -> anyhow::Result<Option<String>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         let origin: Option<String> = conn
             .query_row(
                 "SELECT origin FROM posts WHERE id = ?1",

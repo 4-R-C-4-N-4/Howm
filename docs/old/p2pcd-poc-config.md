@@ -178,19 +178,19 @@ default_tier = "public"                 # "public" | "friends" | "blocked"
 
 # ─── Capability: social.feed ───
 # "I want to read posts from the network"
-[capabilities.social_feed]
+[capabilities.feed]
 name = "p2pcd.social.feed.1"
 role = "consume"                        # this peer reads, doesn't aggregate/serve
 mutual = false
 
-[capabilities.social_feed.scope]
+[capabilities.feed.scope]
 rate_limit = 5                          # I'll poll each peer at most 5 times/sec
 ttl = 3600
 
-[capabilities.social_feed.classification]
+[capabilities.feed.classification]
 # Whose posts am I willing to read?
 default_tier = "public"                 # accept posts from anyone with a WG tunnel
-# [capabilities.social_feed.classification.overrides]
+# [capabilities.feed.classification.overrides]
 # "xYz123..." = "blocked"              # block specific peers
 
 # ─── Capability: heartbeat (mandatory) ───

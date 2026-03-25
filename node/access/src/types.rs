@@ -31,6 +31,8 @@ pub struct Group {
     pub capabilities: Vec<CapabilityRule>,
     pub created_at: u64,
     pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_group_id: Option<Uuid>,
 }
 
 // ── Capability rule ──────────────────────────────────────────────────────────

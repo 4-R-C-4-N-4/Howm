@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Messages — Howm</title>
+  <link rel="stylesheet" href="/theme.css" />
+  <link rel="stylesheet" href="messaging.css" />
+</head>
+<body>
+  <!-- ── Conversation List View ──────────────────────────────────────────── -->
+  <div id="list-view">
+    <div class="view-header">
+      <h2>Messages</h2>
+    </div>
+    <ul id="conversation-list"></ul>
+    <p id="no-conversations" class="empty-state" style="display:none">
+      No conversations yet. Send a message from a peer's detail page.
+    </p>
+  </div>
+
+  <!-- ── Chat View ───────────────────────────────────────────────────────── -->
+  <div id="chat-view" style="display:none">
+    <div class="view-header">
+      <a href="#/" class="back-link">←</a>
+      <span id="chat-peer-name"></span>
+      <span id="online-dot" style="display:none"></span>
+    </div>
+    <div id="offline-banner" style="display:none">
+      Peer is offline — messages cannot be delivered right now
+    </div>
+    <div id="messages"></div>
+    <div id="composer">
+      <div class="composer-row">
+        <textarea id="msg-input" placeholder="Type a message…" rows="1"
+                  oninput="updateByteCounter()"
+                  onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendMessage();}"></textarea>
+        <button id="send-btn" onclick="sendMessage()">Send</button>
+      </div>
+      <div id="byte-counter" class="byte-counter">0 / 4096</div>
+    </div>
+  </div>
+
+  <script src="messaging.js"></script>
+</body>
+</html>

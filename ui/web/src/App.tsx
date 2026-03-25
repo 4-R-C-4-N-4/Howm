@@ -1,6 +1,6 @@
 import { BrowserRouter, Routes, Route, Navigate, NavLink, useNavigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { Dashboard } from './pages/Dashboard';
 import { Connection } from './pages/Connection';
 import { Settings } from './pages/Settings';
@@ -9,12 +9,11 @@ import { PeersPage } from './pages/PeersPage';
 import { PeerDetail } from './pages/PeerDetail';
 import { GroupsPage } from './pages/GroupsPage';
 import { GroupDetail } from './pages/GroupDetail';
-import { MessagesPage } from './pages/MessagesPage';
-import { ConversationView } from './pages/ConversationView';
 import { getCapabilities } from './api/capabilities';
-import { getConversations } from './api/messaging';
+import { getBadges, pollNotifications } from './api/notifications';
 import { getApiToken } from './api/client';
 import { listenFromCapabilities, type NotifyLevel } from './lib/postMessage';
+import { useBadgeStore } from './stores/badgeStore';
 
 const queryClient = new QueryClient();
 
@@ -74,13 +73,13 @@ function NavBar() {
     refetchInterval: 60000,
   });
 
-  const { data: conversations = [] } = useQuery({
-    queryKey: ['conversations'],
-    queryFn: getConversations,
+  // Badge counts from Notification API (capabilities push their own badge counts)
+  const { data: badgeData } = useQuery({
+    queryKey: ['badges'],
+    queryFn: getBadges,
     refetchInterval: 5_000,
   });
-
-  const totalUnread = conversations.reduce((sum, c) => sum + (c.unread_count || 0), 0);
+  const badges = badgeData?.badges ?? {};
 
   const linkStyle = ({ isActive }: { isActive: boolean }): React.CSSProperties => ({
     padding: '0 16px',
@@ -102,25 +101,25 @@ function NavBar() {
       <span style={brandStyle}>howm</span>
       <NavLink to="/dashboard" style={linkStyle}>Dashboard</NavLink>
       <NavLink to="/peers" style={linkStyle}>Peers</NavLink>
-      <NavLink to="/messages" style={linkStyle}>
-        {({ isActive }) => (
-          <span style={{ display: 'flex', alignItems: 'center', gap: '6px', color: isActive ? 'var(--howm-accent, #6c8cff)' : 'inherit', fontWeight: isActive ? 600 : 400 }}>
-            Messages
-            {totalUnread > 0 && (
-              <span style={{ background: '#ef4444', color: '#fff', borderRadius: '10px', padding: '1px 6px', fontSize: '0.7rem', fontWeight: 600, minWidth: '16px', textAlign: 'center' as const }}>
-                {totalUnread}
-              </span>
-            )}
-          </span>
-        )}
-      </NavLink>
       <NavLink to="/connection" style={linkStyle}>Connection</NavLink>
       <NavLink to="/access/groups" style={linkStyle}>Groups</NavLink>
-      {capabilities?.filter(c => c.ui).map(cap => (
-        <NavLink key={cap.name} to={`/cap/${cap.name}`} style={linkStyle}>
-          {cap.ui!.label}
-        </NavLink>
-      ))}
+      {capabilities?.filter(c => c.ui).map(cap => {
+        const badgeCount = badges[cap.name] ?? 0;
+        return (
+          <NavLink key={cap.name} to={`/app/${cap.name}`} style={linkStyle}>
+            {({ isActive }) => (
+              <span style={{ display: 'flex', alignItems: 'center', gap: '6px', color: isActive ? 'var(--howm-accent, #6c8cff)' : 'inherit', fontWeight: isActive ? 600 : 400 }}>
+                {cap.ui!.label}
+                {badgeCount > 0 && (
+                  <span style={{ background: '#ef4444', color: '#fff', borderRadius: '10px', padding: '1px 6px', fontSize: '0.7rem', fontWeight: 600, minWidth: '16px', textAlign: 'center' as const }}>
+                    {badgeCount}
+                  </span>
+                )}
+              </span>
+            )}
+          </NavLink>
+        );
+      })}
       <NavLink to="/settings" style={{ ...linkStyle({ isActive: false }), marginLeft: 'auto' }}
         className={({ isActive }) => isActive ? 'active' : ''}>
         {({ isActive }) => (
@@ -166,6 +165,7 @@ function Shell() {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const token = getApiToken();
   const navigate = useNavigate();
+  const setBadge = useBadgeStore((s) => s.setBadge);
 
   const addToast = useCallback((level: NotifyLevel, message: string) => {
     const id = ++_toastId;
@@ -182,10 +182,37 @@ function Shell() {
       {
         onNotify: (level, message) => addToast(level, message),
         onNavigate: (path) => navigate(path),
+        onNavigateTo: (path) => navigate(path),
+        onBadge: (capability, count) => setBadge(capability, count),
+        onToast: (title, body) => {
+          const message = title ? `${title}: ${body}` : body;
+          addToast('info', message);
+        },
       },
       token,
     );
-  }, [token, addToast, navigate]);
+  }, [token, addToast, navigate, setBadge]);
+
+  // Poll daemon Notification API for capability-pushed toasts
+  const notifCursor = useRef(0);
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      try {
+        const resp = await pollNotifications(notifCursor.current);
+        notifCursor.current = resp.timestamp;
+        for (const n of resp.notifications) {
+          addToast(n.level, n.title ? `${n.title}: ${n.message}` : n.message);
+          if (n.action) {
+            // If toast has an action, navigate on next user interaction
+            // (for now just log — clicking toasts to navigate is handled by ToastContainer)
+          }
+        }
+      } catch {
+        // Notification polling is best-effort
+      }
+    }, 5_000);
+    return () => clearInterval(interval);
+  }, [addToast]);
 
   return (
     <>
@@ -196,13 +223,11 @@ function Shell() {
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/peers" element={<PeersPage />} />
           <Route path="/peers/:peerId" element={<PeerDetail />} />
-          <Route path="/messages" element={<MessagesPage />} />
-          <Route path="/messages/:peerId" element={<ConversationView />} />
           <Route path="/connection" element={<Connection />} />
           <Route path="/access/groups" element={<GroupsPage />} />
           <Route path="/access/groups/:groupId" element={<GroupDetail />} />
           <Route path="/settings" element={<Settings />} />
-          <Route path="/cap/:name" element={<CapabilityPage />} />
+          <Route path="/app/:name" element={<CapabilityPage />} />
         </Routes>
       </div>
       <ToastContainer toasts={toasts} dismiss={dismissToast} />

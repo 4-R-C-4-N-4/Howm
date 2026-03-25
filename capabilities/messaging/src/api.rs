@@ -12,6 +12,7 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::db::{self, MessageDb};
+use crate::notifier::DaemonNotifier;
 use p2pcd::bridge_client::BridgeClient;
 
 // ── Shared state ─────────────────────────────────────────────────────────────
@@ -26,16 +27,42 @@ pub struct AppState {
     pub active_peers: Arc<RwLock<HashMap<String, String>>>,
     /// Our own peer ID (base64), learned from X-Node-Id header or daemon.
     pub local_peer_id: Arc<RwLock<Option<String>>>,
+    /// Fire-and-forget notifier for badge/toast events to the daemon.
+    pub notifier: DaemonNotifier,
 }
 
 impl AppState {
+    #[allow(dead_code)]
     pub fn new(db: MessageDb, bridge: BridgeClient, daemon_port: u16) -> Self {
+        let db = Arc::new(db);
+        let notifier = DaemonNotifier::new(
+            reqwest::Client::new(),
+            &format!("http://127.0.0.1:{daemon_port}"),
+            db.clone(),
+        );
         Self {
-            db: Arc::new(db),
+            db,
             bridge,
             daemon_port,
             active_peers: Arc::new(RwLock::new(HashMap::new())),
             local_peer_id: Arc::new(RwLock::new(None)),
+            notifier,
+        }
+    }
+
+    pub fn new_with_notifier(
+        db: Arc<MessageDb>,
+        bridge: BridgeClient,
+        daemon_port: u16,
+        notifier: DaemonNotifier,
+    ) -> Self {
+        Self {
+            db,
+            bridge,
+            daemon_port,
+            active_peers: Arc::new(RwLock::new(HashMap::new())),
+            local_peer_id: Arc::new(RwLock::new(None)),
+            notifier,
         }
     }
 }
@@ -91,7 +118,7 @@ fn encode_dm_envelope(msg_id: &[u8; 16], sender: &[u8], sent_at: u64, body: &str
         ),
     ]);
     let mut buf = Vec::new();
-    ciborium::into_writer(&map, &mut buf).unwrap();
+    ciborium::into_writer(&map, &mut buf).expect("CBOR serialization of DM envelope");
     buf
 }
 
@@ -100,6 +127,26 @@ struct DmEnvelope {
     sender_peer_id: Vec<u8>,
     sent_at: u64,
     body: String,
+}
+
+/// Test helper: expose encode for unit tests.
+#[cfg(test)]
+pub fn encode_dm_envelope_for_test(
+    msg_id: &[u8; 16],
+    sender: &[u8],
+    sent_at: u64,
+    body: &str,
+) -> Vec<u8> {
+    encode_dm_envelope(msg_id, sender, sent_at, body)
+}
+
+/// Test helper: expose decode for unit tests.
+#[cfg(test)]
+pub fn decode_dm_envelope_for_test(
+    data: &[u8],
+) -> Result<([u8; 16], Vec<u8>, u64, String), String> {
+    let env = decode_dm_envelope(data)?;
+    Ok((env.msg_id, env.sender_peer_id, env.sent_at, env.body))
 }
 
 fn decode_dm_envelope(data: &[u8]) -> Result<DmEnvelope, String> {
@@ -173,10 +220,7 @@ pub struct SendRequest {
     pub body: String,
 }
 
-#[derive(Debug, Serialize)]
-
-
-#[derive(Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct PaginationParams {
     pub cursor: Option<i64>,
     #[serde(default = "default_limit")]
@@ -390,7 +434,12 @@ pub async fn send_message(
                 "peer_offline"
             };
             let _ = state.db.update_delivery_status(&msg_id_hex, "failed");
-            warn!("DM delivery failed to {}: {} ({})", &req.to[..8.min(req.to.len())], e, reason);
+            warn!(
+                "DM delivery failed to {}: {} ({})",
+                &req.to[..8.min(req.to.len())],
+                e,
+                reason
+            );
             (
                 StatusCode::OK, // Still 200 — the message was accepted, just failed delivery
                 Json(serde_json::json!({
@@ -433,7 +482,10 @@ pub async fn get_conversation(
     let conversation_id = MessageDb::conversation_id(&local_peer_id, &peer_id);
     let limit = params.limit.clamp(1, 100);
 
-    match state.db.get_conversation(&conversation_id, params.cursor, limit) {
+    match state
+        .db
+        .get_conversation(&conversation_id, params.cursor, limit)
+    {
         Ok((messages, next_cursor)) => (
             StatusCode::OK,
             Json(serde_json::json!(ConversationResponse {
@@ -461,7 +513,11 @@ pub async fn mark_read(
     let conversation_id = MessageDb::conversation_id(&local_peer_id, &peer_id);
 
     match state.db.mark_read(&conversation_id) {
-        Ok(()) => StatusCode::NO_CONTENT,
+        Ok(()) => {
+            // Push updated badge count after mark-read (fire-and-forget)
+            state.notifier.push_badge_from_db();
+            StatusCode::NO_CONTENT
+        }
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
@@ -529,7 +585,10 @@ pub async fn peer_inactive(
         let conv_id = MessageDb::conversation_id(&local_peer_id, &payload.peer_id);
         if let Ok(failed) = state.db.fail_pending_to_peer(&conv_id, "peer_offline") {
             if failed > 0 {
-                info!("Marked {} pending messages as failed (peer_offline)", failed);
+                info!(
+                    "Marked {} pending messages as failed (peer_offline)",
+                    failed
+                );
             }
         }
     }
@@ -604,6 +663,17 @@ pub async fn inbound_message(
         &payload.peer_id[..8.min(payload.peer_id.len())]
     );
 
+    // Notify daemon: toast + badge update (fire-and-forget)
+    {
+        let preview = if envelope.body.len() > 128 {
+            format!("{}…", &envelope.body[..128])
+        } else {
+            envelope.body.clone()
+        };
+        let short_sender = &payload.peer_id[..8.min(payload.peer_id.len())];
+        state.notifier.notify_new_message(short_sender, &preview);
+    }
+
     // FEAT-002-G: Emit event notification (fire-and-forget)
     let bridge = state.bridge.clone();
     let peer_id_clone = payload.peer_id.clone();
@@ -617,10 +687,7 @@ pub async fn inbound_message(
         // Build event payload as CBOR
         use ciborium::value::Value;
         let event = Value::Map(vec![
-            (
-                Value::Text("msg_id".into()),
-                Value::Text(msg_id_hex),
-            ),
+            (Value::Text("msg_id".into()), Value::Text(msg_id_hex)),
             (
                 Value::Text("sender_peer_id".into()),
                 Value::Text(peer_id_clone),

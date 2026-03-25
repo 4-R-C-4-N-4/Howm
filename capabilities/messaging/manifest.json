@@ -17,5 +17,11 @@
   },
   "permissions": {
     "visibility": "friends"
+  },
+  "ui": {
+    "label": "Messages",
+    "icon": "message-square",
+    "entry": "/ui/",
+    "style": "iframe"
   }
 }

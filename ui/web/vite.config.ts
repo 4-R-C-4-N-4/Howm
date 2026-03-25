@@ -1,16 +1,23 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
+// Proxy API and capability requests to the Howm daemon.
+// SPA routes live under /app, /dashboard, /peers, etc. — no conflict with
+// these proxy prefixes. The /cap prefix is exclusively for the daemon's
+// capability proxy (iframe content + API calls from capability UIs).
+const daemon = { target: 'http://localhost:7000', changeOrigin: true };
+
 export default defineConfig({
   plugins: [react()],
   server: {
     proxy: {
-      '/node':         { target: 'http://localhost:7000', changeOrigin: true },
-      '/cap':          { target: 'http://localhost:7000', changeOrigin: true },
-      '/capabilities': { target: 'http://localhost:7000', changeOrigin: true },
-      '/network':      { target: 'http://localhost:7000', changeOrigin: true },
-      '/settings':     { target: 'http://localhost:7000', changeOrigin: true },
-      '/theme.css':    { target: 'http://localhost:7000', changeOrigin: true },
+      '/node':         daemon,
+      '/cap':          daemon,
+      '/capabilities': daemon,
+      '/network':      daemon,
+      '/settings':     daemon,
+      '/access':       daemon,
+      '/theme.css':    daemon,
     }
   }
 })
