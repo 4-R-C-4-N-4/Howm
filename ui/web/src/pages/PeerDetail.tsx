@@ -159,7 +159,7 @@ export function PeerDetail() {
             {online ? '● Online' : '○ Offline'}
           </span>
           <Link
-            to={`/messages/${encodeURIComponent(peer.wg_pubkey)}`}
+            to={`/app/social.messaging?peer=${encodeURIComponent(peer.wg_pubkey)}`}
             style={{
               background: 'var(--howm-accent, #6c8cff)',
               color: '#fff',

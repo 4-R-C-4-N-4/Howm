@@ -11,6 +11,46 @@ var catalogueItems = [];
 var downloads = [];
 var downloadPollTimer = null;
 var peerPollTimer = null;
+var _confirmResolve = null;
+
+// ── Toast notifications (replaces alert()) ──────────────────────────────────
+
+function showToast(message, level) {
+  level = level || 'error';
+  var container = document.getElementById('toast-container');
+  var el = document.createElement('div');
+  el.className = 'toast toast-' + level;
+  el.textContent = message;
+  container.appendChild(el);
+  // Also notify the parent shell
+  window.parent.postMessage({
+    type: 'howm:notify',
+    payload: { level: level, message: message },
+  }, window.location.origin);
+  setTimeout(function () {
+    el.classList.add('toast-out');
+    setTimeout(function () { el.remove(); }, 200);
+  }, 4000);
+}
+
+// ── Confirm dialog (replaces confirm()) ─────────────────────────────────────
+
+function showConfirm(title, message, yesLabel) {
+  document.getElementById('confirm-title').textContent = title || 'Confirm';
+  document.getElementById('confirm-message').textContent = message || '';
+  document.getElementById('confirm-yes').textContent = yesLabel || 'Delete';
+  document.getElementById('confirm-overlay').classList.remove('hidden');
+  return new Promise(function (resolve) {
+    _confirmResolve = resolve;
+    document.getElementById('confirm-yes').onclick = function () { dismissConfirm(); resolve(true); };
+    document.getElementById('confirm-no').onclick = function () { dismissConfirm(); resolve(false); };
+  });
+}
+
+function dismissConfirm() {
+  document.getElementById('confirm-overlay').classList.add('hidden');
+  if (_confirmResolve) { _confirmResolve(false); _confirmResolve = null; }
+}
 
 // ── Base path detection ──────────────────────────────────────────────────────
 var BASE = (function () {
@@ -316,20 +356,22 @@ async function saveEdit() {
     if (!resp.ok) {
       var msg = 'Update failed';
       try { msg = (await resp.json()).error || msg; } catch (_) {}
-      alert(msg);
+      showToast(msg);
       return;
     }
     closeEdit();
     loadOfferings();
+    showToast('Offering updated', 'success');
   } catch (e) {
-    alert(e.message);
+    showToast(e.message);
   }
 }
 
 // ── Delete offering ──────────────────────────────────────────────────────────
 
 async function deleteOffering(id, name) {
-  if (!confirm('Delete offering "' + name + '"? The blob will also be removed.')) return;
+  var ok = await showConfirm('Delete Offering', 'Delete "' + name + '"? The blob will also be removed.', 'Delete');
+  if (!ok) return;
   try {
     var resp = await fetch(BASE + '/offerings/' + encodeURIComponent(id), {
       method: 'DELETE',
@@ -338,12 +380,13 @@ async function deleteOffering(id, name) {
     if (!resp.ok) {
       var msg = 'Delete failed';
       try { msg = (await resp.json()).error || msg; } catch (_) {}
-      alert(msg);
+      showToast(msg);
       return;
     }
     loadOfferings();
+    showToast('Offering deleted', 'success');
   } catch (e) {
-    alert(e.message);
+    showToast(e.message);
   }
 }
 
@@ -454,15 +497,16 @@ async function initiateDownload(peerId, offeringJson) {
     if (!resp.ok) {
       var msg = 'Download failed';
       try { msg = (await resp.json()).error || msg; } catch (_) {}
-      alert(msg);
+      showToast(msg);
       return;
     }
     // Switch to downloads tab
     switchTab('downloads', document.getElementById('downloads-tab'));
     loadDownloads();
     startDownloadPolling();
+    showToast('Download started', 'info');
   } catch (e) {
-    alert(e.message);
+    showToast(e.message);
   }
 }
 
@@ -559,6 +603,6 @@ async function retryDownload(blobId) {
     loadDownloads();
     startDownloadPolling();
   } catch (e) {
-    alert(e.message);
+    showToast(e.message);
   }
 }

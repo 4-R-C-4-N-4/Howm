@@ -19,6 +19,7 @@ pub mod capability_routes;
 pub mod connection_routes;
 pub mod network_routes;
 pub mod node_routes;
+pub mod notification_routes;
 pub mod p2pcd_routes;
 pub mod proxy_routes;
 pub mod settings_routes;
@@ -55,9 +56,9 @@ pub fn build_router(state: AppState, ui_dir: Option<PathBuf>) -> Router {
     let debug_mode = state.config.debug || state.config.dev;
     // ── 1. Authenticated routes (bearer token required) ──────────────────
     let authenticated = Router::new()
-        .route("/node/peers/:node_id", delete(node_routes::remove_peer))
+        .route("/node/peers/{node_id}", delete(node_routes::remove_peer))
         .route(
-            "/node/peers/:node_id/trust",
+            "/node/peers/{node_id}/trust",
             axum::routing::patch(node_routes::update_peer_trust),
         )
         .route("/node/invite", post(node_routes::create_invite))
@@ -77,20 +78,20 @@ pub fn build_router(state: AppState, ui_dir: Option<PathBuf>) -> Router {
             post(capability_routes::install_capability),
         )
         .route(
-            "/capabilities/:name/stop",
+            "/capabilities/{name}/stop",
             post(capability_routes::stop_capability),
         )
         .route(
-            "/capabilities/:name/start",
+            "/capabilities/{name}/start",
             post(capability_routes::start_capability),
         )
         .route(
-            "/capabilities/:name",
+            "/capabilities/{name}",
             delete(capability_routes::uninstall_capability),
         )
         .route("/p2pcd/friends", post(p2pcd_routes::p2pcd_add_friend))
         .route(
-            "/p2pcd/friends/:pubkey",
+            "/p2pcd/friends/{pubkey}",
             delete(p2pcd_routes::p2pcd_remove_friend),
         )
         .route(
@@ -119,21 +120,21 @@ pub fn build_router(state: AppState, ui_dir: Option<PathBuf>) -> Router {
             get(network_routes::network_capabilities),
         )
         .route(
-            "/network/capability/:name",
+            "/network/capability/{name}",
             get(network_routes::find_capability_providers),
         )
         .route("/network/feed", get(network_routes::network_feed))
-        .route("/cap/:name", any(proxy_routes::proxy_handler_root))
-        .route("/cap/:name/*rest", any(proxy_routes::proxy_handler))
+        .route("/cap/{name}", any(proxy_routes::proxy_handler_root))
+        .route("/cap/{name}/{*rest}", any(proxy_routes::proxy_handler))
         .route("/p2pcd/status", get(p2pcd_routes::p2pcd_status))
         .route("/p2pcd/sessions", get(p2pcd_routes::p2pcd_sessions))
         .route(
-            "/p2pcd/sessions/:peer_id",
+            "/p2pcd/sessions/{peer_id}",
             get(p2pcd_routes::p2pcd_session_detail),
         )
         .route("/p2pcd/manifest", get(p2pcd_routes::p2pcd_manifest))
         .route("/p2pcd/cache", get(p2pcd_routes::p2pcd_cache))
-        .route("/p2pcd/peers-for/:cap", get(p2pcd_routes::p2pcd_peers_for))
+        .route("/p2pcd/peers-for/{cap}", get(p2pcd_routes::p2pcd_peers_for))
         .route("/p2pcd/friends", get(p2pcd_routes::p2pcd_list_friends))
         .route("/settings/node", get(settings_routes::get_node_settings))
         .route("/settings/identity", get(settings_routes::get_identity))
@@ -170,7 +171,29 @@ pub fn build_router(state: AppState, ui_dir: Option<PathBuf>) -> Router {
         .route("/node/generate-accept", post(node_routes::generate_accept))
         .route("/node/redeem-accept", post(node_routes::redeem_accept));
 
-    // ── 4. Access control routes (localhost-only, bearer required) ──────────
+    // ── 4. Notification routes ─────────────────────────────────────────────
+    // Write (badge set, push): localhost-only (capability processes only).
+    // Read (badges get, poll): local+wg (shell can read from WG subnet).
+    let notification_write = Router::new()
+        .route("/notifications/badge", post(notification_routes::set_badge))
+        .route(
+            "/notifications/push",
+            post(notification_routes::push_notification),
+        )
+        .layer(middleware::from_fn(localhost_only_middleware));
+
+    let notification_read = Router::new()
+        .route(
+            "/notifications/badges",
+            get(notification_routes::get_badges),
+        )
+        .route(
+            "/notifications/poll",
+            get(notification_routes::poll_notifications),
+        )
+        .layer(middleware::from_fn(local_or_wg_middleware));
+
+    // ── 5. Access control routes (localhost-only, bearer required) ──────────
     // These MUST NOT be reachable over WG tunnel (NFR-4).
     let access = Router::new()
         .route(
@@ -178,29 +201,29 @@ pub fn build_router(state: AppState, ui_dir: Option<PathBuf>) -> Router {
             get(access_routes::list_groups).post(access_routes::create_group),
         )
         .route(
-            "/access/groups/:group_id",
+            "/access/groups/{group_id}",
             get(access_routes::get_group)
                 .patch(access_routes::update_group)
                 .delete(access_routes::delete_group),
         )
         .route(
-            "/access/groups/:group_id/members",
+            "/access/groups/{group_id}/members",
             get(access_routes::list_group_members),
         )
         .route(
-            "/access/peers/:peer_id/groups",
+            "/access/peers/{peer_id}/groups",
             get(access_routes::list_peer_groups).post(access_routes::assign_peer_to_group),
         )
         .route(
-            "/access/peers/:peer_id/groups/:group_id",
+            "/access/peers/{peer_id}/groups/{group_id}",
             delete(access_routes::remove_peer_from_group),
         )
         .route(
-            "/access/peers/:peer_id/permissions",
+            "/access/peers/{peer_id}/permissions",
             get(access_routes::get_effective_permissions),
         )
         .route(
-            "/access/peers/:peer_id/deny",
+            "/access/peers/{peer_id}/deny",
             post(access_routes::deny_peer),
         )
         .layer(middleware::from_fn_with_state(
@@ -213,6 +236,8 @@ pub fn build_router(state: AppState, ui_dir: Option<PathBuf>) -> Router {
         .merge(authenticated)
         .merge(local_or_wg)
         .merge(peer_ceremony)
+        .merge(notification_write)
+        .merge(notification_read)
         .merge(access);
 
     // Serve static UI files if --ui-dir is provided; fall back to embedded UI.
@@ -245,7 +270,7 @@ pub fn build_router(state: AppState, ui_dir: Option<PathBuf>) -> Router {
     }
 
     router
-        .layer(DefaultBodyLimit::max(10 * 1024 * 1024)) // 10 MB
+        .layer(DefaultBodyLimit::max(500 * 1024 * 1024)) // 500 MB — must match capability upload limits for proxy passthrough
         .with_state(state)
 }
 

@@ -3,38 +3,43 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Howm — Messaging</title>
+  <title>Messages — Howm</title>
+  <link rel="stylesheet" href="/theme.css" />
   <link rel="stylesheet" href="messaging.css" />
 </head>
 <body>
-  <header>
-    <h1>💬 Messaging</h1>
-    <nav>
-      <a href="/app/" class="nav-link">← Dashboard</a>
-    </nav>
-  </header>
-
-  <main>
-    <div id="sidebar">
-      <div class="sidebar-header">
-        <h2>Conversations</h2>
-      </div>
-      <ul id="conversation-list"></ul>
-      <p id="no-conversations" class="empty-state" style="display:none">No conversations yet</p>
+  <!-- ── Conversation List View ──────────────────────────────────────────── -->
+  <div id="list-view">
+    <div class="view-header">
+      <h2>Messages</h2>
     </div>
+    <ul id="conversation-list"></ul>
+    <p id="no-conversations" class="empty-state" style="display:none">
+      No conversations yet. Send a message from a peer's detail page.
+    </p>
+  </div>
 
-    <div id="chat-area">
-      <div id="chat-header" style="display:none">
-        <span id="chat-peer-name"></span>
-      </div>
-      <div id="messages"></div>
-      <form id="send-form" style="display:none">
-        <input type="text" id="msg-input" placeholder="Type a message…" autocomplete="off" maxlength="4096" />
-        <button type="submit">Send</button>
-      </form>
-      <p id="select-prompt" class="empty-state">Select a conversation to start messaging</p>
+  <!-- ── Chat View ───────────────────────────────────────────────────────── -->
+  <div id="chat-view" style="display:none">
+    <div class="view-header">
+      <a href="#/" class="back-link">←</a>
+      <span id="chat-peer-name"></span>
+      <span id="online-dot" style="display:none"></span>
     </div>
-  </main>
+    <div id="offline-banner" style="display:none">
+      Peer is offline — messages cannot be delivered right now
+    </div>
+    <div id="messages"></div>
+    <div id="composer">
+      <div class="composer-row">
+        <textarea id="msg-input" placeholder="Type a message…" rows="1"
+                  oninput="updateByteCounter()"
+                  onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendMessage();}"></textarea>
+        <button id="send-btn" onclick="sendMessage()">Send</button>
+      </div>
+      <div id="byte-counter" class="byte-counter">0 / 4096</div>
+    </div>
+  </div>
 
   <script src="messaging.js"></script>
 </body>

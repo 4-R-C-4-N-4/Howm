@@ -157,6 +157,11 @@ if [[ -n "$STALE_PID" ]]; then
     sleep 0.5
 fi
 
+# Clear cached capability state so the daemon starts fresh and the install
+# loop below re-reads every manifest.json (picking up entry/style/port changes).
+EFFECTIVE_DATA_DIR_PRE="${DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/howm}"
+rm -f "$EFFECTIVE_DATA_DIR_PRE/capabilities.json"
+
 info "Starting howm on port $PORT..."
 cd "$ROOT_DIR"
 "$HOWM_BIN" "${DAEMON_ARGS[@]}" &
@@ -178,8 +183,17 @@ for i in $(seq 1 60); do
 done
 
 # Read the API token for authenticated requests
+# The daemon uses dirs::data_local_dir() which resolves to:
+#   Linux:  $XDG_DATA_HOME/howm  (default: ~/.local/share/howm)
+#   macOS:  ~/Library/Application Support/howm
 API_TOKEN=""
-EFFECTIVE_DATA_DIR="${DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/howm}"
+if [[ -n "$DATA_DIR" ]]; then
+    EFFECTIVE_DATA_DIR="$DATA_DIR"
+elif [[ "$(uname)" == "Darwin" ]]; then
+    EFFECTIVE_DATA_DIR="$HOME/Library/Application Support/howm"
+else
+    EFFECTIVE_DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/howm"
+fi
 if [[ -f "$EFFECTIVE_DATA_DIR/api_token" ]]; then
     API_TOKEN=$(cat "$EFFECTIVE_DATA_DIR/api_token")
 fi
@@ -193,37 +207,43 @@ if [[ -d "$CAP_DIR" ]] && [[ -n "$API_TOKEN" ]]; then
         [[ -f "$cap" ]] || continue
         cap_root="$(dirname "$cap")"
         cap_name="$(basename "$cap_root")"
+        # The daemon uses the manifest "name" field (e.g. "social.feed"),
+        # not the directory name (e.g. "feed"), for API routes.
+        cap_api_name=$(grep -o '"name"[[:space:]]*:[[:space:]]*"[^"]*"' "$cap" | head -1 | sed 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
 
-        # Build the capability (Cargo project) — skip if binary already exists
+        # Build the capability (Cargo project).
+        # Always run cargo build — it's incremental and a no-op when unchanged.
+        # This ensures source changes (including embedded UI assets) are picked up.
         if [[ -f "$cap_root/Cargo.toml" ]]; then
+            # Force rebuild — cargo doesn't track embedded UI assets (include_dir!),
+            # so touch main.rs to guarantee recompilation picks up UI changes.
+            touch "$cap_root/src/main.rs" 2>/dev/null || true
+
+            CAP_BUILD_EXIT=0
             if [[ $RELEASE_MODE -eq 1 ]]; then
+                info "Building capability '$cap_name' (release)..."
+                CAP_BUILD_OUT=$(cd "$cap_root" && cargo build --release 2>&1) || CAP_BUILD_EXIT=$?
                 CAP_BIN="$cap_root/target/release/$cap_name"
             else
+                info "Building capability '$cap_name' (debug)..."
+                CAP_BUILD_OUT=$(cd "$cap_root" && cargo build 2>&1) || CAP_BUILD_EXIT=$?
                 CAP_BIN="$cap_root/target/debug/$cap_name"
             fi
-            # Also accept the release binary when running in debug mode
-            if [[ ! -x "$CAP_BIN" ]] && [[ -x "$cap_root/target/release/$cap_name" ]]; then
-                CAP_BIN="$cap_root/target/release/$cap_name"
-                info "Capability '$cap_name': using existing release binary"
-            elif [[ -x "$CAP_BIN" ]]; then
-                info "Capability '$cap_name': binary up to date"
+            if [[ $CAP_BUILD_EXIT -ne 0 ]]; then
+                warn "Capability '$cap_name' build failed (exit $CAP_BUILD_EXIT) — skipping"
+                echo "$CAP_BUILD_OUT" | tail -5
+                continue
+            fi
+            if echo "$CAP_BUILD_OUT" | grep -q "Compiling"; then
+                success "Capability '$cap_name' rebuilt"
             else
-                CAP_BUILD_EXIT=0
-                if [[ $RELEASE_MODE -eq 1 ]]; then
-                    info "Building capability '$cap_name' (release)..."
-                    (cd "$cap_root" && cargo build --release 2>&1) || CAP_BUILD_EXIT=$?
-                else
-                    info "Building capability '$cap_name' (debug)..."
-                    (cd "$cap_root" && cargo build 2>&1) || CAP_BUILD_EXIT=$?
-                fi
-                if [[ $CAP_BUILD_EXIT -ne 0 ]]; then
-                    warn "Capability '$cap_name' build failed (exit $CAP_BUILD_EXIT) — skipping"
-                    continue
-                fi
+                info "Capability '$cap_name' up to date"
             fi
         fi
 
-        # Install via the daemon API (idempotent — will 400 if already installed)
+        # Install via the daemon API.
+        # Always uninstall first if already present — this ensures manifest
+        # changes (UI entry, port, visibility, etc.) are picked up fresh.
         INSTALL_RESP=$(curl -sf -X POST "http://localhost:$PORT/capabilities/install" \
             -H "Authorization: Bearer $API_TOKEN" \
             -H "Content-Type: application/json" \
@@ -231,7 +251,20 @@ if [[ -d "$CAP_DIR" ]] && [[ -n "$API_TOKEN" ]]; then
         if echo "$INSTALL_RESP" | grep -q '"capability"'; then
             success "Capability '$cap_name' installed"
         elif echo "$INSTALL_RESP" | grep -q 'already installed'; then
-            info "Capability '$cap_name' already registered"
+            # Uninstall then reinstall to pick up any manifest changes
+            info "Capability '$cap_name' already installed — reinstalling..."
+            curl -sf -X DELETE "http://localhost:$PORT/capabilities/$cap_api_name" \
+                -H "Authorization: Bearer $API_TOKEN" &>/dev/null || true
+            sleep 0.5
+            REINSTALL_RESP=$(curl -sf -X POST "http://localhost:$PORT/capabilities/install" \
+                -H "Authorization: Bearer $API_TOKEN" \
+                -H "Content-Type: application/json" \
+                -d "{\"path\": \"$cap_root\"}" 2>&1) || true
+            if echo "$REINSTALL_RESP" | grep -q '"capability"'; then
+                success "Capability '$cap_name' reinstalled"
+            else
+                warn "Capability '$cap_name' reinstall: $REINSTALL_RESP"
+            fi
         else
             warn "Capability '$cap_name' install: $INSTALL_RESP"
         fi

@@ -14,6 +14,7 @@ use tracing_subscriber::EnvFilter;
 
 mod api;
 mod db;
+mod notifier;
 
 static UI_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/ui");
 
@@ -29,6 +30,10 @@ struct Config {
     /// Port the Howm daemon HTTP API listens on.
     #[arg(long, default_value = "7000", env = "HOWM_DAEMON_PORT")]
     daemon_port: u16,
+
+    /// Base URL for the Howm daemon (used for push notifications).
+    #[arg(long, default_value = "http://127.0.0.1:7000", env = "HOWM_DAEMON_URL")]
+    daemon_url: String,
 }
 
 #[tokio::main]
@@ -43,7 +48,13 @@ async fn main() -> anyhow::Result<()> {
     let msg_db = db::MessageDb::open(&config.data_dir)?;
     let bridge = p2pcd::bridge_client::BridgeClient::new(config.daemon_port);
 
-    let state = api::AppState::new(msg_db, bridge, config.daemon_port);
+    let http_client = reqwest::Client::new();
+    let msg_db_arc = std::sync::Arc::new(msg_db);
+    let daemon_notifier =
+        notifier::DaemonNotifier::new(http_client, &config.daemon_url, msg_db_arc.clone());
+
+    let state =
+        api::AppState::new_with_notifier(msg_db_arc, bridge, config.daemon_port, daemon_notifier);
 
     // Restore active peers from daemon on startup
     {

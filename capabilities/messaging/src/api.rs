@@ -12,6 +12,7 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::db::{self, MessageDb};
+use crate::notifier::DaemonNotifier;
 use p2pcd::bridge_client::BridgeClient;
 
 // ── Shared state ─────────────────────────────────────────────────────────────
@@ -26,16 +27,42 @@ pub struct AppState {
     pub active_peers: Arc<RwLock<HashMap<String, String>>>,
     /// Our own peer ID (base64), learned from X-Node-Id header or daemon.
     pub local_peer_id: Arc<RwLock<Option<String>>>,
+    /// Fire-and-forget notifier for badge/toast events to the daemon.
+    pub notifier: DaemonNotifier,
 }
 
 impl AppState {
+    #[allow(dead_code)]
     pub fn new(db: MessageDb, bridge: BridgeClient, daemon_port: u16) -> Self {
+        let db = Arc::new(db);
+        let notifier = DaemonNotifier::new(
+            reqwest::Client::new(),
+            &format!("http://127.0.0.1:{daemon_port}"),
+            db.clone(),
+        );
         Self {
-            db: Arc::new(db),
+            db,
             bridge,
             daemon_port,
             active_peers: Arc::new(RwLock::new(HashMap::new())),
             local_peer_id: Arc::new(RwLock::new(None)),
+            notifier,
+        }
+    }
+
+    pub fn new_with_notifier(
+        db: Arc<MessageDb>,
+        bridge: BridgeClient,
+        daemon_port: u16,
+        notifier: DaemonNotifier,
+    ) -> Self {
+        Self {
+            db,
+            bridge,
+            daemon_port,
+            active_peers: Arc::new(RwLock::new(HashMap::new())),
+            local_peer_id: Arc::new(RwLock::new(None)),
+            notifier,
         }
     }
 }
@@ -486,7 +513,11 @@ pub async fn mark_read(
     let conversation_id = MessageDb::conversation_id(&local_peer_id, &peer_id);
 
     match state.db.mark_read(&conversation_id) {
-        Ok(()) => StatusCode::NO_CONTENT,
+        Ok(()) => {
+            // Push updated badge count after mark-read (fire-and-forget)
+            state.notifier.push_badge_from_db();
+            StatusCode::NO_CONTENT
+        }
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
@@ -631,6 +662,17 @@ pub async fn inbound_message(
         &msg_id_hex[..8],
         &payload.peer_id[..8.min(payload.peer_id.len())]
     );
+
+    // Notify daemon: toast + badge update (fire-and-forget)
+    {
+        let preview = if envelope.body.len() > 128 {
+            format!("{}…", &envelope.body[..128])
+        } else {
+            envelope.body.clone()
+        };
+        let short_sender = &payload.peer_id[..8.min(payload.peer_id.len())];
+        state.notifier.notify_new_message(short_sender, &preview);
+    }
 
     // FEAT-002-G: Emit event notification (fire-and-forget)
     let bridge = state.bridge.clone();

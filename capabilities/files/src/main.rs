@@ -92,7 +92,10 @@ async fn main() -> anyhow::Result<()> {
         // Internal: transfer-complete callback from daemon bridge
         .route("/internal/transfer-complete", post(api::transfer_complete))
         .with_state(state)
-        .layer(DefaultBodyLimit::max(500 * 1024 * 1024)) // 500 MB for file transfers
+        .layer(DefaultBodyLimit::disable()) // Disable axum's 2MB default body limit for Multipart
+        .layer(tower_http::limit::RequestBodyLimitLayer::new(
+            500 * 1024 * 1024,
+        )) // Hard 500MB cap on all requests
         // Embedded capability UI at /ui/*
         .fallback(serve_ui);
 

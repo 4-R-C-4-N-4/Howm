@@ -311,6 +311,26 @@ impl MessageDb {
         Ok(())
     }
 
+    // ── Unread total ──────────────────────────────────────────────────────────
+
+    /// Total unread received messages across all conversations.
+    pub fn total_unread_count(&self) -> anyhow::Result<u64> {
+        let conn = self.conn.lock();
+        // A message is unread if it's received and its sent_at is after the
+        // conversation's read marker (or there is no read marker).
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM messages m
+             WHERE m.direction = 'received'
+               AND m.sent_at > COALESCE(
+                   (SELECT r.read_at FROM read_markers r WHERE r.conversation_id = m.conversation_id),
+                   0
+               )",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(count as u64)
+    }
+
     // ── Delete ───────────────────────────────────────────────────────────────
 
     /// Delete a message. Only the sender can delete their own sent messages.

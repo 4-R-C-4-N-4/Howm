@@ -15,6 +15,7 @@ mod identity;
 mod invite;
 mod matchmake;
 mod net_detect;
+mod notifications;
 mod open_invite;
 mod p2pcd;
 mod peers;

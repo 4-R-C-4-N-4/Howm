@@ -4,13 +4,17 @@
  * Envelope: { type: string, payload?: any }
  *
  * Shell → Capability:
- *   howm:token:reply   { token: string }
- *   howm:theme:changed {}   (capability should reload /theme.css or re-apply)
+ *   howm:token:reply    { token: string }
+ *   howm:theme:changed  {}   (capability should reload /theme.css or re-apply)
+ *   howm:navigate:to    { params: Record<string, string> }  deep-link into a view
  *
  * Capability → Shell:
  *   howm:ready         { name: string }          capability finished loading
  *   howm:token:request {}                         capability needs the API token
  *   howm:navigate      { path: string }           request shell-level navigation
+ *   howm:navigate:to   { path: string }           request shell-level deep-link navigation
+ *   howm:badge         { capability: string, count: number }  update badge count
+ *   howm:toast         { title?: string, body: string, capability?: string }  show toast
  *   howm:notify        { level: NotifyLevel, message: string }
  */
 
@@ -30,6 +34,13 @@ export function sendTokenReply(iframe: HTMLIFrameElement, token: string) {
   );
 }
 
+export function sendNavigateTo(iframe: HTMLIFrameElement, params: Record<string, string>) {
+  iframe.contentWindow?.postMessage(
+    { type: 'howm:navigate:to', payload: { params } } satisfies HowmMessage,
+    window.location.origin,
+  );
+}
+
 export function sendThemeChanged(iframe: HTMLIFrameElement) {
   iframe.contentWindow?.postMessage(
     { type: 'howm:theme:changed' } satisfies HowmMessage,
@@ -44,6 +55,9 @@ export interface ShellHandlers {
   onNavigate?: (path: string) => void;
   onNotify?: (level: NotifyLevel, message: string) => void;
   onTokenRequest?: () => void;
+  onNavigateTo?: (path: string) => void;
+  onBadge?: (capability: string, count: number) => void;
+  onToast?: (title: string, body: string, capability?: string) => void;
 }
 
 /**
@@ -85,6 +99,26 @@ export function listenFromCapabilities(
       case 'howm:notify': {
         const p = msg.payload as { level?: NotifyLevel; message?: string };
         handlers.onNotify?.(p.level ?? 'info', p.message ?? '');
+        break;
+      }
+      case 'howm:navigate:to': {
+        const p = msg.payload as { path?: string };
+        const path = p?.path;
+        if (path && typeof path === 'string') {
+          handlers.onNavigateTo?.(path);
+        }
+        break;
+      }
+      case 'howm:badge': {
+        const p = msg.payload as { capability?: string; count?: number };
+        if (p?.capability && typeof p.count === 'number') {
+          handlers.onBadge?.(p.capability, p.count);
+        }
+        break;
+      }
+      case 'howm:toast': {
+        const p = msg.payload as { title?: string; body?: string; capability?: string };
+        handlers.onToast?.(p?.title ?? '', p?.body ?? '', p?.capability);
         break;
       }
     }
