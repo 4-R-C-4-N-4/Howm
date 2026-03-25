@@ -1,7 +1,7 @@
+use parking_lot::Mutex;
 use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, warn};
 use uuid::Uuid;
@@ -36,7 +36,7 @@ impl AccessDb {
             path,
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )?;
-        conn.execute_batch("PRAGMA journal_mode = WAL;")?;
+        conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;")?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -52,7 +52,7 @@ impl AccessDb {
     /// 3. If ANY group has allow=true for the capability → Allow.
     /// 4. Otherwise → Deny.
     pub fn resolve_permission(&self, peer_id: &[u8], capability_name: &str) -> PermissionResult {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         // Walk the parent_group_id chain so inherited capabilities resolve.
         // The CTE collects all direct membership groups + howm.default, then
         // recursively adds each group's parent.
@@ -104,7 +104,7 @@ impl AccessDb {
         &self,
         peer_id: &[u8],
     ) -> rusqlite::Result<HashMap<String, PermissionResult>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         let mut stmt = conn.prepare("SELECT DISTINCT capability_name FROM capability_rules")?;
         let cap_names: Vec<String> = stmt
             .query_map([], |row| row.get(0))?
@@ -121,7 +121,7 @@ impl AccessDb {
 
     /// List all groups (built-in and custom).
     pub fn list_groups(&self) -> rusqlite::Result<Vec<Group>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "SELECT group_id, name, built_in, created_at, description, parent_group_id FROM groups ORDER BY built_in DESC, name",
         )?;
@@ -157,7 +157,7 @@ impl AccessDb {
     /// Get a single group by ID, or None if not found.
     pub fn get_group(&self, group_id: &Uuid) -> rusqlite::Result<Option<Group>> {
         let group: Option<Group> = {
-            let conn = self.conn.lock().unwrap();
+            let conn = self.conn.lock();
             conn.query_row(
                 "SELECT group_id, name, built_in, created_at, description, parent_group_id FROM groups WHERE group_id = ?1",
                 params![group_id.to_string()],
@@ -200,7 +200,7 @@ impl AccessDb {
         let now = epoch_secs();
 
         {
-            let conn = self.conn.lock().unwrap();
+            let conn = self.conn.lock();
             conn.execute(
                 "INSERT INTO groups (group_id, name, built_in, created_at, description)
                  VALUES (?1, ?2, 0, ?3, ?4)",
@@ -238,7 +238,7 @@ impl AccessDb {
         }
 
         {
-            let conn = self.conn.lock().unwrap();
+            let conn = self.conn.lock();
 
             if let Some(new_name) = name {
                 conn.execute(
@@ -280,7 +280,7 @@ impl AccessDb {
             return Err(rusqlite::Error::QueryReturnedNoRows);
         }
 
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         conn.execute(
             "DELETE FROM groups WHERE group_id = ?1",
             params![group_id.to_string()],
@@ -294,7 +294,7 @@ impl AccessDb {
 
     /// List all groups a peer belongs to (explicit memberships only).
     pub fn list_peer_groups(&self, peer_id: &[u8]) -> rusqlite::Result<Vec<Group>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "SELECT g.group_id, g.name, g.built_in, g.created_at, g.description, g.parent_group_id
              FROM groups g
@@ -333,7 +333,7 @@ impl AccessDb {
 
     /// List all peer IDs that are members of a specific group.
     pub fn list_group_member_ids(&self, group_id: &Uuid) -> rusqlite::Result<Vec<Vec<u8>>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "SELECT peer_id FROM peer_group_memberships WHERE group_id = ?1 ORDER BY assigned_at",
         )?;
@@ -351,7 +351,7 @@ impl AccessDb {
         group_id: &Uuid,
     ) -> rusqlite::Result<PeerGroupMembership> {
         let now = epoch_secs();
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         conn.execute(
             "INSERT OR IGNORE INTO peer_group_memberships (peer_id, group_id, assigned_at, assigned_by)
              VALUES (?1, ?2, ?3, 'local')",
@@ -377,7 +377,7 @@ impl AccessDb {
         peer_id: &[u8],
         group_id: &Uuid,
     ) -> rusqlite::Result<bool> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         let deleted = conn.execute(
             "DELETE FROM peer_group_memberships WHERE peer_id = ?1 AND group_id = ?2",
             params![peer_id, group_id.to_string()],
@@ -394,7 +394,7 @@ impl AccessDb {
 
     /// Remove a peer from ALL groups (used by deny flow).
     pub fn remove_peer_from_all_groups(&self, peer_id: &[u8]) -> rusqlite::Result<usize> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         let deleted = conn.execute(
             "DELETE FROM peer_group_memberships WHERE peer_id = ?1",
             params![peer_id],
@@ -411,7 +411,7 @@ impl AccessDb {
 
     /// Check if a peer has any explicit group memberships.
     pub fn peer_has_memberships(&self, peer_id: &[u8]) -> rusqlite::Result<bool> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         let count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM peer_group_memberships WHERE peer_id = ?1",
             params![peer_id],
@@ -423,7 +423,7 @@ impl AccessDb {
     // ── Internal helpers ─────────────────────────────────────────────────
 
     fn get_capability_rules(&self, group_id: &Uuid) -> rusqlite::Result<Vec<CapabilityRule>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         let group_id_str = group_id.to_string();
         let mut stmt = conn.prepare(
             "SELECT capability_name, allow, rate_limit, ttl

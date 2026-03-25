@@ -52,7 +52,7 @@ pub async fn proxy_request_with_peer(
         .map_err(|e| AppError::Internal(e.to_string()))?;
 
     let mut proxy_req = client.request(
-        reqwest::Method::from_bytes(method.as_str().as_bytes()).unwrap(),
+        reqwest::Method::from_bytes(method.as_str().as_bytes()).expect("valid HTTP method"),
         &target_url,
     );
 

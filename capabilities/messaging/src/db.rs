@@ -1,7 +1,7 @@
+use parking_lot::Mutex;
 use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 use std::path::Path;
-use std::sync::Mutex;
 
 /// Local message storage backed by SQLite.
 pub struct MessageDb {
@@ -49,7 +49,9 @@ impl MessageDb {
     pub fn open(data_dir: &Path) -> anyhow::Result<Self> {
         let db_path = data_dir.join("messaging.db");
         let conn = Connection::open(db_path)?;
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
+        conn.execute_batch(
+            "PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;",
+        )?;
         Self::migrate(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
@@ -104,7 +106,7 @@ impl MessageDb {
     // ── Insert ───────────────────────────────────────────────────────────────
 
     pub fn insert_message(&self, msg: &Message) -> anyhow::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         conn.execute(
             "INSERT INTO messages (msg_id, conversation_id, direction, sender_peer_id, sent_at, body, delivery_status)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -124,7 +126,7 @@ impl MessageDb {
     // ── Update ───────────────────────────────────────────────────────────────
 
     pub fn update_delivery_status(&self, msg_id: &str, status: &str) -> anyhow::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         conn.execute(
             "UPDATE messages SET delivery_status = ?1 WHERE msg_id = ?2",
             params![status, msg_id],
@@ -135,7 +137,7 @@ impl MessageDb {
     /// Transition all pending messages to a peer to 'failed'.
     pub fn fail_pending_to_peer(&self, conversation_id: &str, reason: &str) -> anyhow::Result<u64> {
         let _ = reason; // stored in delivery_status as "failed"
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         let count = conn.execute(
             "UPDATE messages SET delivery_status = 'failed'
              WHERE conversation_id = ?1 AND direction = 'sent' AND delivery_status = 'pending'",
@@ -154,7 +156,7 @@ impl MessageDb {
         cursor: Option<i64>,
         limit: i64,
     ) -> anyhow::Result<(Vec<Message>, Option<i64>)> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "SELECT msg_id, conversation_id, direction, sender_peer_id, sent_at, body, delivery_status
              FROM messages
@@ -189,8 +191,11 @@ impl MessageDb {
     }
 
     /// List conversations with last message and unread count.
-    pub fn list_conversations(&self, local_peer_id: &str) -> anyhow::Result<Vec<ConversationSummary>> {
-        let conn = self.conn.lock().unwrap();
+    pub fn list_conversations(
+        &self,
+        local_peer_id: &str,
+    ) -> anyhow::Result<Vec<ConversationSummary>> {
+        let conn = self.conn.lock();
 
         // Get distinct conversation_ids with their latest message
         let mut stmt = conn.prepare(
@@ -284,25 +289,6 @@ impl MessageDb {
         Ok(count)
     }
 
-    pub fn unread_count(&self, conversation_id: &str) -> anyhow::Result<i64> {
-        let conn = self.conn.lock().unwrap();
-        self.unread_count_inner(&conn, conversation_id)
-    }
-
-    /// Total unread across all conversations.
-    pub fn total_unread(&self) -> anyhow::Result<i64> {
-        let conn = self.conn.lock().unwrap();
-        // This is a bit expensive but fine for polling
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM messages m
-             LEFT JOIN read_markers rm ON m.conversation_id = rm.conversation_id
-             WHERE m.direction = 'received' AND m.sent_at > COALESCE(rm.read_at, 0)",
-            [],
-            |row| row.get(0),
-        )?;
-        Ok(count)
-    }
-
     // ── Mark read ────────────────────────────────────────────────────────────
 
     pub fn mark_read(&self, conversation_id: &str) -> anyhow::Result<()> {
@@ -311,7 +297,7 @@ impl MessageDb {
             .unwrap()
             .as_millis() as i64;
 
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         conn.execute(
             "INSERT INTO read_markers (conversation_id, read_at) VALUES (?1, ?2)
              ON CONFLICT(conversation_id) DO UPDATE SET read_at = ?2",
@@ -324,7 +310,7 @@ impl MessageDb {
 
     /// Delete a message. Only the sender can delete their own sent messages.
     pub fn delete_message(&self, msg_id: &str, local_peer_id: &str) -> anyhow::Result<bool> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
 
         // Check that the message exists and was sent by us
         let row: Option<(String, String)> = conn
@@ -450,9 +436,15 @@ mod tests {
             .unwrap();
         }
 
-        assert_eq!(db.unread_count(&conv).unwrap(), 3);
+        // Check unread via list_conversations
+        let convos = db.list_conversations("cGVlcjE=").unwrap();
+        assert_eq!(convos.len(), 1);
+        assert_eq!(convos[0].unread_count, 3);
+
         db.mark_read(&conv).unwrap();
-        assert_eq!(db.unread_count(&conv).unwrap(), 0);
+
+        let convos = db.list_conversations("cGVlcjE=").unwrap();
+        assert_eq!(convos[0].unread_count, 0);
 
         // One more after mark-read — must be in the future relative to mark_read's now()
         std::thread::sleep(std::time::Duration::from_millis(10));
@@ -471,7 +463,9 @@ mod tests {
             delivery_status: "delivered".into(),
         })
         .unwrap();
-        assert_eq!(db.unread_count(&conv).unwrap(), 1);
+
+        let convos = db.list_conversations("cGVlcjE=").unwrap();
+        assert_eq!(convos[0].unread_count, 1);
     }
 
     #[test]

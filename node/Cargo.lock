@@ -722,6 +722,7 @@ name = "howm-access"
 version = "0.1.0"
 dependencies = [
  "hex",
+ "parking_lot",
  "rusqlite",
  "serde",
  "tempfile",

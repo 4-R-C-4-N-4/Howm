@@ -1,7 +1,8 @@
+use parking_lot::Mutex;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use uuid::Uuid;
 
 // Well-known group UUIDs (mirrors node/access/src/types.rs)
@@ -104,7 +105,7 @@ impl FilesDb {
 
     /// Insert a new offering. Returns Err if name is not unique.
     pub fn insert_offering(&self, offering: &Offering) -> anyhow::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         conn.execute(
             "INSERT INTO offerings (offering_id, blob_id, name, description, mime_type, size, created_at, access, allowlist)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
@@ -134,7 +135,7 @@ impl FilesDb {
 
     /// List all offerings (operator view).
     pub fn list_offerings(&self) -> anyhow::Result<Vec<Offering>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "SELECT offering_id, blob_id, name, description, mime_type, size, created_at, access, allowlist
              FROM offerings ORDER BY created_at DESC",
@@ -149,7 +150,7 @@ impl FilesDb {
 
     /// Get a single offering by ID.
     pub fn get_offering(&self, offering_id: &str) -> anyhow::Result<Option<Offering>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         let result = conn
             .query_row(
                 "SELECT offering_id, blob_id, name, description, mime_type, size, created_at, access, allowlist
@@ -167,7 +168,7 @@ impl FilesDb {
         offering_id: &str,
         update: &OfferingUpdate,
     ) -> anyhow::Result<bool> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
 
         let mut sets = Vec::new();
         let mut values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
@@ -222,7 +223,7 @@ impl FilesDb {
     /// Delete an offering. Returns the blob_id so the caller can optionally
     /// delete the blob, or None if the offering wasn't found.
     pub fn delete_offering(&self, offering_id: &str) -> anyhow::Result<Option<String>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         let blob_id: Option<String> = conn
             .query_row(
                 "SELECT blob_id FROM offerings WHERE offering_id = ?1",
@@ -260,7 +261,7 @@ impl FilesDb {
 
     /// Insert a new download record.
     pub fn insert_download(&self, dl: &Download) -> anyhow::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         conn.execute(
             "INSERT INTO downloads (blob_id, offering_id, peer_id, transfer_id, name, mime_type, size, status, started_at, completed_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
@@ -282,7 +283,7 @@ impl FilesDb {
 
     /// List all downloads.
     pub fn list_downloads(&self) -> anyhow::Result<Vec<Download>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "SELECT blob_id, offering_id, peer_id, transfer_id, name, mime_type, size, status, started_at, completed_at
              FROM downloads ORDER BY started_at DESC",
@@ -297,7 +298,7 @@ impl FilesDb {
 
     /// Get a single download by blob_id.
     pub fn get_download(&self, blob_id: &str) -> anyhow::Result<Option<Download>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         let result = conn
             .query_row(
                 "SELECT blob_id, offering_id, peer_id, transfer_id, name, mime_type, size, status, started_at, completed_at
@@ -316,7 +317,7 @@ impl FilesDb {
         status: &str,
         completed_at: Option<i64>,
     ) -> anyhow::Result<bool> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         let updated = conn.execute(
             "UPDATE downloads SET status = ?1, completed_at = ?2 WHERE blob_id = ?3",
             params![status, completed_at, blob_id],
@@ -327,7 +328,7 @@ impl FilesDb {
     /// Delete a download by blob_id. Returns true if a row was deleted.
     #[allow(dead_code)]
     pub fn delete_download(&self, blob_id: &str) -> anyhow::Result<bool> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         let deleted = conn.execute("DELETE FROM downloads WHERE blob_id = ?1", params![blob_id])?;
         Ok(deleted > 0)
     }
@@ -351,8 +352,9 @@ impl FilesDb {
 fn create_tables(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "
-        PRAGMA journal_mode = WAL;
-        PRAGMA foreign_keys = ON;
+PRAGMA journal_mode = WAL;
+         PRAGMA busy_timeout = 5000;
+         PRAGMA foreign_keys = ON;
 
         CREATE TABLE IF NOT EXISTS offerings (
             offering_id TEXT PRIMARY KEY,
@@ -475,7 +477,7 @@ mod tests {
 
     fn make_offering(name: &str, access: &str) -> Offering {
         Offering {
-            offering_id: Uuid::new_v4().to_string(),
+            offering_id: Uuid::now_v7().to_string(),
             blob_id: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789".to_string(),
             name: name.to_string(),
             description: Some("test file".to_string()),
@@ -532,7 +534,7 @@ mod tests {
         db.insert_offering(&o1).unwrap();
 
         let mut o2 = make_offering("same-name.txt", "friends");
-        o2.offering_id = Uuid::new_v4().to_string();
+        o2.offering_id = Uuid::now_v7().to_string();
         let err = db.insert_offering(&o2).unwrap_err();
         assert!(err.to_string().contains("name_conflict"));
     }

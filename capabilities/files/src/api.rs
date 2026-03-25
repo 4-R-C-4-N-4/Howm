@@ -553,7 +553,7 @@ pub async fn create_offering_json(
         .as_secs() as i64;
 
     let offering = crate::db::Offering {
-        offering_id: Uuid::new_v4().to_string(),
+        offering_id: Uuid::now_v7().to_string(),
         blob_id: req.blob_id,
         name: req.name,
         description: req.description,
@@ -705,7 +705,7 @@ async fn create_offering_multipart(
         .as_secs() as i64;
 
     let offering = crate::db::Offering {
-        offering_id: Uuid::new_v4().to_string(),
+        offering_id: Uuid::now_v7().to_string(),
         blob_id: hex_hash,
         name,
         description,
@@ -1545,7 +1545,7 @@ fn encode_catalogue_list_response(
     }
 
     let mut buf = Vec::new();
-    ciborium::into_writer(&Value::Map(map), &mut buf).unwrap();
+    ciborium::into_writer(&Value::Map(map), &mut buf).expect("CBOR catalogue response");
     buf
 }
 
@@ -1560,7 +1560,7 @@ fn encode_has_blob_response(has: &[String]) -> Vec<u8> {
     )]);
 
     let mut buf = Vec::new();
-    ciborium::into_writer(&map, &mut buf).unwrap();
+    ciborium::into_writer(&map, &mut buf).expect("CBOR has_blob response");
     buf
 }
 
@@ -1584,7 +1584,7 @@ pub fn encode_catalogue_list_request(cursor: usize, limit: usize) -> Vec<u8> {
         ),
     ]);
     let mut buf = Vec::new();
-    ciborium::into_writer(&map, &mut buf).unwrap();
+    ciborium::into_writer(&map, &mut buf).expect("CBOR catalogue list request");
     buf
 }
 
@@ -1601,7 +1601,7 @@ pub fn encode_has_blob_request(blob_ids: &[String]) -> Vec<u8> {
         (Value::Integer(CBOR_KEY_BLOB_IDS.into()), Value::Array(ids)),
     ]);
     let mut buf = Vec::new();
-    ciborium::into_writer(&map, &mut buf).unwrap();
+    ciborium::into_writer(&map, &mut buf).expect("CBOR has_blob request");
     buf
 }
 
@@ -1905,7 +1905,7 @@ mod tests {
     /// Insert an offering directly into the DB for test setup.
     fn seed_offering(db: &crate::db::FilesDb, name: &str, access: &str) -> crate::db::Offering {
         let offering = crate::db::Offering {
-            offering_id: Uuid::new_v4().to_string(),
+            offering_id: Uuid::now_v7().to_string(),
             blob_id: hex::encode([0xABu8; 32]),
             name: name.to_string(),
             description: Some(format!("Desc for {}", name)),

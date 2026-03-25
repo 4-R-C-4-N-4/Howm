@@ -297,7 +297,9 @@ pub fn characterize_nat(local_port: u16) -> NatProfile {
     };
 
     // Bind a UDP socket on the local port
-    let bind_addr: SocketAddr = format!("0.0.0.0:{}", local_port).parse().unwrap();
+    let bind_addr: SocketAddr = format!("0.0.0.0:{}", local_port)
+        .parse()
+        .expect("valid STUN bind address");
     let socket = match UdpSocket::bind(bind_addr) {
         Ok(s) => s,
         Err(e) => {

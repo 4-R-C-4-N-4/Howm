@@ -10,7 +10,7 @@ use p2pcd::capability_sdk::{
     ActivePeer, CapabilityRuntime, InboundMessage, PeerActivePayload, PeerInactivePayload,
     PeerTracker,
 };
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
@@ -30,6 +30,7 @@ pub const MSG_TYPE_POST_BROADCAST: u64 = 100;
 
 #[derive(Clone)]
 pub struct FeedState {
+    #[allow(dead_code)] // retained for future use (blob storage path)
     pub data_dir: PathBuf,
     pub db: FeedDb,
     /// Capability runtime: bridge client + peer tracker.

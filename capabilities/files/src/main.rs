@@ -1,5 +1,6 @@
 use axum::{
     body::Body,
+    extract::DefaultBodyLimit,
     http::{header, Request, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, patch, post, put},
@@ -91,6 +92,7 @@ async fn main() -> anyhow::Result<()> {
         // Internal: transfer-complete callback from daemon bridge
         .route("/internal/transfer-complete", post(api::transfer_complete))
         .with_state(state)
+        .layer(DefaultBodyLimit::max(500 * 1024 * 1024)) // 500 MB for file transfers
         // Embedded capability UI at /ui/*
         .fallback(serve_ui);
 

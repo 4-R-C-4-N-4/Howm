@@ -91,7 +91,7 @@ fn encode_dm_envelope(msg_id: &[u8; 16], sender: &[u8], sent_at: u64, body: &str
         ),
     ]);
     let mut buf = Vec::new();
-    ciborium::into_writer(&map, &mut buf).unwrap();
+    ciborium::into_writer(&map, &mut buf).expect("CBOR serialization of DM envelope");
     buf
 }
 
@@ -174,8 +174,6 @@ pub struct SendRequest {
 }
 
 #[derive(Debug, Serialize)]
-
-
 #[derive(Deserialize)]
 pub struct PaginationParams {
     pub cursor: Option<i64>,
@@ -390,7 +388,12 @@ pub async fn send_message(
                 "peer_offline"
             };
             let _ = state.db.update_delivery_status(&msg_id_hex, "failed");
-            warn!("DM delivery failed to {}: {} ({})", &req.to[..8.min(req.to.len())], e, reason);
+            warn!(
+                "DM delivery failed to {}: {} ({})",
+                &req.to[..8.min(req.to.len())],
+                e,
+                reason
+            );
             (
                 StatusCode::OK, // Still 200 — the message was accepted, just failed delivery
                 Json(serde_json::json!({
@@ -433,7 +436,10 @@ pub async fn get_conversation(
     let conversation_id = MessageDb::conversation_id(&local_peer_id, &peer_id);
     let limit = params.limit.clamp(1, 100);
 
-    match state.db.get_conversation(&conversation_id, params.cursor, limit) {
+    match state
+        .db
+        .get_conversation(&conversation_id, params.cursor, limit)
+    {
         Ok((messages, next_cursor)) => (
             StatusCode::OK,
             Json(serde_json::json!(ConversationResponse {
@@ -529,7 +535,10 @@ pub async fn peer_inactive(
         let conv_id = MessageDb::conversation_id(&local_peer_id, &payload.peer_id);
         if let Ok(failed) = state.db.fail_pending_to_peer(&conv_id, "peer_offline") {
             if failed > 0 {
-                info!("Marked {} pending messages as failed (peer_offline)", failed);
+                info!(
+                    "Marked {} pending messages as failed (peer_offline)",
+                    failed
+                );
             }
         }
     }
@@ -617,10 +626,7 @@ pub async fn inbound_message(
         // Build event payload as CBOR
         use ciborium::value::Value;
         let event = Value::Map(vec![
-            (
-                Value::Text("msg_id".into()),
-                Value::Text(msg_id_hex),
-            ),
+            (Value::Text("msg_id".into()), Value::Text(msg_id_hex)),
             (
                 Value::Text("sender_peer_id".into()),
                 Value::Text(peer_id_clone),

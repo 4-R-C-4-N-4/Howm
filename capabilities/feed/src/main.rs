@@ -1,5 +1,6 @@
 use axum::{
     body::Body,
+    extract::DefaultBodyLimit,
     http::{header, Request, StatusCode},
     response::{IntoResponse, Response},
     routing::{delete, get, post},
@@ -106,6 +107,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/p2pcd/peer-inactive", post(api::p2pcd_peer_inactive))
         .route("/p2pcd/inbound", post(api::p2pcd_inbound))
         .with_state(state)
+        .layer(DefaultBodyLimit::max(50 * 1024 * 1024)) // 50 MB for media uploads
         // Embedded capability UI — served at /ui/*
         .fallback(serve_ui);
 

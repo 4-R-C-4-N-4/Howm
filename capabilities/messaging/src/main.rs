@@ -1,4 +1,5 @@
 use axum::{
+    extract::DefaultBodyLimit,
     routing::{delete, get, post},
     Router,
 };
@@ -8,8 +9,8 @@ use std::path::PathBuf;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
-mod db;
 mod api;
+mod db;
 
 #[derive(Parser, Debug)]
 #[command(name = "messaging", about = "Howm peer messaging capability")]
@@ -63,7 +64,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/p2pcd/peer-active", post(api::peer_active))
         .route("/p2pcd/peer-inactive", post(api::peer_inactive))
         .route("/p2pcd/inbound", post(api::inbound_message))
-        .with_state(state);
+        .with_state(state)
+        .layer(DefaultBodyLimit::max(1_048_576)); // 1 MB for text messages
 
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
     info!("Messaging capability listening on {}", addr);

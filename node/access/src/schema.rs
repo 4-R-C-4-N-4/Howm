@@ -7,8 +7,9 @@ use crate::types::{GROUP_DEFAULT, GROUP_FRIENDS, GROUP_TRUSTED};
 pub fn create_tables(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "
-        PRAGMA journal_mode = WAL;
-        PRAGMA foreign_keys = ON;
+PRAGMA journal_mode = WAL;
+    PRAGMA busy_timeout = 5000;
+    PRAGMA foreign_keys = ON;
 
         CREATE TABLE IF NOT EXISTS groups (
             group_id        TEXT PRIMARY KEY,

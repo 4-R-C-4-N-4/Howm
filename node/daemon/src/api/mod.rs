@@ -1,6 +1,6 @@
 use crate::state::AppState;
 use axum::{
-    extract::{ConnectInfo, State},
+    extract::{ConnectInfo, DefaultBodyLimit, State},
     http::{Request, StatusCode},
     middleware::{self, Next},
     response::Response,
@@ -10,6 +10,7 @@ use axum::{
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
+use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 
 pub mod access_routes;
@@ -51,6 +52,7 @@ fn is_wg_subnet(ip: Ipv4Addr) -> bool {
 ///   2. `local_or_wg`  — no bearer, but restricted to localhost + WG subnet
 ///   3. `peer_ceremony` — fully public (invite handshake over the internet)
 pub fn build_router(state: AppState, ui_dir: Option<PathBuf>) -> Router {
+    let debug_mode = state.config.debug || state.config.dev;
     // ── 1. Authenticated routes (bearer token required) ──────────────────
     let authenticated = Router::new()
         .route("/node/peers/:node_id", delete(node_routes::remove_peer))
@@ -231,7 +233,20 @@ pub fn build_router(state: AppState, ui_dir: Option<PathBuf>) -> Router {
         router = router.fallback(crate::embedded_ui::serve_embedded);
     }
 
-    router.with_state(state)
+    // CORS: permissive in debug/dev mode for external UI development
+    if debug_mode {
+        router = router.layer(
+            CorsLayer::new()
+                .allow_origin(Any)
+                .allow_methods(Any)
+                .allow_headers(Any),
+        );
+        tracing::info!("CORS: permissive (debug/dev mode)");
+    }
+
+    router
+        .layer(DefaultBodyLimit::max(10 * 1024 * 1024)) // 10 MB
+        .with_state(state)
 }
 
 /// Middleware: restrict to localhost only (127.0.0.0/8 or ::1).

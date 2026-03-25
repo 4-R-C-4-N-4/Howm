@@ -29,7 +29,10 @@ pub fn load(data_dir: &Path) -> anyhow::Result<Vec<Peer>> {
         return Ok(vec![]);
     }
     let text = std::fs::read_to_string(&path)?;
-    Ok(serde_json::from_str(&text).unwrap_or_default())
+    Ok(serde_json::from_str(&text).unwrap_or_else(|e| {
+        tracing::warn!("Failed to parse peers.json, using empty list: {}", e);
+        Vec::new()
+    }))
 }
 
 pub fn save(data_dir: &Path, peers: &[Peer]) -> anyhow::Result<()> {
