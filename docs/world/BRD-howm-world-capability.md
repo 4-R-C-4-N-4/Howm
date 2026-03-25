@@ -1,374 +1,425 @@
-# BRD-004: Howm — The Namesake Capability
+# Howm World Generation — Outside Space Design
 
-**Author:** Ivy Darling
-**Project:** Howm
-**Status:** Draft
-**Version:** 0.1
-**Date:** 2026-03-23
-**Capability path:** `capabilities/howm/`
-**P2P-CD name:** `howm.world.room.1`
-
----
-
-## 1. Background
-
-Howm is the namesake capability of the application. It is a first-person, browser-rendered world that gives each node a spatial representation — a *room* — built from the peer's own running capability state. The social feed, messages, and files capabilities become objects a user can physically approach and interact with inside their room. Other peers can visit, navigate shared spaces, and experience the same P2P mesh they already participate in through a spatial, game-like lens.
-
-The rendering system is inspired by Astral, an ASCII-first first-person renderer: a `FrameBuffer` is populated by a `RenderLoop` reading a scene description, then presented to a `<canvas>` element via a `Presenter`. Glyphs are sourced from a `GlyphDB` (SQLite-backed character feature store) with a graceful fallback to an ASCII brightness ramp. This renderer architecture is ported into the Howm frontend as a standalone TypeScript module — no direct dependency on the Astral codebase.
-
-The renderer is a swappable abstraction. Phase 1 ships one concrete implementation. Future render modes are not blocked by this design.
+**Author:** Ivy Darling  
+**Project:** Howm  
+**Document type:** Design Reference  
+**Status:** Draft  
+**Version:** 0.2  
+**Date:** 2026-03-25  
+**Related BRD:** BRD-004 (`howm.world.room.1`)
 
 ---
 
-## 2. Design Influences
+## 1. Overview
 
-- **Astral** — ASCII/glyph first-person renderer. Architecture: `SceneLoader` → `FrameBuffer` → `RenderLoop` → `Presenter`. GlyphDB for perceptual glyph selection, ASCII ramp fallback. Scene data is a JSON description of geometry and objects.
-- **MUD/roguelike spatial metaphor** — a room is a bounded navigable space. Objects in the room have positions and interaction verbs. Navigation between rooms (underground, outside) is explicit.
-- **BitTorrent / P2P identity** — the underground space seeded from peer IDs is deterministic: same peers always produce the same space. This is a spatial expression of the WireGuard mesh.
+The Outside space in Howm is a navigable city that is a spatial expression of IP address space. Every IP address in existence corresponds to a distinct city district, and the entire address space forms a single continuous world. A peer's Outside is not located in a geographic place — it *is* the place. The city at a given IP address is deterministically generated from that address alone, and is identical for every peer who visits it.
 
----
-
-## 3. Problem Statement
-
-Howm's capabilities — feed, messages, files — are functional but have no unified experiential surface. They are tabs and lists. The Howm capability gives each node a *place*: a room that is yours, visitable by peers you permit, navigable together in shared spaces. It is the ambient layer that ties the social capabilities into a coherent world.
-
-Phase 1 establishes the groundwork: the renderer, the room model, presence/visit notifications, and the two shared spaces (underground, outside) in their simplest non-procedural forms. Procedural generation is explicitly out of scope for phase 1 and is deferred to future BRDs.
+This document specifies the world generation algorithm: how IP addresses map to spatial coordinates, how district boundaries are computed, how districts derive their visual and generative identity, how the road network is generated within and across district boundaries, and how the city remains continuous as the player navigates.
 
 ---
 
-## 4. Goals
+## 2. Design Principles
 
-- Each node running `howm.world.room.1` has a **room**: a first-person navigable space rendered in the browser, accessible from the main Howm UI as a full-tab or full-screen view.
-- The room contains three **capability objects** at fixed positions, one each for `howm.social.feed.1`, `howm.social.messaging.1`, and `howm.social.files.1`. Approaching and interacting with an object opens a Howm-style UI panel rendered in the graphical context.
-- A peer can **visit** another peer's room (subject to access policy), see a real-time representation of other visitors, and interact with the host's capability objects via a unified Howm message layer — not by calling capability endpoints directly.
-- **Presence notification**: when a peer enters a room, the room owner is notified.
-- **Underground**: a shared space connecting the rooms of all peers in a session. Phase 1: a simple tunnel room with a portal to each participant's room. No procedural generation. The space is deterministically seeded by the sorted set of participant peer IDs — the same peer set always produces the same underground.
-- **Outside**: a shared space representing the IP-derived location of the room that initiated the session. Phase 1: renders the global address (city/country resolved from IP) as a visible label in a minimal environment. No procedural generation.
-- The renderer is an **abstracted, swappable module**. Phase 1 ships a single concrete implementation ported from the Astral architecture.
+**Determinism above all.** The same IP address must produce the same district on every client, every time, without coordination. No random state, no server authority, no time-dependent values. Generation is a pure function of the IP.
 
----
+**IP space is the world map.** The address space is not a metaphor for geography — it is the coordinate system. Navigating the city is navigating the address space. Subnets are neighborhoods. Reserved ranges have a distinct character. Dark, unallocated space is wilderness.
 
-## 5. Non-Goals
+**Local rendering only.** No attempt is made to represent the full address space. The renderer is first-person; only the immediate district and its neighbors are ever generated. Districts load on demand as the player navigates.
 
-- **Procedural generation** of any kind (underground topology, outside cityscape, building placement, fauna). Deferred.
-- **Access control system design**. The Howm capability has access tiers (peer ID / group / public) but the full tier system and its relationship to P2P-CD classification and `howm.social.files.1` groups is a separate BRD. Phase 1 treats access as an open question and implements a stub (owner-only access by default, public flag as a toggle).
-- **Avatar customisation**. Peers are represented minimally in phase 1.
-- **Persistent world state** beyond what can be derived from peer IDs and capability metadata. No world database, no inventory, no save state.
-- **Mobile or native client**. The renderer targets a browser `<canvas>` in a desktop context.
-- **Audio**.
-- **Physics or collision beyond movement bounds**. Navigation is grid or ray-based; no physics engine.
-- **Integration with capabilities beyond feed, messages, and files** in phase 1.
+**Cells are permanent.** A district's shape and identity never change regardless of which cell is the current query center. Jitter and all generative parameters are absolute functions of the cell's key, not relative to any view state.
+
+**IPv4 and IPv6 are separate worlds.** They do not share a coordinate space, do not need to look alike, and are navigated independently. The IPv4 world is dense and fully inhabited. The IPv6 world is vast, mostly dark, with islands of civilization in allocated ranges.
 
 ---
 
-## 6. User Stories
+## 3. Cell Model
 
-| ID | As a… | I want to… | So that… |
-|----|-------|------------|----------|
-| U1 | Node operator | Launch my Howm room from the Howm UI | I can experience my node as a space |
-| U2 | Node operator | See my feed, messaging, and files as objects I can walk up to | My capabilities feel tangible |
-| U3 | Node operator | Know when a peer has entered my room | I'm aware of visitors in real time |
-| U4 | Peer (visitor) | Visit a connected peer's room if they permit it | I can explore their Howm |
-| U5 | Peer (visitor) | See other visitors present in the room | I know who else is here |
-| U6 | Peer (visitor) | Interact with the host's capability objects | I can read their feed or browse their files from inside the room |
-| U7 | Multiple peers | Go underground together from any shared room | We can navigate a space defined by our shared connection |
-| U8 | Multiple peers | Go outside from a room | We see a representation of where the room's node is located |
-| U9 | Developer | Swap the renderer implementation | I can experiment with different render modes without touching game logic |
+### 3.1 Granularity
+
+Each distinct IP district corresponds to one **cell**. Cell granularity is:
+
+| Mode | Granularity | Cells in space |
+|------|-------------|----------------|
+| IPv4 | `/24` (256 addresses) | ~16.7 million |
+| IPv6 | `/32` (2⁹⁶ addresses) | ~4.3 billion |
+
+A `/24` block is the natural city-block unit for IPv4: large enough to be a coherent place, small enough that transitions between cells happen at a human navigation scale.
+
+### 3.2 Cell Key
+
+Each cell is identified by a compact integer key derived from its base address:
+
+```
+IPv4:  key = (octet1 << 16) | (octet2 << 8) | octet3        // 24-bit
+IPv6:  key = (group0 << 16) | group1                         // 32-bit, top /32
+```
+
+The key is the sole input to all hash functions. It is stable, human-readable, and round-trips cleanly to and from the cell's IP base address.
+
+### 3.3 Grid Coordinates
+
+Each cell has a 2D grid position derived directly from its IP octets — no interleaving, no Morton arithmetic:
+
+```
+IPv4:  gx = octet3
+       gy = (octet1 << 8) | octet2
+
+IPv6:  gx = group1
+       gy = group0
+```
+
+Grid stepping is octet arithmetic: moving east increments `octet3`, wrapping at 255. Moving north increments the combined `octet1:octet2` value. Subnet boundaries (where an octet rolls over) are therefore natural district-scale transitions: crossing from `.255` to `.0` in the third octet is a perceptible neighborhood boundary.
+
+### 3.4 Hash Functions
+
+All per-cell deterministic values are derived from two independent 32-bit hashes of the cell key:
+
+```
+ha(k):  k ^ (k >>> 16)  × 0x45d9f3b  (×2, avalanche)
+hb(k):  k ^ (k >>> 16)  × 0x8da6b343 (×2, avalanche)
+```
+
+`ha` drives X-axis jitter and all color/hue derivation. `hb` drives Y-axis jitter. Keeping these independent prevents axis correlation in cell shapes.
 
 ---
 
-## 7. Architecture Overview
+## 4. Voronoi District Geometry
 
-The Howm capability has three distinct layers:
+### 4.1 Why Voronoi
+
+City districts are generated as Voronoi cells. This choice has several consequences that are all desirable:
+
+- Every cell is a unique polygon whose shape is a function of its IP address and its neighbors' addresses. No two cells look alike.
+- Adjacent cells always share edges exactly — no gaps, no overlaps. The tiling is mathematically guaranteed to be complete.
+- The geometry is purely local: computing a cell requires only its seed point and the seed points of its neighbors. The full world map is never needed.
+- Subnet structure produces emergent geographic clustering: IPs that share a long common prefix have nearby seed points in grid space, so their districts cluster into visually coherent regions.
+
+### 4.2 Seed Point Placement
+
+Each cell's Voronoi seed point is placed at an absolute world-space position:
 
 ```
-┌─────────────────────────────────────────────────────┐
-│  Browser client (served by the howm capability)     │
-│                                                     │
-│  ┌──────────────┐   ┌──────────────────────────┐   │
-│  │  Renderer    │   │  Game client             │   │
-│  │  (Astral-    │◄──│  - Scene graph           │   │
-│  │   ported)    │   │  - Input / movement      │   │
-│  │  FrameBuffer │   │  - Interaction system    │   │
-│  │  Presenter   │   │  - Space manager         │   │
-│  │  GlyphDB     │   │  (room / underground /   │   │
-│  └──────────────┘   │   outside)               │   │
-│                     └──────────┬─────────────┘    │
-└────────────────────────────────┼────────────────────┘
-                                 │ WebSocket / HTTP
-┌────────────────────────────────┼────────────────────┐
-│  Howm capability process       │                    │
-│  (Rust, capabilities/howm/)    │                    │
-│                                ▼                    │
-│  ┌──────────────────────────────────────────────┐  │
-│  │  Howm message layer                          │  │
-│  │  Unified endpoints abstracting cap objects   │  │
-│  │  /howm/room, /howm/visit, /howm/presence     │  │
-│  │  /howm/objects/{feed,messages,files}         │  │
-│  └──────────────────┬───────────────────────────┘  │
-│                     │ internal HTTP                 │
-│  ┌──────────────────▼───────────────────────────┐  │
-│  │  Capability bridge                           │  │
-│  │  Translates howm object requests into calls  │  │
-│  │  to social-feed, messaging, files caps       │  │
-│  └──────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────┘
-                          │ P2P-CD (core.data.stream.1,
-                          │  core.data.event.1,
-                          │  core.data.rpc.1)
-              ┌───────────┴────────────┐
-              │   Peer nodes           │
-              │   (also running        │
-              │    howm.world.room.1)  │
-              └────────────────────────┘
+wx(key) = gx × SCALE + jitter_x(key)
+wy(key) = gy × SCALE + jitter_y(key)
+
+jitter_x(key) = (ha(key) / 0xFFFFFFFF − 0.5) × SCALE × J
+jitter_y(key) = (hb(key) / 0xFFFFFFFF − 0.5) × SCALE × J
 ```
 
-All data that the client needs about capability objects (feed posts, file listings, messages) is served through the **Howm message layer** — a set of capability-owned HTTP endpoints that translate requests into calls to the underlying capabilities. This decouples the game client from the capability wire format. If `howm.social.feed.1`'s schema changes, only the capability bridge changes; the game client's object interaction protocol is stable.
+Where `SCALE` is the world-space distance per grid unit and `J` is the global jitter factor.
+
+**Critical:** jitter is computed in world space from the cell key alone. It does not depend on which cell is currently centered in the view. When the view pans from cell A to cell B, all neighboring cells retain exactly the shapes they had when viewed from A.
+
+### 4.3 Jitter Factor
+
+`J` is a global protocol constant. Target value is approximately `0.75`. Exact value to be fixed after implementation validation.
+
+| J | Character |
+|---|-----------|
+| 0.0 | Perfect regular grid — cells are near-uniform hexagons |
+| 0.4–0.6 | Gently irregular — organic but not extreme |
+| 0.7–0.85 | Strongly irregular — recommended range for interesting city districts |
+| > 0.9 | Degenerate — some cells become very thin slivers |
+
+### 4.4 Neighbor Set
+
+When computing the Voronoi diagram for a given query cell, seed points are generated for a radius-2 neighborhood: the query cell plus the 24 surrounding cells (a 5×5 grid minus the center). This produces 25 seed points, sufficient to compute correct cell boundaries for the query cell and its 8 immediate neighbors without boundary artifacts.
+
+### 4.5 Cell Identity Values
+
+Each cell carries a set of derived values that drive all subsequent generation:
+
+| Field | Derivation | Use |
+|-------|------------|-----|
+| `cell_key` | IP octets packed | Canonical identifier, hash input |
+| `seed_hash` | `ha(cell_key)` | Master seed for all generation |
+| `popcount` | Count of set bits in key | Density, road count, height profile |
+| `octet_sum` | Sum of non-zero octets | Secondary density parameter |
+| `bit_entropy` | `popcount / key_bits` | Regularity vs. chaos of layout |
+| `subnet_class` | public / private / loopback / multicast / reserved | District archetype |
+| `hue` | `(ha(key) & 0xFFF) / 4096 × 360` | Visual color identity |
 
 ---
 
-## 8. Functional Requirements
+## 5. Subnet Archetypes
 
-### 8.1 Capability Declaration
+The `subnet_class` of a cell drives its district archetype — the high-level identity that shapes what kind of place it feels like. This is a coarse categorical assignment; finer variation within each archetype comes from the per-cell hash values.
 
-- **FR-1.1** The `howm` capability process SHALL advertise `howm.world.room.1` in its P2P-CD manifest with:
-  - `role: BOTH, mutual: true` — rooms are symmetric; any peer with the capability can both host and visit.
-  - `scope.params: { methods: ["room.describe", "room.enter", "room.leave", "presence.list"] }` — RPC method set for room negotiation via `core.data.rpc.1`.
-- **FR-1.2** Positional presence (real-time position of peers in a shared space) SHALL be synchronised via `core.data.stream.1`. Each peer in a shared space opens a stream to each other peer carrying position updates at a target rate of 10 Hz.
-- **FR-1.3** Presence events (enter, leave, notification to owner) SHALL be delivered via `core.data.event.1` on topics prefixed `howm.presence.`.
-
-### 8.2 Renderer
-
-- **FR-2.1** The renderer SHALL be implemented as a TypeScript module in `ui/web/` with the following components: `FrameBuffer`, `Presenter`, `RenderLoop`, `GlyphDB`, `GlyphCache`, `InputState`, `CameraController`. These are defined by this BRD, not derived from any external codebase. No direct dependency on any third-party renderer library.
-- **FR-2.2** The renderer SHALL accept a `HowmScene` object as its data contract. `HowmScene` is a Howm-native scene format defined in this project; it has no dependency on or coupling to any external renderer's scene format. The `HowmScene` interface is the boundary between the game client and the renderer — swapping the renderer requires only a new implementation that consumes the same `HowmScene` type. The scene format specification is a deliverable of the implementation phase.
-- **FR-2.3** `GlyphDB` SHALL load from `glyph_features.sqlite` stored under the capability's `DATA_DIR` and served as a static asset alongside the game client. This database is owned by the `howm` capability — consistent with other capability-owned SQLite databases in the project. If the file is unavailable, `GlyphCache` SHALL fall back to an ASCII brightness ramp without error. User modification and extension of the glyph set is a future feature.
-- **FR-2.4** The renderer SHALL target 30 FPS on a `<canvas>` element sized to fill the viewport.
-- **FR-2.5** Temporal reuse SHALL be enabled by default (carry forward unchanged cells between frames). Adaptive quality and worker threads are disabled for phase 1.
-- **FR-2.6** The renderer SHALL expose a `setRenderer(impl: IRenderer)` function allowing the active renderer to be replaced at runtime without reloading the page. This is the swappability hook; concrete alternative implementations are out of scope for phase 1.
-
-### 8.3 The Room
-
-- **FR-3.1** Each node running `howm.world.room.1` has exactly one room. The room is a fixed rectangular space. Phase 1 dimensions: 20×20 units. Walls, floor, and ceiling are rendered as solid geometry with a glyph-shaded appearance.
-- **FR-3.2** Three **capability objects** are placed at fixed positions in the room:
-  - Feed object — north wall, centre. Represents `howm.social.feed.1`.
-  - Messages object — east wall. Represents `howm.social.messaging.1`.
-  - Files object — west wall. Represents `howm.social.files.1`.
-- **FR-3.3** Two **portal objects** are placed at fixed positions:
-  - Underground portal — south wall, centre.
-  - Outside portal — south wall, flanking the underground portal.
-- **FR-3.4** If a capability is not active on the node (e.g. the node is not running `howm.social.files.1`), its object SHALL be rendered as absent or inactive (visually distinct, not interactable).
-- **FR-3.5** The room's scene data SHALL be generated entirely client-side from the node's own capability metadata. The capability process provides a `/howm/room/describe` endpoint returning capability availability; the client builds the scene from this.
-
-### 8.4 Capability Object Interaction
-
-- **FR-4.1** When a peer approaches a capability object within interaction range, a prompt SHALL appear (HUD layer, not renderer layer).
-- **FR-4.2** Activating the interaction opens a **capability panel** — a Howm-style UI component overlaid on the renderer canvas. The panel is not rendered in 3D; it is a 2D HTML overlay.
-- **FR-4.3** The capability panel content is fetched from the **Howm message layer** via the following unified endpoints:
-
-| Object | Endpoint | Returns |
-|--------|----------|---------|
-| Feed | `GET /howm/objects/feed` | Recent posts (same schema as `howm.social.feed.1`, translated) |
-| Messages | `GET /howm/objects/messages` | Recent conversations |
-| Files | `GET /howm/objects/files` | Catalogue listing |
-
-- **FR-4.4** When the visiting peer accesses a capability object in a remote room, their client calls the **host's** Howm message layer endpoints over WireGuard. The host's capability bridge translates these into calls to the host's actual capability processes. The visitor never calls the host's capability endpoints directly.
-- **FR-4.5** The Howm message layer is versioned. Breaking changes to capability schemas are absorbed by the bridge layer; the game client's object interaction protocol (FR-4.3 endpoints) is stable across capability schema changes.
-
-### 8.5 Visiting and Presence
-
-- **FR-5.1** A peer may enter another peer's room by calling `room.enter` via `core.data.rpc.1` on the host peer. The host evaluates the access policy (phase 1 stub: owner-only by default, toggleable to public) and returns `ALLOW` or `DENY`.
-- **FR-5.2** On `ALLOW`, the entering peer's client receives a `RoomDescription` (capability object positions, portal positions, active capabilities) and renders the room locally.
-- **FR-5.3** The host's `howm` capability process SHALL emit a `howm.presence.entered` event on `core.data.event.1` when a peer enters. The host's client subscribes to this topic and surfaces an in-room notification (HUD layer).
-- **FR-5.4** On the host's client, each visitor SHALL be represented as a **ghost-blob** — a simple shape rendered through the glyph system. The blob's visual properties (glyph character, color ramp) are deterministically derived from the visitor's peer_id. Phase 1 implementation SHALL be as simple as possible; full configurability (user-chosen avatar) is a future feature. The blob is labelled with the visitor's node name in the HUD layer.
-- **FR-5.5** On the visitor's client, other visitors in the same room SHALL be rendered the same way.
-- **FR-5.6** When a peer leaves (graceful or disconnect), a `howm.presence.left` event SHALL be emitted and the peer's representation removed from all clients in the room.
-
-### 8.6 Underground
-
-- **FR-6.1** The underground is a shared space accessible via the underground portal in any room. Entering the portal initiates an underground session.
-- **FR-6.2** The underground space is **deterministically seeded** by the sorted concatenation of the Curve25519 public keys (peer IDs) of all peers in the current session. The same set of peers always produces the same underground. The seed is computed client-side; no server authority is needed. When multiple peers activate the underground portal simultaneously, the peer with the lexicographically lowest peer_id is the canonical session initiator; all other peers join as followers. This is consistent with the P2P-CD glare resolution rule (§7.1.3).
-- **FR-6.3** Phase 1 underground: a single rectangular room ("the tunnel") with one **howm portal** per participating peer. Each portal is labelled with the peer's node name and links back to that peer's room. No procedural generation of tunnels, corridors, or topology.
-- **FR-6.4** The underground is a shared session: all peers in the underground see each other's positions via `core.data.stream.1`, same as in a room.
-- **FR-6.5** If a peer leaves the underground session, their howm portal remains rendered but becomes inactive (visually distinct). The seed and space do not change.
-- **FR-6.6** Any peer in the underground can activate another peer's howm portal to travel to that peer's room (subject to that peer's access policy).
-
-### 8.7 Outside
-
-- **FR-7.1** The outside is a shared space accessible via the outside portal in any room. The outside is contextual: its environment is based on the room it was entered from.
-- **FR-7.2** Phase 1 outside: a minimal environment displaying the global IP address of the host room's node, resolved to city and country. No roads, buildings, fauna, or procedural generation.
-- **FR-7.3** The host's public IP is resolved by the `howm` capability process using the existing `detect_public_ip()` function from `node/daemon/src/net_detect.rs`, which cascades through plain-text IP-echo services (ipify, icanhazip, my-ip.io, checkip.amazonaws.com). This value is returned as part of `OutsideDescription`. Phase 1 displays the raw IP address as a visible label in the scene. City/country reverse geolocation is deferred — the `geo_city` and `geo_country` fields in `OutsideDescription` SHALL be empty strings in phase 1.
-- **FR-7.4** All peers in the outside space see each other's positions via `core.data.stream.1`.
-- **FR-7.5** The outside has no interaction objects in phase 1. Navigation and presence only.
-
-### 8.8 Howm Message Layer
-
-- **FR-8.1** The Howm capability process SHALL expose a unified HTTP API (the Howm message layer) that the game client calls for all capability object data. This layer is the sole interface between the game client and the underlying social capabilities.
-- **FR-8.2** All Howm message layer responses SHALL use a stable envelope schema:
-
-```
-howm_object_response {
-  object_type : tstr          ; "feed" | "messages" | "files"
-  peer_id     : bstr          ; source peer
-  fetched_at  : uint          ; Unix epoch ms
-  payload     : any           ; object-type-specific data
-}
-```
-
-- **FR-8.3** The capability bridge (internal to the howm capability process) translates each Howm message layer request into the appropriate call to the relevant capability process. The bridge is the only component that knows the internal schemas of `howm.social.feed.1`, `howm.social.messaging.1`, and `howm.social.files.1`.
-- **FR-8.4** The Howm message layer SHALL return a `capability_unavailable` error payload (not an HTTP error) if the requested capability is not active on the target node. The game client renders this as an inactive object.
-
-### 8.9 UI and Client
-
-- **FR-9.1** The Howm capability SHALL serve its game client as a static web page at `/cap/howm/`. The main Howm UI SHALL link to this page.
-- **FR-9.2** The client SHALL support opening in a full browser tab and in a full-screen mode (`requestFullscreen` API).
-- **FR-9.3** The HUD layer (implemented as HTML overlaid on the canvas) SHALL display: current space name, peer count, interaction prompts, and presence notifications. The HUD is not rendered through the glyph renderer.
-- **FR-9.4** Keyboard navigation: WASD or arrow keys for movement, mouse for look, `E` or `Enter` to interact, `Escape` to close a capability panel or exit full-screen.
-- **FR-9.5** The client SHALL gracefully handle the howm capability process being unavailable (show an error state, not a blank canvas).
+| Class | Archetype | Character |
+|-------|-----------|-----------|
+| Public | City | Normal inhabited city district. Density from `popcount`. |
+| Private (`10.x`, `172.16-31.x`, `192.168.x`) | Walled garden | Enclosed, inward-facing. High walls, internal courtyards. Feels domestic. |
+| Loopback (`127.x`) | Mirror district | A city that refers only to itself. Recursive or self-similar geometry. |
+| Multicast (`224–239.x`) | Broadcast plaza | Open, performative spaces. Amphitheatres, transmission towers, wide avenues. |
+| Reserved / unallocated | Ruins / wilderness | Degraded structures, overgrown. The further into reserved space, the more derelict. |
+| Documentation (`192.0.2.x`, `2001:db8::/32`) | Library / archive | Dense with text, signage, reference structures. |
 
 ---
 
-## 9. Data Contracts
+## 6. Street Alignment Across District Boundaries
 
-### 9.1 RoomDescription
+This is the central continuity problem: how do roads leaving one district connect to roads entering the next?
 
-```
-RoomDescription {
-  room_id       : tstr          ; peer_id of the host node
-  node_name     : tstr          ; human-readable node name
-  dimensions    : [uint, uint]  ; [width, depth] in scene units
-  objects       : [ObjectPlacement]
-  active_caps   : [tstr]        ; fully-qualified capability names active on host
-}
+The challenge is that each district generates its road network independently from its own seed. Without coordination, a road that exits the east edge of district A has no reason to align with any road entering the west edge of district B.
 
-ObjectPlacement {
-  object_id     : tstr          ; "feed" | "messages" | "files" | "underground" | "outside"
-  position      : [float, float, float]   ; [x, y, z] in scene units
-  active        : bool
-}
-```
+### 6.1 Shared-Edge Crossing Points (Implemented)
 
-### 9.2 PresenceUpdate (stream message)
+The boundary between two adjacent cells is a shared Voronoi edge. The road crossing points on that edge are determined by a canonical edge hash — so both cells independently derive the same crossing positions without communicating.
 
 ```
-PresenceUpdate {
-  peer_id       : bstr          ; Curve25519 public key
-  node_name     : tstr
-  position      : [float, float, float]
-  facing        : float         ; yaw in radians
-  space_id      : tstr          ; room_id or underground/outside session id
-}
+edge_hash(A, B) = ha(min(key_A, key_B) XOR ((max(key_A, key_B) & 0xFFFF) << 8))
 ```
 
-### 9.3 UndergroundDescription
+The crossing count on each edge is derived dynamically from the density of both neighboring cells and the physical length of the shared edge:
 
 ```
-UndergroundDescription {
-  session_id    : bstr          ; hash of sorted peer_ids
-  participants  : [ParticipantPortal]
-}
-
-ParticipantPortal {
-  peer_id       : bstr
-  node_name     : tstr
-  position      : [float, float, float]
-  active        : bool          ; false if peer has disconnected
-}
+edge_density    = min(popcount(key_A), popcount(key_B))
+base_count      = 1 + floor(edge_density / 8)         // 1–4
+max_by_length   = floor(edge_length / MIN_SPACING)     // MIN_SPACING = 28 world units
+crossing_count  = max(1, min(base_count, max_by_length))
 ```
 
-### 9.4 OutsideDescription
+Crossing positions are placed within equal segments of the edge, jittered within each segment by successive bytes of `edge_hash`:
+
+```
+for i in 0..crossing_count:
+  seg_start = i / (crossing_count + 1)
+  seg_end   = (i + 1) / (crossing_count + 1)
+  byte      = (edge_hash >>> (i × 8)) & 0xFF
+  t         = seg_start + (byte / 255) × (seg_end − seg_start)
+  position  = edge_start + t × (edge_end − edge_start)
+```
+
+This produces 1–4 crossing points per shared edge, deterministically positioned, with both neighbors in agreement.
+
+### 6.2 Orientation Inheritance with Blending (Phase W2)
+
+Each district has a primary road grid orientation angle `θ`, derived from its seed:
+
+```
+θ(key) = (ha(key) / 0xFFFFFFFF) × 90°
+```
+
+At borders between cells with different orientations, a transition zone blends between them. Deferred to phase W2.
+
+### 6.3 Hierarchical Road Network (Phase W3)
+
+Major arteries at `/16` granularity pass through multiple `/24` districts unchanged. Deferred to phase W3.
+
+---
+
+## 7. Road Network Generation
+
+This section specifies how roads are generated within a single cell. The algorithm is fully implemented in the current prototype.
+
+### 7.1 Terminals
+
+A **terminal** is a crossing point on the cell's boundary — a point where a road enters or exits the cell. Every crossing point on every shared edge of the cell is a terminal.
+
+Terminals are collected by walking the cell's polygon perimeter in order, identifying shared edges, and recording the position of each crossing point along the perimeter. Each terminal carries:
+
+- `x, y` — screen/world position
+- `edgeIdx` — which polygon edge it sits on (0 to n−1)
+- `perimOrder` — continuous value `edgeIdx + t` where `t` is the fractional position along that edge, used for sorting
+
+Terminals are sorted by `perimOrder` to establish their clockwise perimeter sequence.
+
+### 7.2 Terminal Matching
+
+Each terminal is matched with exactly one other terminal to form a road. The matching rules are:
+
+**Constraint:** Two terminals may only be matched if they sit on **different polygon edges**. A road entering and exiting through the same edge would loop back on itself, which is not valid. This is the only hard constraint.
+
+**Note:** There is no constraint preventing matched road segments from crossing each other. When two roads cross inside a cell, their intersection becomes a road intersection node. This is intentional and desirable — it produces organic four-way intersections and T-junctions without explicit design.
+
+Matching proceeds greedily by affinity score, highest affinity first:
+
+```
+affinity(i, j) = ha(cell_key XOR (i << 8) XOR j)
+
+for each pair (i, j) sorted by affinity descending:
+  if terminals[i] and terminals[j] are unmatched
+  and terminals[i].edgeIdx ≠ terminals[j].edgeIdx:
+    match(i, j)
+```
+
+Unmatched terminals (when the count is odd, or when no valid cross-edge partner remains) become dead-end stubs.
+
+### 7.3 Road Fate
+
+Each matched pair is assigned a fate determined by a hash of the pair:
+
+```
+fate_hash = hb(cell_key XOR min(i,j) XOR (max(i,j) << 4))
+fate_byte = fate_hash & 0xFF
+```
+
+| Range | Probability | Fate |
+|-------|-------------|------|
+| `0x00–0xBF` | 75% | **Through road** — straight line between the two terminals |
+| `0xC0–0xE7` | 15% | **Meeting point** — both terminals connect to a shared interior junction, forming a T or Y |
+| `0xE8–0xFF` | 10% | **Dead ends** — both terminals stub inward toward the cell seed point, terminating before meeting |
+
+**Through road** geometry: a straight line segment from terminal A to terminal B.
+
+**Meeting point** geometry: the junction is placed at the midpoint of A and B, offset perpendicularly by an amount derived from the fate hash:
+
+```
+midpoint    = (A + B) / 2
+perp_offset = ((fate_hash >>> 8) & 0xFF) / 255 × 20 − 10   // ±10 world units
+junction    = midpoint + perpendicular(A→B) × perp_offset
+```
+
+Both terminals connect to the junction with straight segments, forming an elbow. The junction point is rendered as an intersection node.
+
+**Dead end** geometry: each terminal extends inward as a stub, terminating at `35%` of the distance from the terminal to the cell seed point.
+
+Unmatched terminals (odd count or exhausted partners) are always dead ends, extending `30%` toward the cell seed.
+
+### 7.4 Road Intersections
+
+After all road segments are placed within a cell, every pair of segments is tested for intersection. Two segments intersect if they cross strictly in their interiors — endpoint-to-endpoint contact is not counted.
+
+```
+for each pair of road segments (R1, R2):
+  pt = segment_intersect(R1.a, R1.b, R2.a, R2.b)
+  if pt exists (t ∈ (0.02, 0.98) and u ∈ (0.02, 0.98)):
+    intersections.append(pt)
+```
+
+The `0.02` margin at each end prevents false positives from near-endpoint crossings. Each detected intersection is an organic road crossing — two through-roads crossing produce a four-way intersection; a through-road crossing a meeting-point leg produces a T off an existing road.
+
+**Intersection nodes are not pre-planned.** They emerge from the geometry of the matching and fate assignments. This means the road network has genuine complexity: the number and position of intersections within a cell is a deterministic consequence of the cell's terminals and their matchings, not a separately-designed layer.
+
+### 7.5 Density Variation
+
+Road density varies with `popcount(cell_key)`:
+
+- **High popcount** (e.g. `255.128.64.x`, pc ≈ 16–20): many terminals per cell, dense matching, frequent intersections. Reads as a busy urban core.
+- **Median popcount** (pc ≈ 10–14): moderate terminal count, mix of through roads and dead ends, occasional intersections.
+- **Low popcount** (e.g. `1.0.0.x`, pc ≈ 1–4): few terminals, sparse matching, rare intersections. Reads as a quiet suburban or rural district.
+
+The density gradient is automatic: it follows from the edge crossing count formula in §6.1, which is itself driven by `min(popcount_A, popcount_B)`. No additional density parameter is needed.
+
+---
+
+## 8. IPv4 vs IPv6 World Character
+
+The two modes are separate and need not be consistent with each other.
+
+### 8.1 IPv4 World
+
+The IPv4 space has ~16.7 million `/24` cells — dense, fully mapped, almost entirely inhabited. The world feels like a vast but knowable metropolis. Every address has a city. The scale of the space is comprehensible.
+
+Notable regions:
+- `0.0.0.0/8` — the void. Reserved, mostly dark. The western edge of the known world.
+- `10.0.0.0/8` — a vast private interior. Walled gardens as far as one can see.
+- `127.0.0.0/8` — the loopback district. A strange, self-referential neighborhood.
+- `192.168.0.0/16` — dense private housing. Domestic and enclosed.
+- `224.0.0.0/4` — the broadcast quarter. Performative, wide-open.
+- `255.255.255.255` — the broadcast limit. A single cell at the edge of everything. Should be rendered as a landmark.
+
+### 8.2 IPv6 World
+
+IPv6 has ~4.3 billion `/32` cells — but the vast majority of the space is unallocated. The world feels like deep space with islands of civilization. Walking in any direction from an inhabited cell will quickly bring you into empty wilderness. The scale is incomprehensible by design.
+
+Notable regions:
+- `::1` — loopback. A single room. The smallest possible place.
+- `fe80::/10` — link-local. A liminal zone, always local, never routable beyond its immediate context.
+- `fc00::/7` — the private interior. Enormous and inward-facing.
+- `2001:db8::/32` — documentation space. A library district.
+- `2001::/32` — Teredo. A transitional zone; structures that bridge two worlds.
+- Unallocated ranges — genuine wilderness. No roads, no buildings, no light.
+
+---
+
+## 9. Data Contract Extension
+
+The current `OutsideDescription` schema (BRD-004 §9.4) should be extended to carry the generation inputs explicitly:
 
 ```
 OutsideDescription {
   host_peer_id  : bstr
-  ip_address    : tstr          ; public IP of the host node (may be omitted if private)
-  geo_city      : tstr          ; resolved city name, or empty string
-  geo_country   : tstr          ; resolved country name, or empty string
-  geo_lat       : float         ; approximate latitude, 0.0 if unavailable
-  geo_lon       : float         ; approximate longitude, 0.0 if unavailable
+  ip_address    : tstr          ; human-readable IP string
+  ip_bytes      : bstr          ; 4 bytes (IPv4) or 16 bytes (IPv6) — canonical seed input
+  ip_mode       : tstr          ; "v4" | "v6"
+  cell_key      : uint          ; packed cell identifier (see §3.2)
+  neighbor_keys : [uint]        ; keys of the 8 immediate neighbors (for client-side stitching)
+
+  ; deprecated / flavor-only in future phases:
+  geo_city      : tstr
+  geo_country   : tstr
+  geo_lat       : float
+  geo_lon       : float
 }
 ```
 
----
+`ip_bytes` is the canonical seed. All generation is derived from `cell_key` (computed from `ip_bytes`) and the neighbor keys. Geo fields are retained for flavor labeling only and have no generative role.
 
-## 10. HTTP API (Howm Capability Process)
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/cap/howm/` | Serves the game client (static HTML/JS/CSS) |
-| `GET` | `/cap/howm/room/describe` | Returns `RoomDescription` for this node |
-| `POST` | `/cap/howm/room/enter` | Request to enter a room; body: `{ visitor_peer_id }` |
-| `POST` | `/cap/howm/room/leave` | Notify leaving a room |
-| `GET` | `/cap/howm/presence` | List of peers currently in this node's room |
-| `GET` | `/cap/howm/objects/feed` | Feed object data (via capability bridge) |
-| `GET` | `/cap/howm/objects/messages` | Messages object data (via capability bridge) |
-| `GET` | `/cap/howm/objects/files` | Files object data (via capability bridge) |
-| `POST` | `/cap/howm/underground/session` | Initiate or join an underground session |
-| `GET` | `/cap/howm/underground/describe` | Returns `UndergroundDescription` for current session |
-| `GET` | `/cap/howm/outside/describe` | Returns `OutsideDescription` for this node |
-| `GET` | `/cap/howm/health` | Daemon health check |
+**Invariant:** All Outside seed inputs are public fields of `OutsideDescription`. Visitors can independently re-derive any district's geometry from the same inputs. No host-private values are used in generation.
 
 ---
 
-## 11. Non-Functional Requirements
-
-- **NFR-1** The renderer SHALL maintain 30 FPS at 1080p on a modern desktop browser. Frame budget: ~33ms.
-- **NFR-2** Position stream updates SHALL be delivered with < 100ms latency over a local WireGuard tunnel.
-- **NFR-3** Room entry (from `room.enter` RPC call to first rendered frame) SHALL complete in < 2 seconds on a local tunnel.
-- **NFR-4** The game client bundle size SHALL not exceed 2 MB uncompressed (excluding `glyph_features.sqlite`).
-- **NFR-5** The Howm message layer endpoints SHALL respond in < 200ms for cached or local data.
-
----
-
-## 12. Open Questions
+## 10. Open Questions
 
 | # | Question | Status |
 |---|----------|--------|
-| OQ-1 | Access tier system: the relationship between peer_id / group / public access and P2P-CD `classification` is deferred to a dedicated BRD. Phase 1 implements a stub (owner-only default, public toggle). | Deferred — separate BRD |
-| OQ-2 | Scene format: should the `Scene` interface match Astral's `fp.json` schema exactly, or define a new canonical Howm scene format? | Closed — a new Howm-native scene format will be defined. No coupling to Astral's schema. Astral was a proof-of-concept for the renderer pattern only; its scene format is not part of the Howm spec. |
-| OQ-3 | GlyphDB bundling: the SQLite glyph feature store is a binary asset. How is it versioned and distributed alongside the game client? | Closed — `glyph_features.sqlite` is owned by the `howm` capability, stored under `DATA_DIR`, and served as a static asset alongside the game client. This is consistent with other capability-owned SQLite databases in the project. User modification and extension of the glyph set is a future feature, not phase 1. |
-| OQ-4 | IP geolocation provider for `OutsideDescription`: self-hosted lookup vs external API. | Closed — the daemon's existing `detect_public_ip()` in `node/daemon/src/net_detect.rs` already resolves the public IPv4 address via a cascade of plain-text IP-echo services (ipify, icanhazip, my-ip.io, checkip.amazonaws.com). The `howm` capability process calls this function directly. Reverse geolocation (city/country from IP) requires a separate lookup; phase 1 may display the raw IP only and defer city/country resolution to a future iteration. |
-| OQ-5 | Underground session initiator: when multiple peers want to go underground simultaneously, who computes the session first and who follows? | Closed — the peer with the lexicographically lowest Curve25519 public key (peer_id) is the canonical session initiator. All other peers follow. This is consistent with the P2P-CD glare resolution rule (§7.1.3). |
-| OQ-6 | Capability panel interaction in remote rooms: when Bob interacts with Alice's feed object, does he see Alice's full feed or only the permitted portion? | Closed — the Howm message layer returns whatever Alice's `howm.social.feed.1` (and other capabilities) would return to Bob under their existing access policies. No additional filtering is applied at the Howm layer. Access control is fully deferred to OQ-1. |
-| OQ-7 | Avatar representation: deterministic from peer_id or user-configurable? | Closed — phase 1: a ghost-blob shape, rendered as simply as possible. The blob's visual identity (color, glyph character, animation) is deterministically derived from the peer_id. Full configurability (user-chosen avatar) is a future feature and will become the default when implemented. |
-| OQ-8 | Should the `howm.world.room.1` capability name eventually be `howm.world.howm.1` to match the namesake? | Closed — `howm.world.room.1` is correct and final. |
-
-
-
----
-
-## 13. Phase 1 Scope Summary
-
-Phase 1 is explicitly constrained to groundwork. The test of a complete phase 1 is:
-
-1. A node can launch its own room, navigate it first-person, and approach capability objects that open working UI panels.
-2. A second peer can enter the first peer's room (public access), appear as a named glyph, and interact with the host's capability objects via the Howm message layer.
-3. Both peers can enter the underground and see each other plus a portal back to each peer's room.
-4. Both peers can enter the outside and see the host node's resolved IP and geolocation label.
-5. The renderer can be swapped via `setRenderer()` without touching game logic.
-
-Everything else — procedural generation, access tier system, avatar customisation, additional capabilities, audio, physics — is post-phase-1.
+| OQ-W1 | Jitter factor `J`: global constant or per-cell derived? | **Closed** — global constant. Value TBD, targeting ~0.75. |
+| OQ-W2 | Street crossing count per edge: fixed or derived from edge hash? | **Closed** — derived dynamically. See §6.1. |
+| OQ-W3 | Scale constant `SCALE`: world units per grid step. | **Closed** — see §11 World Scale. Exact numbers TBD; structure is fixed. |
+| OQ-W4 | IPv4 `/24` vs `/16` granularity. | **Closed** — `/24`. |
+| OQ-W5 | Transition zone width for orientation blending. | **Deferred** — phase W2. |
+| OQ-W6 | Jitter slider as protocol constant vs. debug tool. | **Closed** — global constant, debug slider is development tooling only. |
+| OQ-W7 | IPv6 wilderness rendering. | **Deferred** — phase W5 implementation detail. |
+| OQ-W8 | Road fate probabilities (75/15/10 split): are these the right ratios? | **Open** — to be validated during W1 implementation and adjusted by feel. |
+| OQ-W9 | Dead-end stub length (currently 30–35% toward seed): does this produce visually satisfying stubs at all cell sizes? | **Open** — to be validated during W1. |
 
 ---
 
-## 14. Dependencies
+## 11. World Scale
 
-- `core.data.stream.1` — positional presence sync (must be stable).
-- `core.data.event.1` — presence notifications on `howm.presence.*` topics.
-- `core.data.rpc.1` — room entry/describe negotiation; methods `["room.describe", "room.enter", "room.leave", "presence.list"]`.
-- `howm.social.feed.1`, `howm.social.messaging.1`, `howm.social.files.1` — capability bridge targets. The Howm capability process must be able to call these via their internal HTTP APIs.
-- `node/daemon/src/net_detect.rs` — `detect_public_ip()` is used by the `howm` capability process to populate `OutsideDescription.ip_address`.
-- `glyph_features.sqlite` — capability-owned GlyphDB, stored under `DATA_DIR`, served alongside the game client frontend.
-- Daemon capability spawn and proxy mechanism (`PORT`, `DATA_DIR`, `/cap/howm/*` routing).
-- `rusqlite` with `bundled` feature — for `GlyphDB` access. The game client reads the database via a served API endpoint from the capability process (not direct WASM SQLite access).
+Scale is expressed as a derivation chain from a single desired perceptual property: **how many road crossings does a player encounter when traversing a district?**
+
+```
+SCALE (world units / grid step)  =  road_spacing × desired_crossings_per_axis
+```
+
+### 11.1 Baseline Parameters
+
+Starting-point values to be refined during implementation:
+
+| Parameter | Value | Notes |
+|-----------|-------|-------|
+| `SCALE` | 200 world units | One grid step (one `/24` cell width) |
+| `road_spacing` | ~40 world units | Distance between parallel roads at median density |
+| `crossings_per_axis` | ~4–6 | At median `popcount`; varies with density |
+| `player_speed` | ~8 world units/second | Comfortable walking pace |
+| `district_traversal` | ~25 seconds straight across | ~2–4 minutes of actual exploration |
+
+### 11.2 Density Modulation
+
+`SCALE` is a fixed constant. Road spacing and crossing count vary per district based on `popcount`:
+
+```
+road_spacing(key) = SCALE / (base_crossings + density_bonus(key))
+density_bonus(key) = floor(popcount(key) / 32 × max_bonus)
+```
+
+High-`popcount` addresses are dense urban cores; low-`popcount` addresses are sparse. `SCALE` stays constant; internal subdivision changes.
+
+### 11.3 Relationship to the Renderer
+
+The world unit is an abstract distance. Its relationship to the renderer's scene units is set at the renderer integration layer. The generation algorithm emits geometry in world units; the renderer scales to its own coordinate system. This keeps generation and rendering decoupled.
 
 ---
 
-## 15. Success Criteria
+## 12. Implementation Phases
 
-- A node can launch its room, navigate it, and interact with all three capability objects.
-- A remote peer can enter the room, and the host receives a presence notification.
-- Both peers see each other's position update in real time (< 100ms on local tunnel).
-- Underground connects both rooms with navigable portals.
-- Outside shows the host node's IP geolocation.
-- Replacing the renderer via `setRenderer()` changes the visual output without restarting the game loop.
-- The Howm message layer successfully abstracts all three capability schemas from the game client.
+| Phase | Scope |
+|-------|-------|
+| **W0 (complete)** | Voronoi cell prototype: IP → cell key → grid coords → jittered seed points → Voronoi diagram. Click navigation. Cell identity values. IPv4 and IPv6 modes. Shared edge detection and crossing point placement. Road network generation: terminal collection, cross-edge matching by affinity, fate assignment (through/meeting/dead-end), organic intersection detection. |
+| **W1** | First-person renderer integration: port road geometry to scene units, basic block fill between roads, building placeholder volumes scaled by `popcount` and `bit_entropy`. World scale as per §11. |
+| **W2** | Cross-border continuity: orientation blending in transition zones, visual seam treatment at district borders. |
+| **W3** | Hierarchical road network: major arteries at `/16` granularity passing through multiple `/24` districts. |
+| **W4** | Subnet archetype differentiation: distinct visual treatment for private, loopback, multicast, reserved ranges. |
+| **W5** | IPv6 world: wilderness rendering, inhabited island detection, scale adjustment for the larger coordinate space. |

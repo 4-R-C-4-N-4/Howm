@@ -312,8 +312,8 @@ function renderOfferings(items) {
       '<div class="offering-header">' +
         '<span class="offering-name"><span class="offering-icon">' + icon + '</span>' + escHtml(o.name) + '</span>' +
         '<div class="offering-actions">' +
-          '<button onclick="openEdit(\'' + escHtml(o.id) + '\')">Edit</button>' +
-          '<button class="btn-delete" onclick="confirmDeleteOffering(this, \'' + escHtml(o.id) + '\', \'' + escHtml(o.name) + '\')">Delete</button>' +
+          '<button onclick="openEdit(\'' + escHtml(o.offering_id) + '\')">Edit</button>' +
+          '<button class="btn-delete" onclick="confirmDeleteOffering(this, \'' + escHtml(o.offering_id) + '\', \'' + escHtml(o.name) + '\')">Delete</button>' +
         '</div>' +
       '</div>' +
       (o.description ? '<div class="offering-desc">' + escHtml(o.description) + '</div>' : '') +
@@ -493,7 +493,7 @@ async function initiateDownload(peerId, offeringJson) {
       headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
       body: JSON.stringify({
         peer_id: peerId,
-        offering_id: o.id || o.offering_id,
+        offering_id: o.offering_id,
         blob_id: o.blob_id,
         name: o.name,
         mime_type: o.mime_type || 'application/octet-stream',

@@ -103,6 +103,10 @@ async fn serve_ui_index() -> impl IntoResponse {
 async fn serve_ui_asset(AxumPath(path): AxumPath<String>) -> impl IntoResponse {
     let rel = path.strip_prefix("/ui").unwrap_or(&path);
     let rel = rel.strip_prefix('/').unwrap_or(rel);
+    // Treat empty path (/ui/) as index.html
+    if rel.is_empty() {
+        return serve_ui_index().await.into_response();
+    }
     match UI_DIR.get_file(rel) {
         Some(f) => {
             let mime = if rel.ends_with(".js") {
