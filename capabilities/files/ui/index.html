@@ -91,19 +91,7 @@
     </div>
   </div>
 
-  <!-- Confirm modal (replaces window.confirm which is blocked in sandboxed iframes) -->
-  <div id="confirm-overlay" class="overlay hidden" onclick="if(event.target===this)dismissConfirm()">
-    <div class="modal">
-      <h3 id="confirm-title">Confirm</h3>
-      <p id="confirm-message"></p>
-      <div class="modal-actions">
-        <button class="danger" id="confirm-yes">Delete</button>
-        <button class="secondary" id="confirm-no">Cancel</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- Toast container (replaces window.alert which is blocked in sandboxed iframes) -->
+  <!-- Toast container -->
   <div id="toast-container"></div>
 
   <script src="files.js"></script>

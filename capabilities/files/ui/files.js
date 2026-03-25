@@ -11,7 +11,7 @@ var catalogueItems = [];
 var downloads = [];
 var downloadPollTimer = null;
 var peerPollTimer = null;
-var _confirmResolve = null;
+
 
 // ── Toast notifications (replaces alert()) ──────────────────────────────────
 
@@ -33,23 +33,25 @@ function showToast(message, level) {
   }, 4000);
 }
 
-// ── Confirm dialog (replaces confirm()) ─────────────────────────────────────
+// ── Inline confirm (no overlays/popups — works inside iframes) ──────────────
 
-function showConfirm(title, message, yesLabel) {
-  document.getElementById('confirm-title').textContent = title || 'Confirm';
-  document.getElementById('confirm-message').textContent = message || '';
-  document.getElementById('confirm-yes').textContent = yesLabel || 'Delete';
-  document.getElementById('confirm-overlay').classList.remove('hidden');
-  return new Promise(function (resolve) {
-    _confirmResolve = resolve;
-    document.getElementById('confirm-yes').onclick = function () { dismissConfirm(); resolve(true); };
-    document.getElementById('confirm-no').onclick = function () { dismissConfirm(); resolve(false); };
-  });
-}
-
-function dismissConfirm() {
-  document.getElementById('confirm-overlay').classList.add('hidden');
-  if (_confirmResolve) { _confirmResolve(false); _confirmResolve = null; }
+function inlineConfirm(triggerBtn, message, onConfirm) {
+  var card = triggerBtn.closest('.offering-card');
+  if (!card) return;
+  var actions = card.querySelector('.offering-actions');
+  if (!actions) return;
+  var original = actions.innerHTML;
+  actions.innerHTML =
+    '<span class="inline-confirm-msg">' + escHtml(message) + '</span>' +
+    '<button class="btn-delete">Yes</button>' +
+    '<button class="secondary">Cancel</button>';
+  actions.querySelector('.btn-delete').onclick = function () {
+    actions.innerHTML = original;
+    onConfirm();
+  };
+  actions.querySelector('.secondary').onclick = function () {
+    actions.innerHTML = original;
+  };
 }
 
 // ── Base path detection ──────────────────────────────────────────────────────
@@ -311,7 +313,7 @@ function renderOfferings(items) {
         '<span class="offering-name"><span class="offering-icon">' + icon + '</span>' + escHtml(o.name) + '</span>' +
         '<div class="offering-actions">' +
           '<button onclick="openEdit(\'' + escHtml(o.id) + '\')">Edit</button>' +
-          '<button class="btn-delete" onclick="deleteOffering(\'' + escHtml(o.id) + '\', \'' + escHtml(o.name) + '\')">Delete</button>' +
+          '<button class="btn-delete" onclick="confirmDeleteOffering(this, \'' + escHtml(o.id) + '\', \'' + escHtml(o.name) + '\')">Delete</button>' +
         '</div>' +
       '</div>' +
       (o.description ? '<div class="offering-desc">' + escHtml(o.description) + '</div>' : '') +
@@ -369,9 +371,13 @@ async function saveEdit() {
 
 // ── Delete offering ──────────────────────────────────────────────────────────
 
-async function deleteOffering(id, name) {
-  var ok = await showConfirm('Delete Offering', 'Delete "' + name + '"? The blob will also be removed.', 'Delete');
-  if (!ok) return;
+function confirmDeleteOffering(btn, id, name) {
+  inlineConfirm(btn, 'Delete "' + name + '"?', function () {
+    deleteOffering(id);
+  });
+}
+
+async function deleteOffering(id) {
   try {
     var resp = await fetch(BASE + '/offerings/' + encodeURIComponent(id), {
       method: 'DELETE',

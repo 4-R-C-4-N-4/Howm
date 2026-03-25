@@ -1,0 +1,688 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>IP District Viewer</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: monospace; background: #0a0a0f; color: #c8d0e0; min-height: 100vh; padding: 1.5rem; }
+h1 { font-size: 1rem; font-weight: 500; color: #7090c0; margin-bottom: 1.5rem; letter-spacing: 0.08em; }
+.layout { display: grid; grid-template-columns: 1fr 340px; gap: 1.5rem; align-items: start; }
+.input-row { display: flex; gap: 0.5rem; margin-bottom: 0.75rem; align-items: center; flex-wrap: wrap; }
+input[type=text] { background: #12121a; border: 1px solid #2a2a3a; color: #c8d0e0; font-family: monospace; font-size: 0.85rem; padding: 0.45rem 0.7rem; border-radius: 4px; width: 220px; outline: none; }
+input[type=text]:focus { border-color: #4060a0; }
+input[type=range] { width: 90px; accent-color: #4060a0; }
+button { background: #1a2040; border: 1px solid #3050a0; color: #8ab0e0; font-family: monospace; font-size: 0.8rem; padding: 0.45rem 0.9rem; border-radius: 4px; cursor: pointer; }
+button:hover { background: #202850; }
+canvas { display: block; background: #080810; border: 1px solid #1a1a2a; border-radius: 4px; cursor: crosshair; }
+.sidebar { font-size: 0.75rem; line-height: 1.8; max-height: 640px; overflow-y: auto; background: #0a0a0f; padding: 4px; }
+.cell-card { background: #0e0e1a; border: 1px solid #1e2030; border-radius: 4px; padding: 0.75rem 0.9rem; margin-bottom: 0.75rem; }
+.cell-card.query { border-color: #3a5080; }
+.cell-card.hovered { border-color: #507040; background: #0e120e; }
+.cell-label { color: #7090c0; font-size: 0.68rem; letter-spacing: 0.06em; margin-bottom: 0.2rem; }
+.cell-ip { color: #90b8f0; font-size: 0.88rem; font-weight: 500; margin-bottom: 0.4rem; word-break: break-all; }
+.cell-row { display: flex; justify-content: space-between; gap: 0.5rem; }
+.cell-key { color: #7898a8; flex-shrink: 0; }
+.cell-val { color: #c8d8f0; text-align: right; }
+.badge { display: inline-block; font-size: 0.65rem; padding: 1px 6px; border-radius: 3px; margin-left: 6px; vertical-align: middle; }
+.badge-pub  { background: #0a2010; color: #40a060; border: 1px solid #204030; }
+.badge-priv { background: #201000; color: #a07030; border: 1px solid #403010; }
+.badge-loop { background: #200010; color: #a03070; border: 1px solid #400020; }
+.badge-mc   { background: #102020; color: #30a090; border: 1px solid #204040; }
+.badge-rsv  { background: #151520; color: #6060a0; border: 1px solid #252540; }
+.badge-v6   { background: #101828; color: #4080c0; border: 1px solid #203050; }
+.section-header { color: #404860; font-size: 0.68rem; letter-spacing: 0.06em; margin: 1rem 0 0.5rem; }
+.error { color: #c04040; font-size: 0.8rem; min-height: 1.2rem; margin-bottom: 0.5rem; }
+.mode-tabs { display: flex; gap: 0.4rem; }
+.tab { padding: 0.3rem 0.7rem; border-radius: 3px; border: 1px solid #2a2a3a; cursor: pointer; font-size: 0.75rem; color: #607080; }
+.tab.active { border-color: #3050a0; color: #8ab0e0; background: #1a2040; }
+.ctrl-row { display: flex; align-items: center; gap: 0.4rem; font-size: 0.75rem; color: #607080; }
+</style>
+</head>
+<body>
+<h1>// IP DISTRICT VIEWER — MORTON / VORONOI</h1>
+<div class="input-row">
+  <div class="mode-tabs">
+    <div class="tab active" id="tab4" onclick="setMode(4)">IPv4</div>
+    <div class="tab" id="tab6" onclick="setMode(6)">IPv6</div>
+  </div>
+  <input type="text" id="ip-input" value="93.184.216.34" />
+  <button onclick="run()">generate</button>
+  <div class="ctrl-row">
+    jitter&nbsp;<input type="range" id="jitter" min="0" max="92" value="72" step="1"
+      oninput="document.getElementById('jval').textContent=this.value+'%';run();" />
+    <span id="jval">72%</span>
+  </div>
+</div>
+<div class="error" id="err"></div>
+<div class="layout">
+  <canvas id="canvas" width="640" height="640"></canvas>
+  <div class="sidebar" id="sidebar"></div>
+</div>
+
+<script>
+let MODE = 4;
+let hoveredIdx = -1;
+let currentData = null;
+
+function setMode(m) {
+  MODE = m;
+  document.getElementById('tab4').className = 'tab'+(m===4?' active':'');
+  document.getElementById('tab6').className = 'tab'+(m===6?' active':'');
+  document.getElementById('ip-input').value = m===4 ? '93.184.216.34' : '2001:db8::1';
+  run();
+}
+
+// ── Hashes ────────────────────────────────────────────────────────────────────
+function ha(n) {
+  n = Math.imul(n ^ (n >>> 16), 0x45d9f3b);
+  n = Math.imul(n ^ (n >>> 16), 0x45d9f3b);
+  return (n ^ (n >>> 16)) >>> 0;
+}
+function hb(n) {
+  n = Math.imul(n ^ (n >>> 16), 0x8da6b343);
+  n = Math.imul(n ^ (n >>> 16), 0xcb9e2f75);
+  return (n ^ (n >>> 16)) >>> 0;
+}
+
+// ── IPv4 cell model ───────────────────────────────────────────────────────────
+function ipv4Key(a, b, c) { return ((a & 0xFF) << 16) | ((b & 0xFF) << 8) | (c & 0xFF); }
+function keyToOctets(k) { return [(k >>> 16) & 0xFF, (k >>> 8) & 0xFF, k & 0xFF]; }
+function keyToGrid(k) {
+  const a = (k >>> 16) & 0xFF, b = (k >>> 8) & 0xFF, c = k & 0xFF;
+  return { gx: c, gy: (a << 8) | b };
+}
+
+// ── IPv6 cell model ───────────────────────────────────────────────────────────
+function ipv6Key(g0, g1) { return ((g0 & 0xFFFF) << 16) | (g1 & 0xFFFF); }
+function ipv6KeyToGrid(k) { return { gx: k & 0xFFFF, gy: (k >>> 16) & 0xFFFF }; }
+
+// ── Neighbor generation ───────────────────────────────────────────────────────
+function neighbors4(a, b, c, radius) {
+  const cells = [];
+  for (let dy = -radius; dy <= radius; dy++) {
+    for (let dx = -radius; dx <= radius; dx++) {
+      if (dx === 0 && dy === 0) continue;
+      const nc = (c + dx) & 0xFF;
+      const ngy = (((a << 8) | b) + dy) & 0xFFFF;
+      const na = (ngy >>> 8) & 0xFF, nb = ngy & 0xFF;
+      cells.push({ key: ipv4Key(na, nb, nc), dx, dy, query: false });
+    }
+  }
+  return cells;
+}
+function neighbors6(g0, g1, radius) {
+  const cells = [];
+  for (let dy = -radius; dy <= radius; dy++) {
+    for (let dx = -radius; dx <= radius; dx++) {
+      if (dx === 0 && dy === 0) continue;
+      cells.push({ key: ipv6Key((g0+dy)&0xFFFF, (g1+dx)&0xFFFF), dx, dy, query: false });
+    }
+  }
+  return cells;
+}
+
+// ── World-space seed point ────────────────────────────────────────────────────
+const SCALE = 128;
+function worldPos(key, isV6) {
+  const { gx, gy } = isV6 ? ipv6KeyToGrid(key) : keyToGrid(key);
+  const jitter = parseFloat(document.getElementById('jitter').value) / 100;
+  const jx = ((ha(key) / 0xFFFFFFFF) - 0.5) * SCALE * jitter;
+  const jy = ((hb(key) / 0xFFFFFFFF) - 0.5) * SCALE * jitter;
+  return { wx: gx * SCALE + jx, wy: gy * SCALE + jy };
+}
+
+// ── Parsing ───────────────────────────────────────────────────────────────────
+function parseIPv4(s) {
+  const p = s.trim().split('.');
+  if (p.length !== 4) return null;
+  const n = p.map(Number);
+  if (n.some(x => isNaN(x) || x < 0 || x > 255)) return null;
+  return n;
+}
+function parseIPv6(s) {
+  s = s.trim().toLowerCase();
+  if (s.includes('::')) {
+    const h = s.split('::');
+    const L = h[0] ? h[0].split(':').map(x => parseInt(x,16)) : [];
+    const R = h[1] ? h[1].split(':').map(x => parseInt(x,16)) : [];
+    const fill = 8 - L.length - R.length;
+    const g = [...L, ...Array(fill).fill(0), ...R];
+    if (g.length !== 8) return null;
+    return g;
+  }
+  const p = s.split(':');
+  if (p.length !== 8) return null;
+  return p.map(x => parseInt(x,16));
+}
+
+function ipv4Class(a, b, c) {
+  if (a === 127) return 'loopback';
+  if (a === 10) return 'private';
+  if (a === 172 && b >= 16 && b <= 31) return 'private';
+  if (a === 192 && b === 168) return 'private';
+  if (a >= 224 && a <= 239) return 'multicast';
+  if (a === 0 || a === 255 || a >= 240) return 'reserved';
+  return 'public';
+}
+function ipv6Class(g) {
+  if (g[0] === 0xfe80) return 'link-local';
+  if (g.slice(0,7).every(x=>x===0) && g[7]===1) return 'loopback';
+  if (g[0]===0xfc00||g[0]===0xfd00) return 'private';
+  if ((g[0]&0xff00)===0xff00) return 'multicast';
+  if (g[0]===0x2001&&g[1]===0x0db8) return 'documentation';
+  return 'public';
+}
+
+function popcount32(n) {
+  n = n>>>0;
+  n = n - ((n>>>1) & 0x55555555);
+  n = (n & 0x33333333) + ((n>>>2) & 0x33333333);
+  n = (n + (n>>>4)) & 0x0F0F0F0F;
+  return (n * 0x01010101) >>> 24;
+}
+
+function fmtIPv4cell(key) { const [a,b,c]=keyToOctets(key); return `${a}.${b}.${c}.0/24`; }
+function fmtIPv6cell(key) {
+  const g0=(key>>>16)&0xFFFF, g1=key&0xFFFF;
+  return `${g0.toString(16).padStart(4,'0')}:${g1.toString(16).padStart(4,'0')}::/32`;
+}
+
+// ── Voronoi (Bowyer-Watson) ───────────────────────────────────────────────────
+function triangulate(pts) {
+  const n = pts.length;
+  let mnX=Infinity,mnY=Infinity,mxX=-Infinity,mxY=-Infinity;
+  for (const p of pts) { mnX=Math.min(mnX,p.x);mnY=Math.min(mnY,p.y);mxX=Math.max(mxX,p.x);mxY=Math.max(mxY,p.y); }
+  const d = Math.max(mxX-mnX,mxY-mnY)*10;
+  const st = [{x:mnX-d,y:mnY-d*3},{x:mnX-d,y:mxY+d},{x:mxX+d*3,y:mnY-d}];
+  const all = [...pts,...st];
+  let tris = [[n,n+1,n+2]];
+  for (let i=0;i<n;i++) {
+    const p=pts[i]; let edges=[];
+    tris = tris.filter(t => {
+      const [a,b,c]=t;
+      const ax=all[a].x,ay=all[a].y,bx=all[b].x,by=all[b].y,cx=all[c].x,cy=all[c].y;
+      const D=2*(ax*(by-cy)+bx*(cy-ay)+cx*(ay-by));
+      if (Math.abs(D)<1e-10) return true;
+      const ux=((ax*ax+ay*ay)*(by-cy)+(bx*bx+by*by)*(cy-ay)+(cx*cx+cy*cy)*(ay-by))/D;
+      const uy=((ax*ax+ay*ay)*(cx-bx)+(bx*bx+by*by)*(ax-cx)+(cx*cx+cy*cy)*(bx-ax))/D;
+      if ((p.x-ux)**2+(p.y-uy)**2<=(ax-ux)**2+(ay-uy)**2+1e-10) {
+        edges.push([a,b],[b,c],[c,a]); return false;
+      }
+      return true;
+    });
+    const uniq=[];
+    for (const e of edges)
+      if (edges.filter(f=>(f[0]===e[0]&&f[1]===e[1])||(f[0]===e[1]&&f[1]===e[0])).length===1) uniq.push(e);
+    for (const [a,b] of uniq) tris.push([i,a,b]);
+  }
+  tris = tris.filter(t=>t.every(v=>v<n));
+  function cc(t) {
+    const [a,b,c]=t;
+    const ax=all[a].x,ay=all[a].y,bx=all[b].x,by=all[b].y,cx=all[c].x,cy=all[c].y;
+    const D=2*(ax*(by-cy)+bx*(cy-ay)+cx*(ay-by));
+    if (Math.abs(D)<1e-10) return {x:(ax+bx+cx)/3,y:(ay+by+cy)/3};
+    return {
+      x:((ax*ax+ay*ay)*(by-cy)+(bx*bx+by*by)*(cy-ay)+(cx*cx+cy*cy)*(ay-by))/D,
+      y:((ax*ax+ay*ay)*(cx-bx)+(bx*bx+by*by)*(ax-cx)+(cx*cx+cy*cy)*(bx-ax))/D
+    };
+  }
+  return {tris, ccs:tris.map(cc)};
+}
+
+function voronoiCells(pts) {
+  if (pts.length<3) return [];
+  const {tris,ccs}=triangulate(pts);
+  return pts.map((p,i)=>{
+    const ts=tris.map((t,ti)=>({t,ti})).filter(({t})=>t.includes(i));
+    if (ts.length<2) return [];
+    const vs=ts.map(({ti})=>ccs[ti]);
+    vs.sort((a,b)=>Math.atan2(a.y-p.y,a.x-p.x)-Math.atan2(b.y-p.y,b.x-p.x));
+    return vs;
+  });
+}
+
+function clipPoly(poly,x0,y0,x1,y1) {
+  if (!poly.length) return [];
+  const ins=(p,e)=>e===0?p.x>=x0:e===1?p.x<=x1:e===2?p.y>=y0:p.y<=y1;
+  const ix=(a,b,e)=>{
+    const dx=b.x-a.x,dy=b.y-a.y;
+    if(e===0){const t=(x0-a.x)/dx;return{x:x0,y:a.y+t*dy};}
+    if(e===1){const t=(x1-a.x)/dx;return{x:x1,y:a.y+t*dy};}
+    if(e===2){const t=(y0-a.y)/dy;return{x:a.x+t*dx,y:y0};}
+    const t=(y1-a.y)/dy;return{x:a.x+t*dx,y:y1};
+  };
+  let out=poly;
+  for (let e=0;e<4;e++) {
+    if (!out.length) return [];
+    const inp=out; out=[];
+    for (let i=0;i<inp.length;i++) {
+      const cur=inp[i],prev=inp[(i+inp.length-1)%inp.length];
+      const ci=ins(cur,e),pi=ins(prev,e);
+      if(ci){if(!pi)out.push(ix(prev,cur,e));out.push(cur);}
+      else if(pi) out.push(ix(prev,cur,e));
+    }
+  }
+  return out;
+}
+
+function pip(px,py,poly) {
+  let inside=false;
+  for (let i=0,j=poly.length-1;i<poly.length;j=i++) {
+    const xi=poly[i].x,yi=poly[i].y,xj=poly[j].x,yj=poly[j].y;
+    if (((yi>py)!==(yj>py))&&(px<(xj-xi)*(py-yi)/(yj-yi)+xi)) inside=!inside;
+  }
+  return inside;
+}
+
+// ── Edge hash & crossing points ───────────────────────────────────────────────
+function edgeHash(keyA, keyB) {
+  return ha(Math.min(keyA,keyB) ^ ((Math.max(keyA,keyB) & 0xFFFF) << 8));
+}
+
+function crossingCount(keyA, keyB, edgeLen) {
+  const MIN_SPACING = 28;
+  const pcA = popcount32(keyA & 0xFFFFFF);
+  const pcB = popcount32(keyB & 0xFFFFFF);
+  const density = Math.min(pcA, pcB);
+  const base = 1 + Math.floor(density / 8);
+  const maxByLen = Math.max(1, Math.floor(edgeLen / MIN_SPACING));
+  return Math.min(base, maxByLen);
+}
+
+function crossingPoints(p0, p1, keyA, keyB) {
+  const dx=p1.x-p0.x, dy=p1.y-p0.y;
+  const len=Math.sqrt(dx*dx+dy*dy);
+  if (len<2) return [];
+  const count=crossingCount(keyA, keyB, len);
+  const eh=edgeHash(keyA, keyB);
+  const pts=[];
+  for (let i=0;i<count;i++) {
+    const segStart=i/(count+1), segEnd=(i+1)/(count+1);
+    const byte=(eh>>>(i*8))&0xFF;
+    const t=segStart+(byte/255)*(segEnd-segStart);
+    pts.push({x:p0.x+t*dx, y:p0.y+t*dy});
+  }
+  return pts;
+}
+
+// Find shared Voronoi edges and their crossing points
+// Returns array of { i, j, p0, p1, crossings[] }
+// Also builds terminalMap: cellIndex -> [ {x,y,edgeIdx,termIdx} ]
+function findSharedEdges(cells, allCells, CLIP) {
+  const shared=[];
+  const n=cells.length;
+  const TOL=0.5;
+  const sameV=(a,b)=>Math.abs(a.x-b.x)<TOL&&Math.abs(a.y-b.y)<TOL;
+  const inBounds=(p)=>p.x>CLIP&&p.x<640-CLIP&&p.y>CLIP&&p.y<640-CLIP;
+
+  for (let i=0;i<n;i++) {
+    const ci=cells[i]; if (!ci.length) continue;
+    for (let j=i+1;j<n;j++) {
+      const cj=cells[j]; if (!cj.length) continue;
+      for (let ei=0;ei<ci.length;ei++) {
+        const va=ci[ei], vb=ci[(ei+1)%ci.length];
+        for (let ej=0;ej<cj.length;ej++) {
+          const vc=cj[ej], vd=cj[(ej+1)%cj.length];
+          if ((sameV(va,vc)&&sameV(vb,vd))||(sameV(va,vd)&&sameV(vb,vc))) {
+            if (!inBounds(va)&&!inBounds(vb)) break;
+            const keyA=allCells[i].key, keyB=allCells[j].key;
+            const crossings=crossingPoints(va,vb,keyA,keyB);
+            shared.push({i,j,p0:va,p1:vb,crossings,keyA,keyB,edgeI:ei,edgeJ:ej});
+            break;
+          }
+        }
+      }
+    }
+  }
+  return shared;
+}
+
+// ── Road network ──────────────────────────────────────────────────────────────
+
+// Segment intersection: returns {x,y} if segments (a→b) and (c→d) cross
+// strictly in their interiors (not at endpoints), else null.
+function segIntersect(a, b, c, d) {
+  const rx=b.x-a.x, ry=b.y-a.y;
+  const sx=d.x-c.x, sy=d.y-c.y;
+  const denom=rx*sy-ry*sx;
+  if (Math.abs(denom)<1e-10) return null;
+  const t=((c.x-a.x)*sy-(c.y-a.y)*sx)/denom;
+  const u=((c.x-a.x)*ry-(c.y-a.y)*rx)/denom;
+  if (t>0.02&&t<0.98&&u>0.02&&u<0.98)
+    return {x:a.x+t*rx, y:a.y+t*ry};
+  return null;
+}
+
+// Build road network for a single cell.
+// Returns { roads, intersections }
+function buildRoads(cellIdx, poly, seedPt, cellKey, sharedEdges) {
+  if (!poly.length) return {roads:[], intersections:[]};
+
+  // 1. Collect terminals from shared edges, ordered around the polygon perimeter
+  const terminals = [];
+  const n = poly.length;
+  const TOL = 1.0;
+  const sameV = (a,b) => Math.abs(a.x-b.x)<TOL && Math.abs(a.y-b.y)<TOL;
+
+  for (let ei=0; ei<n; ei++) {
+    const va=poly[ei], vb=poly[(ei+1)%n];
+    const edgeDx=vb.x-va.x, edgeDy=vb.y-va.y;
+    const edgeLen=Math.sqrt(edgeDx*edgeDx+edgeDy*edgeDy);
+    for (const se of sharedEdges) {
+      if (se.i!==cellIdx&&se.j!==cellIdx) continue;
+      const matches=(sameV(va,se.p0)&&sameV(vb,se.p1))||(sameV(va,se.p1)&&sameV(vb,se.p0));
+      if (!matches) continue;
+      for (const cp of se.crossings) {
+        const t=edgeLen>0
+          ?Math.max(0,Math.min(1,((cp.x-va.x)*edgeDx+(cp.y-va.y)*edgeDy)/(edgeLen*edgeLen)))
+          :0;
+        terminals.push({x:cp.x, y:cp.y, edgeIdx:ei, perimOrder:ei+t});
+      }
+    }
+  }
+
+  if (terminals.length<2) return {roads:[], intersections:[]};
+  terminals.sort((a,b)=>a.perimOrder-b.perimOrder);
+  const T=terminals.length;
+
+  // 2. Match terminals — only constraint: different edge. Crossings are welcome.
+  const matched=new Array(T).fill(-1);
+  const used=new Array(T).fill(false);
+  const pairs=[];
+  for (let i=0;i<T;i++)
+    for (let j=i+1;j<T;j++)
+      if (terminals[i].edgeIdx!==terminals[j].edgeIdx)
+        pairs.push({i,j,aff:ha(cellKey^(i<<8)^j)});
+  pairs.sort((a,b)=>b.aff-a.aff);
+  for (const {i,j} of pairs) {
+    if (used[i]||used[j]) continue;
+    matched[i]=j; matched[j]=i; used[i]=true; used[j]=true;
+  }
+
+  // 3. Assign fate to each matched pair and build road segments
+  const roads=[];
+  const seen=new Set();
+
+  for (let i=0;i<T;i++) {
+    const j=matched[i];
+    if (j<0||seen.has(i)) continue;
+    seen.add(i); seen.add(j);
+    const ta=terminals[i], tb=terminals[j];
+    const fateHash=hb(cellKey^Math.min(i,j)^(Math.max(i,j)<<4));
+    const fateByte=fateHash&0xFF;
+
+    if (fateByte<0xC0) {
+      // THROUGH (75%) — straight line between terminals
+      roads.push({type:'through', a:ta, b:tb});
+    } else if (fateByte<0xE8) {
+      // MEETING (15%) — both legs meet at an interior junction
+      const mx=(ta.x+tb.x)/2, my=(ta.y+tb.y)/2;
+      const rdx=tb.x-ta.x, rdy=tb.y-ta.y;
+      const rlen=Math.sqrt(rdx*rdx+rdy*rdy);
+      const px=rlen>0?-rdy/rlen:0, py=rlen>0?rdx/rlen:0;
+      const off=((fateHash>>>8)&0xFF)/255*20-10;
+      const junc={x:mx+px*off, y:my+py*off};
+      roads.push({type:'meeting', a:ta, b:junc});
+      roads.push({type:'meeting', a:tb, b:junc, junction:junc});
+    } else {
+      // DEAD END (10%) — both terminals stub inward toward seed
+      const F=0.35;
+      roads.push({type:'deadend', a:ta, b:{x:ta.x+(seedPt.sx-ta.x)*F, y:ta.y+(seedPt.sy-ta.y)*F}});
+      roads.push({type:'deadend', a:tb, b:{x:tb.x+(seedPt.sx-tb.x)*F, y:tb.y+(seedPt.sy-tb.y)*F}});
+    }
+  }
+
+  // Unmatched terminals become stubs
+  for (let i=0;i<T;i++) {
+    if (matched[i]>=0) continue;
+    const ta=terminals[i]; const F=0.3;
+    roads.push({type:'deadend', a:ta,
+      b:{x:ta.x+(seedPt.sx-ta.x)*F, y:ta.y+(seedPt.sy-ta.y)*F}});
+  }
+
+  // 4. Detect intersections between all road segment pairs in this cell
+  const intersections=[];
+  for (let i=0;i<roads.length;i++)
+    for (let j=i+1;j<roads.length;j++) {
+      const pt=segIntersect(roads[i].a, roads[i].b, roads[j].a, roads[j].b);
+      if (pt) intersections.push(pt);
+    }
+
+  return {roads, intersections};
+}
+
+// ── Color ─────────────────────────────────────────────────────────────────────
+function cellFill(key, alpha) {
+  const h=ha(key);
+  const hue=((h&0xFFF)/4096)*360;
+  const sat=32+((h>>>12)&0xFF)/255*28;
+  const lit=13+((h>>>20)&0xFF)/255*12;
+  return `hsla(${hue.toFixed(0)},${sat.toFixed(0)}%,${lit.toFixed(0)}%,${alpha})`;
+}
+function cellEdge(key) {
+  const h=ha(key);
+  const hue=((h&0xFFF)/4096)*360;
+  const sat=48+((h>>>12)&0xFF)/255*28;
+  const lit=40+((h>>>20)&0xFF)/255*20;
+  return `hsl(${hue.toFixed(0)},${sat.toFixed(0)}%,${lit.toFixed(0)}%)`;
+}
+
+// ── UI helpers ────────────────────────────────────────────────────────────────
+function badge(cls) {
+  const map={public:'badge-pub Public',private:'badge-priv Private',loopback:'badge-loop Loopback',
+    multicast:'badge-mc Multicast',reserved:'badge-rsv Reserved',documentation:'badge-v6 Docs','link-local':'badge-v6 Link-local'};
+  const v=map[cls]||('badge-rsv '+cls);
+  const [c,...r]=v.split(' ');
+  return `<span class="badge ${c}">${r.join(' ')}</span>`;
+}
+function dirLabel(dx,dy){const h=dx===0?'':dx>0?'E':'W';const v=dy===0?'':dy>0?'S':'N';return(v+h)||'·';}
+
+function cardHTML(cell, label, extraClass) {
+  let ipStr, cls, bits;
+  if (MODE===4) {
+    const [a,b,c]=keyToOctets(cell.key);
+    ipStr=fmtIPv4cell(cell.key); cls=ipv4Class(a,b,c); bits=cell.key&0xFFFFFF;
+  } else {
+    ipStr=fmtIPv6cell(cell.key); cls='public'; bits=cell.key>>>0;
+  }
+  const pc=popcount32(bits);
+  const seedH=ha(cell.key);
+  return `<div class="cell-card ${extraClass||''}">
+  <div class="cell-label">${label}${badge(cls)}</div>
+  <div class="cell-ip">${ipStr}</div>
+  <div class="cell-row"><span class="cell-key">cell key</span><span class="cell-val">0x${cell.key.toString(16).padStart(6,'0')}</span></div>
+  <div class="cell-row"><span class="cell-key">seed hash</span><span class="cell-val">0x${seedH.toString(16).padStart(8,'0')}</span></div>
+  <div class="cell-row"><span class="cell-key">popcount</span><span class="cell-val">${pc} bits set</span></div>
+  <div class="cell-row"><span class="cell-key">road density</span><span class="cell-val">${1+Math.floor(pc/8)} crossings/edge</span></div>
+</div>`;
+}
+
+// ── Draw ──────────────────────────────────────────────────────────────────────
+function drawScene(data) {
+  const {clipped, cells, seedPts, allCells, CLIP, sharedEdges, allRoads} = data;
+  const cv=document.getElementById('canvas');
+  const ctx=cv.getContext('2d');
+  ctx.clearRect(0,0,640,640);
+  ctx.fillStyle='#080810'; ctx.fillRect(0,0,640,640);
+
+  // Cell fills
+  for (let i=0;i<clipped.length;i++) {
+    const poly=clipped[i]; if (!poly.length) continue;
+    const cell=allCells[i];
+    const isQ=cell.query, isH=(i===hoveredIdx);
+    ctx.beginPath();
+    ctx.moveTo(poly[0].x,poly[0].y);
+    for (let j=1;j<poly.length;j++) ctx.lineTo(poly[j].x,poly[j].y);
+    ctx.closePath();
+    ctx.fillStyle=isH?cellFill(cell.key,0.72):isQ?cellFill(cell.key,0.52):cellFill(cell.key,0.26);
+    ctx.fill();
+    ctx.strokeStyle=isQ||isH?cellEdge(cell.key):cellFill(cell.key,0.6);
+    ctx.lineWidth=isQ||isH?1.8:0.7;
+    ctx.stroke();
+  }
+
+  // Road network
+  if (allRoads) {
+    for (let ci=0;ci<allRoads.length;ci++) {
+      const {roads,intersections}=allRoads[ci];
+      const cell=allCells[ci];
+      const isQ=cell.query;
+
+      // Draw road lines
+      for (const road of roads) {
+        ctx.beginPath();
+        ctx.moveTo(road.a.x,road.a.y);
+        ctx.lineTo(road.b.x,road.b.y);
+        if (road.type==='through') {
+          ctx.strokeStyle=isQ?'rgba(255,240,180,0.88)':'rgba(220,210,160,0.48)';
+          ctx.lineWidth=isQ?2.2:1.3;
+        } else if (road.type==='meeting') {
+          ctx.strokeStyle=isQ?'rgba(180,255,200,0.82)':'rgba(150,200,160,0.42)';
+          ctx.lineWidth=isQ?2.0:1.2;
+        } else {
+          ctx.strokeStyle=isQ?'rgba(200,180,255,0.72)':'rgba(160,150,200,0.38)';
+          ctx.lineWidth=isQ?1.5:0.9;
+          ctx.setLineDash([2,3]);
+        }
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+
+      // Draw intersection nodes — organic road crossings
+      for (const pt of intersections) {
+        if (pt.x<CLIP||pt.x>640-CLIP||pt.y<CLIP||pt.y>640-CLIP) continue;
+        ctx.beginPath();
+        ctx.arc(pt.x,pt.y,isQ?5:3.2,0,Math.PI*2);
+        ctx.fillStyle=isQ?'rgba(255,255,210,0.95)':'rgba(220,215,180,0.58)';
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(pt.x,pt.y,isQ?2.2:1.4,0,Math.PI*2);
+        ctx.fillStyle=isQ?'rgba(50,35,5,0.9)':'rgba(35,25,5,0.65)';
+        ctx.fill();
+      }
+    }
+  }
+
+    // Shared edge boundary dashes + crossing dots
+  if (sharedEdges) {
+    for (const edge of sharedEdges) {
+      const {p0,p1,crossings}=edge;
+      ctx.beginPath();
+      ctx.moveTo(p0.x,p0.y); ctx.lineTo(p1.x,p1.y);
+      ctx.strokeStyle='rgba(180,200,255,0.12)';
+      ctx.lineWidth=1; ctx.setLineDash([3,4]);
+      ctx.stroke(); ctx.setLineDash([]);
+
+      for (const cp of crossings) {
+        if (cp.x<CLIP||cp.x>640-CLIP||cp.y<CLIP||cp.y>640-CLIP) continue;
+        ctx.beginPath();
+        ctx.arc(cp.x,cp.y,2.5,0,Math.PI*2);
+        ctx.fillStyle='rgba(255,240,120,0.9)';
+        ctx.fill();
+      }
+    }
+  }
+
+  // IP labels
+  for (let i=0;i<seedPts.length;i++) {
+    const sp=seedPts[i];
+    if (sp.sx<CLIP||sp.sx>640-CLIP||sp.sy<CLIP||sp.sy>640-CLIP) continue;
+    const isQ=allCells[i].query;
+    const lbl=MODE===4?fmtIPv4cell(allCells[i].key).replace('/24',''):fmtIPv6cell(allCells[i].key).replace('::/32','');
+    ctx.font=isQ?'bold 11px monospace':'9px monospace';
+    ctx.fillStyle=isQ?'#d8ecff':cellEdge(allCells[i].key);
+    ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText(lbl,sp.sx,sp.sy);
+    // seed dot
+    ctx.beginPath();
+    ctx.arc(sp.sx,sp.sy,isQ?3.5:2,0,Math.PI*2);
+    ctx.fillStyle=isQ?'#90c8ff':cellEdge(allCells[i].key);
+    ctx.fill();
+  }
+}
+
+function updateSidebar(allCells) {
+  const sb=document.getElementById('sidebar');
+  let html='';
+  if (hoveredIdx>0) html+=cardHTML(allCells[hoveredIdx],`HOVER — ${dirLabel(allCells[hoveredIdx].dx,allCells[hoveredIdx].dy)}`,'hovered');
+  html+=cardHTML(allCells[0],'QUERY CELL','query');
+  html+=`<div class="section-header">RING 1 NEIGHBORS</div>`;
+  allCells.filter(c=>!c.query&&Math.abs(c.dx)<=1&&Math.abs(c.dy)<=1)
+    .forEach(c=>{html+=cardHTML(c,dirLabel(c.dx,c.dy));});
+  document.getElementById('sidebar').innerHTML=html;
+}
+
+// ── Main ──────────────────────────────────────────────────────────────────────
+function run() {
+  const err=document.getElementById('err'); err.textContent='';
+  const input=document.getElementById('ip-input').value.trim();
+  hoveredIdx=-1;
+
+  let queryCell, allCells;
+  const isV6=MODE===6;
+
+  if (MODE===4) {
+    const oct=parseIPv4(input);
+    if (!oct){err.textContent='Invalid IPv4 address';return;}
+    const [a,b,c]=oct;
+    const qkey=ipv4Key(a,b,c);
+    queryCell={key:qkey,dx:0,dy:0,query:true};
+    allCells=[queryCell,...neighbors4(a,b,c,2)];
+  } else {
+    const g=parseIPv6(input);
+    if (!g){err.textContent='Invalid IPv6 address';return;}
+    const qkey=ipv6Key(g[0],g[1]);
+    queryCell={key:qkey,dx:0,dy:0,query:true};
+    allCells=[queryCell,...neighbors6(g[0],g[1],2)];
+  }
+
+  const worldPositions=allCells.map(c=>worldPos(c.key,isV6));
+  const {wx:cx0,wy:cy0}=worldPositions[0];
+  const CX=320,CY=320,CLIP=16;
+
+  const seedPts=worldPositions.map(({wx,wy})=>({sx:CX+(wx-cx0),sy:CY+(wy-cy0)}));
+  const voronoiInput=seedPts.map(p=>({x:p.sx,y:p.sy}));
+  const cells=voronoiCells(voronoiInput);
+  const clipped=cells.map(c=>clipPoly(c,CLIP,CLIP,640-CLIP,640-CLIP));
+  const sharedEdges=findSharedEdges(cells,allCells,CLIP);
+
+  // Build road network for every cell
+  const allRoads=allCells.map((cell,ci)=>
+    buildRoads(ci, cells[ci], seedPts[ci], cell.key, sharedEdges)
+  );
+
+  currentData={cells,clipped,seedPts,allCells,CLIP,sharedEdges,allRoads};
+  drawScene(currentData);
+  updateSidebar(allCells);
+
+  const cv=document.getElementById('canvas');
+  cv.onmousemove=(e)=>{
+    const r=cv.getBoundingClientRect();
+    const mx=(e.clientX-r.left)*(640/r.width),my=(e.clientY-r.top)*(640/r.height);
+    let found=-1;
+    for (let i=0;i<clipped.length;i++){if(clipped[i].length&&pip(mx,my,clipped[i])){found=i;break;}}
+    if (found!==hoveredIdx){hoveredIdx=found;drawScene(currentData);updateSidebar(allCells);}
+  };
+  cv.onmouseleave=()=>{hoveredIdx=-1;drawScene(currentData);updateSidebar(allCells);};
+  cv.onclick=(e)=>{
+    const r=cv.getBoundingClientRect();
+    const mx=(e.clientX-r.left)*(640/r.width),my=(e.clientY-r.top)*(640/r.height);
+    for (let i=0;i<clipped.length;i++){
+      if (clipped[i].length&&pip(mx,my,clipped[i])){
+        const cell=allCells[i];
+        let ipStr;
+        if (MODE===4){const [a,b,c]=keyToOctets(cell.key);ipStr=`${a}.${b}.${c}.0`;}
+        else{const g0=(cell.key>>>16)&0xFFFF,g1=cell.key&0xFFFF;ipStr=`${g0.toString(16).padStart(4,'0')}:${g1.toString(16).padStart(4,'0')}::` ;}
+        document.getElementById('ip-input').value=ipStr;
+        run(); break;
+      }
+    }
+  };
+}
+
+run();
+</script>
+</body>
+</html>

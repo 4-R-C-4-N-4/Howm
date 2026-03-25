@@ -163,7 +163,7 @@ const brandStyle: React.CSSProperties = {
 
 function Shell() {
   const [toasts, setToasts] = useState<Toast[]>([]);
-  const token=***
+  const token = getApiToken();
   const navigate = useNavigate();
   const setBadge = useBadgeStore((s) => s.setBadge);
 

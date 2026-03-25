@@ -66,7 +66,7 @@ function onFilesSelected(e) {
   var maxCount = mediaLimits ? mediaLimits.max_attachments : 4;
 
   if (pendingFiles.length + files.length > maxCount) {
-    alert('Max ' + maxCount + ' attachments per post');
+    showFeedToast('Max ' + maxCount + ' attachments per post');
     e.target.value = '';
     return;
   }
@@ -81,14 +81,14 @@ function onFilesSelected(e) {
   for (var i = 0; i < files.length; i++) {
     var f = files[i];
     if (allowed.indexOf(f.type) === -1) {
-      alert('Unsupported file type: ' + f.type);
+      showFeedToast('Unsupported file type: ' + f.type);
       e.target.value = '';
       return;
     }
     var isVideo = f.type.startsWith('video/');
     var limit = isVideo ? maxVideo : maxImage;
     if (f.size > limit) {
-      alert(f.name + ' is too large (' + formatSize(f.size) + ', max ' + formatSize(limit) + ')');
+      showFeedToast(f.name + ' is too large (' + formatSize(f.size) + ', max ' + formatSize(limit) + ')');
       e.target.value = '';
       return;
     }
@@ -172,7 +172,7 @@ function renderPost(post) {
   var date = new Date(post.timestamp * 1000).toLocaleString();
   var mediaHtml = renderAttachments(post);
   var deleteBtn = post.origin === 'local'
-    ? '<button class="post-delete" onclick="deletePost(\'' + escAttr(post.id) + '\')" title="Delete">✕</button>'
+    ? '<button class="post-delete" onclick="confirmDeletePost(this, \'' + escAttr(post.id) + '\')" title="Delete">✕</button>'
     : '';
 
   return '<div class="post-card" id="post-' + escAttr(post.id) + '">' +
@@ -354,9 +354,43 @@ async function submitPost() {
   }
 }
 
-// ── Post deletion ──────────────────────────────────────────────────────────────
+// ── Toast (replaces alert — works in iframes) ──────────────────────────────────
+function showFeedToast(message) {
+  var el = document.getElementById('feed-toast');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'feed-toast';
+    el.style.cssText = 'position:fixed;top:12px;left:50%;transform:translateX(-50%);' +
+      'background:var(--howm-error,#f87171);color:#fff;padding:8px 16px;border-radius:6px;' +
+      'font-size:0.85rem;z-index:9999;opacity:0;transition:opacity 0.2s;pointer-events:none;';
+    document.body.appendChild(el);
+  }
+  el.textContent = message;
+  el.style.opacity = '1';
+  clearTimeout(el._timer);
+  el._timer = setTimeout(function () { el.style.opacity = '0'; }, 4000);
+}
+
+// ── Post deletion (inline confirm — no popups) ─────────────────────────────────
+function confirmDeletePost(btn, postId) {
+  var headerRight = btn.closest('.post-header-right');
+  if (!headerRight) return;
+  var original = headerRight.innerHTML;
+  headerRight.innerHTML =
+    '<span style="font-size:0.8rem;color:var(--howm-warning,#fbbf24)">Delete?</span> ' +
+    '<button class="post-delete" style="color:var(--howm-error,#f87171)">Yes</button> ' +
+    '<button class="post-delete">No</button>';
+  var buttons = headerRight.querySelectorAll('button');
+  buttons[0].onclick = function () {
+    headerRight.innerHTML = original;
+    deletePost(postId);
+  };
+  buttons[1].onclick = function () {
+    headerRight.innerHTML = original;
+  };
+}
+
 async function deletePost(postId) {
-  if (!confirm('Delete this post?')) return;
   try {
     var headers = {};
     if (apiToken) headers['Authorization'] = 'Bearer ' + apiToken;
@@ -367,7 +401,7 @@ async function deletePost(postId) {
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     loadFeed();
   } catch (err) {
-    alert('Failed to delete post');
+    showFeedToast('Failed to delete post');
   }
 }
 

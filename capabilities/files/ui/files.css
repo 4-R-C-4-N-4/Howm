@@ -242,6 +242,12 @@ select[multiple] { height: 80px; }
   border-color: var(--howm-error, #f87171);
 }
 
+.inline-confirm-msg {
+  font-size: 0.8rem;
+  color: var(--howm-warning, #fbbf24);
+  white-space: nowrap;
+}
+
 /* ── Peer list ─────────────────────────────────────────────────────────────── */
 
 .peer-card {
