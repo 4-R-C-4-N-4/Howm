@@ -5,6 +5,7 @@ var apiToken = null;
 var trustFilter = null;
 var pendingFiles = []; // files queued for upload
 var mediaLimits = null; // fetched from /post/limits
+var _started = false;
 
 // ── Base path detection ────────────────────────────────────────────────────────
 // When served through the daemon proxy: /cap/feed/ui/ → base = /cap/feed
@@ -19,17 +20,19 @@ var BASE = (function () {
 // Token is delivered exclusively via postMessage from the parent shell.
 // NEVER placed in URLs (leaks via Referer headers, browser history, server logs).
 (function init() {
+  function startOnce() { if (!_started) { _started = true; startup(); } }
+
   // Ask parent shell for the token
   window.parent.postMessage({ type: 'howm:token:request' }, window.location.origin);
   // Start without auth after 500ms if no reply (read-only mode still works
   // since the daemon proxy gates by IP, not bearer token for /cap/* routes)
-  setTimeout(function () { if (!apiToken) startup(); }, 500);
+  setTimeout(startOnce, 500);
 
   window.addEventListener('message', function (e) {
     if (e.origin !== window.location.origin) return;
     if (e.data && e.data.type === 'howm:token:reply') {
       apiToken = e.data && e.data.payload && e.data.payload.token;
-      startup();
+      startOnce();
     }
   });
 
@@ -336,7 +339,7 @@ async function submitPost() {
     window.parent.postMessage({
       type: 'howm:notify',
       payload: { level: 'success', message: 'Post published' },
-    }, '*');
+    }, window.location.origin);
     loadFeed();
     setTimeout(function () { status.textContent = ''; status.className = ''; }, 3000);
   } catch (err) {
@@ -345,7 +348,7 @@ async function submitPost() {
     window.parent.postMessage({
       type: 'howm:notify',
       payload: { level: 'error', message: 'Failed to publish post' },
-    }, '*');
+    }, window.location.origin);
   } finally {
     btn.disabled = false;
   }

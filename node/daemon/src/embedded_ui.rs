@@ -50,7 +50,15 @@ fn serve_index(html_bytes: &[u8], token: Option<&String>) -> Response {
     let html = String::from_utf8_lossy(html_bytes);
     let injected = match token {
         Some(t) => {
-            let meta = format!(r#"<meta name="howm-token" content="{}">"#, t);
+            // HTML-escape the token value to prevent injection if the token
+            // ever contains special characters (currently hex/base64, but
+            // defense-in-depth).
+            let escaped = t
+                .replace('&', "&amp;")
+                .replace('"', "&quot;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;");
+            let meta = format!(r#"<meta name="howm-token" content="{}">"#, escaped);
             html.replacen("</head>", &format!("  {}\n  </head>", meta), 1)
         }
         None => html.into_owned(),

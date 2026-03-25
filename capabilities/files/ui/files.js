@@ -6,6 +6,7 @@ var selectedFile = null;
 var activePeers = [];
 var selectedPeerId = null;
 var catalogueCursor = 0;
+var _started = false;
 var catalogueItems = [];
 var downloads = [];
 var downloadPollTimer = null;
@@ -25,17 +26,19 @@ var MAX_FILE_SIZE = 500 * 1024 * 1024;
 // Token is delivered exclusively via postMessage from the parent shell.
 // NEVER placed in URLs (leaks via Referer headers, browser history, server logs).
 (function init() {
+  function startOnce() { if (!_started) { _started = true; startup(); } }
+
   // Ask the parent shell for the token
   window.parent.postMessage({ type: 'howm:token:request' }, window.location.origin);
   // Start without auth after 500ms if no reply (read-only mode still works
   // since the daemon proxy gates by IP, not bearer token for /cap/* routes)
-  setTimeout(function () { if (!apiToken) startup(); }, 500);
+  setTimeout(startOnce, 500);
 
   window.addEventListener('message', function (e) {
     if (e.origin !== window.location.origin) return;
     if (e.data && e.data.type === 'howm:token:reply') {
       apiToken = e.data && e.data.payload && e.data.payload.token;
-      startup();
+      startOnce();
     }
   });
 

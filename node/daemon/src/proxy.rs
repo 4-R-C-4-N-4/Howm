@@ -34,7 +34,14 @@ pub async fn proxy_request_with_peer(
         cap.ok_or_else(|| AppError::NotFound(format!("capability not found: {}", cap_name)))?;
 
     let port = cap.port;
+    // Cap query string length to prevent abuse (e.g. multi-MB strings via WG tunnel).
+    const MAX_QUERY_LEN: usize = 4096;
     let query_string = req.uri().query().map(|s| s.to_owned());
+    if let Some(ref q) = query_string {
+        if q.len() > MAX_QUERY_LEN {
+            return Err(AppError::BadRequest("query string too long".to_string()));
+        }
+    }
     let target_url = match &query_string {
         Some(q) => format!(
             "http://localhost:{}/{}?{}",
