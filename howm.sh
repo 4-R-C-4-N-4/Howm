@@ -240,11 +240,11 @@ if [[ -d "$CAP_DIR" ]] && [[ -n "$API_TOKEN" ]]; then
         # Always uninstall first to pick up manifest/binary changes cleanly.
         curl -sf -X DELETE "http://localhost:$PORT/capabilities/$cap_api_name" \
             -H "Authorization: Bearer $API_TOKEN" &>/dev/null || true
-        sleep 0.3
+        sleep 2
 
-        # Install with retry (the daemon may still be cleaning up the old process)
+        # Install with retry + exponential backoff (daemon may rate-limit or still be cleaning up)
         INSTALLED=0
-        for attempt in 1 2 3; do
+        for attempt in 1 2 3 4 5; do
             INSTALL_RESP=$(curl -s -X POST "http://localhost:$PORT/capabilities/install" \
                 -H "Authorization: Bearer $API_TOKEN" \
                 -H "Content-Type: application/json" \
@@ -254,10 +254,11 @@ if [[ -d "$CAP_DIR" ]] && [[ -n "$API_TOKEN" ]]; then
                 INSTALLED=1
                 break
             fi
-            [[ $attempt -lt 3 ]] && sleep 1
+            BACKOFF=$((attempt * 2))
+            [[ $attempt -lt 5 ]] && { info "Capability '$cap_name' install attempt $attempt failed, retrying in ${BACKOFF}s..."; sleep "$BACKOFF"; }
         done
         if [[ $INSTALLED -eq 0 ]]; then
-            warn "Capability '$cap_name' install failed after 3 attempts: $INSTALL_RESP"
+            warn "Capability '$cap_name' install failed after 5 attempts: $INSTALL_RESP"
         fi
     done
 fi

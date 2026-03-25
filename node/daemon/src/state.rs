@@ -64,7 +64,7 @@ impl AppState {
             wg_active: Arc::new(RwLock::new(false)),
             api_token,
             invite_rate_limiter: Arc::new(RateLimiter::new(5, 60)),
-            install_rate_limiter: Arc::new(RateLimiter::new(2, 60)),
+            install_rate_limiter: Arc::new(RateLimiter::new(10, 60)),
             open_join_rate_limiter,
             p2pcd_engine: None,
             allow_relay: Arc::new(RwLock::new(allow_relay)),
