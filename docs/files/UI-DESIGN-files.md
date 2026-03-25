@@ -309,18 +309,21 @@ Peer IDs are base64-encoded 32-byte WG public keys. For display:
 
 ---
 
-## 7. Open Questions
+## 7. Decisions
 
-1. **Peers endpoint on files capability.** The feed capability has `GET /peers` returning active peers. The files capability currently has no equivalent. Options:
-   - Add `GET /peers` to the files capability (returns `active_peers` map)
-   - Use the daemon's `/p2pcd/peers-for/howm.social.files.1` instead (requires cross-origin fetch to daemon)
-   - **Recommendation:** Add `/peers` to the files capability for consistency with feed.
+1. **Peers endpoint.** Add `GET /peers` to the files capability (returns `active_peers` map with peer ID, WG address, groups). Same pattern as the feed capability.
 
-2. **Download progress.** The current `GET /downloads/{blob_id}/status` returns the status string (`pending`/`transferring`/`complete`/`failed`) but no byte-level progress. Options:
-   - Accept status-only progress (indeterminate spinner for "transferring")
-   - Add byte-level progress tracking to the download model (requires bridge callbacks with partial progress)
-   - **Recommendation:** Start with status-only. Byte progress is a follow-up.
+2. **Download progress.** Status-only for now (indeterminate spinner during "transferring"). Byte-level progress tracking is a future enhancement requiring bridge callbacks with partial progress.
 
-3. **Re-seeding opt-out.** Per the BRD, completed downloads become seedable. The UI should show seeding status and allow opt-out per blob. This needs a backend `PATCH /downloads/{blob_id}` with a `seed` boolean. Defer to a follow-up.
+3. **Re-seeding.** Deferred — not referenced in the UI. When re-seeding is implemented on the backend, the UI will need a seeding indicator and per-blob opt-out toggle.
 
-4. **Blob deduplication in UI.** If the same file is offered by multiple peers, the catalogue view should ideally show this (e.g., "also available from 2 other peers"). This requires `catalogue.has_blob` RPC calls. Defer to follow-up.
+4. **Multi-source awareness.** Deferred. Future enhancement: when browsing a peer's catalogue, show a hint like "A peer with better latency offers this same file" if the blob is available from another active peer with a lower latency score. Requires cross-referencing `catalogue.has_blob` RPC results with latency data from P2P-CD sessions.
+
+## 8. Future: Peer Latency in Browse View
+
+Each peer card in the Browse Peers tab should display a latency score sourced from P2P-CD session data (the `core.session.latency.1` capability). This gives the user a sense of transfer speed before initiating a download.
+
+- Fetch latency from daemon: `GET /p2pcd/sessions/{peer_id}` includes round-trip timing
+- Display as a colored badge: green (<50ms), yellow (50-200ms), red (>200ms)
+- Sort peers by latency by default (lowest first)
+- When the same blob is offered by multiple peers, suggest the lowest-latency source
