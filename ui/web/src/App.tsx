@@ -184,7 +184,7 @@ function Shell() {
         onNavigate: (path) => navigate(path),
         onNavigateTo: (path) => navigate(path),
         onBadge: (capability, count) => setBadge(capability, count),
-        onToast: (title, body, _capability) => {
+        onToast: (title, body) => {
           const message = title ? `${title}: ${body}` : body;
           addToast('info', message);
         },
