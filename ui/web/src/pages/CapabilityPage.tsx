@@ -34,13 +34,12 @@ export function CapabilityPage() {
   const cap = capabilities?.find(c => c.name === name);
   const token = getApiToken();
 
-  // Reset loading state during render when token changes (React-recommended
-  // pattern for adjusting state based on changed props/derived values).
+  // Reset loading / error state during render when the token changes
+  // (React-recommended "adjust state when a prop changes" pattern — no effect needed).
   // See: https://react.dev/learn/you-might-not-need-an-effect#adjusting-some-state-when-a-prop-changes
-  const prevToken = useRef(token);
-  if (prevToken.current !== token) {
-    prevToken.current = token;
-    readySent.current = false;
+  const [prevToken, setPrevToken] = useState(token);
+  if (prevToken !== token) {
+    setPrevToken(token);
     setLoading(true);
     setLoadError(false);
   }
@@ -50,6 +49,7 @@ export function CapabilityPage() {
   // assume it failed to load and show an error state.
   useEffect(() => {
     if (!token) return;
+    readySent.current = false;
 
     // Start load timeout — capability should signal howm:ready within 10s
     loadTimeout.current = setTimeout(() => {

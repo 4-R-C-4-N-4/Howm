@@ -3,8 +3,8 @@
 body {
   margin: 0;
   font-family: var(--howm-font-family, system-ui, 'Segoe UI', Roboto, sans-serif);
-  background: var(--howm-bg-primary, #0f1117);
-  color: var(--howm-text-primary, #e1e4eb);
+  background: var(--howm-bg-primary, #000000);
+  color: var(--howm-text-primary, #ffffff);
   font-size: var(--howm-font-size-base, 1rem);
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
@@ -20,13 +20,13 @@ body {
 h1, h2, h3, h4, h5, h6 {
   margin: 0;
   font-weight: 600;
-  color: var(--howm-text-primary, #e1e4eb);
+  color: var(--howm-text-primary, #ffffff);
 }
 
 p { margin: 0; }
 
 a {
-  color: var(--howm-accent, #6c8cff);
+  color: var(--howm-accent, #3b82f6);
   text-decoration: none;
 }
 a:hover { text-decoration: underline; }
