@@ -39,3 +39,7 @@ button {
 input, textarea, select {
   font-family: inherit;
 }
+
+@keyframes howm-spin {
+  to { transform: rotate(360deg); }
+}

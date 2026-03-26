@@ -24,21 +24,28 @@ var BASE = (function () {
 
   // Ask parent shell for the token
   window.parent.postMessage({ type: 'howm:token:request' }, window.location.origin);
-  // Start without auth after 500ms if no reply (read-only mode still works
-  // since the daemon proxy gates by IP, not bearer token for /cap/* routes)
-  setTimeout(startOnce, 500);
+  // Canonical name — updated from token reply if available, else fallback.
+  var _capName = 'feed';
+  var _readySent = false;
+
+  function signalReady() {
+    if (_readySent) return;
+    _readySent = true;
+    window.parent.postMessage({ type: 'howm:ready', payload: { name: _capName } }, window.location.origin);
+  }
 
   window.addEventListener('message', function (e) {
     if (e.origin !== window.location.origin) return;
     if (e.data && e.data.type === 'howm:token:reply') {
       apiToken = e.data && e.data.payload && e.data.payload.token;
+      if (e.data.payload && e.data.payload.name) _capName = e.data.payload.name;
+      signalReady();
       startOnce();
     }
   });
 
-  // Signal to the shell that we loaded — derive name from proxy path (/cap/{name}/ui/)
-  var _capName = (window.location.pathname.match(/^\/cap\/([^/]+)/) || [])[1] || 'feed';
-  window.parent.postMessage({ type: 'howm:ready', payload: { name: _capName } }, window.location.origin);
+  // If no token reply within 500ms, signal ready with fallback name and start anyway
+  setTimeout(function () { signalReady(); startOnce(); }, 500);
 
   // File input change handler
   document.getElementById('file-input').addEventListener('change', onFilesSelected);

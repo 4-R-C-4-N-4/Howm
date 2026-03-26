@@ -1,6 +1,6 @@
 {
   "name": "social.files",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "description": "File transfer offerings — publish a browseable catalogue of files for peers to download over WireGuard",
   "binary": "files",
   "port": 7003,
