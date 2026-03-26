@@ -23,7 +23,7 @@ export function CapabilityPage() {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const readySent = useRef(false);
   const [loadError, setLoadError] = useState(false);
-  const loadTimeout = useRef<ReturnType<typeof setTimeout>>();
+  const loadTimeout = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   const { data: capabilities } = useQuery({
     queryKey: ['capabilities'],
