@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { getNodeInfo } from '../api/nodes';
-import { getApiToken, setApiToken, clearApiToken } from '../api/client';
+import { getApiToken, setApiToken } from '../api/client';
 import { PeerList } from '../components/PeerList';
 import { CapabilityList } from '../components/CapabilityList';
 import { useState } from 'react';
@@ -22,50 +22,10 @@ export function Dashboard() {
       queryClient.invalidateQueries();
     }
   };
-  const handleClearToken = () => {
-    clearApiToken();
-    queryClient.invalidateQueries();
-  };
 
   return (
     <div className='max-w-[800px] mx-auto p-6'>
       <h1 className='text-2xl mb-6 font-semibold'>Dashboard</h1>
-
-      {/* API Token */}
-      <section className='bg-howm-bg-surface border border-howm-border rounded-xl p-5 mb-5'>
-        <h2 className='text-xl font-semibold mt-0 mb-4'>API Token</h2>
-        {hasToken ? (
-          <div className='flex items-center gap-3'>
-            <span className='text-howm-success font-semibold'>● Connected</span>
-            <span className='text-howm-text-muted text-sm'>Token is set</span>
-            <button onClick={handleClearToken} className='py-1.5 px-3.5 bg-howm-bg-elevated border border-howm-error rounded text-howm-error cursor-pointer text-sm ml-auto' style={{ background: 'rgba(239,68,68,0.15)' }}>
-              Clear Token
-            </button>
-          </div>
-        ) : (
-          <div>
-            <p className='text-howm-warning mb-2 mt-0'>
-              ⚠ No API token set — mutations (invites, peer removal, posting) will be rejected.
-            </p>
-            <p className='text-howm-text-muted text-sm mb-3 mt-0'>
-              Copy the token printed by the daemon on first run (or from the howm.sh startup box).
-            </p>
-            <div className='flex gap-2'>
-              <input
-                type="password"
-                placeholder="Paste API token..."
-                value={tokenInput}
-                onChange={e => setTokenInput(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && handleSetToken()}
-                className='flex-1 py-1.5 px-2.5 bg-howm-bg-secondary border border-howm-border rounded text-howm-text-primary text-sm font-mono'
-              />
-              <button onClick={handleSetToken} disabled={!tokenInput.trim()} className='py-1.5 px-3.5 bg-howm-accent border-none rounded text-white cursor-pointer text-sm'>
-                Set Token
-              </button>
-            </div>
-          </div>
-        )}
-      </section>
 
       {/* Node Info */}
       <section className='bg-howm-bg-surface border border-howm-border rounded-xl p-5 mb-5'>
@@ -76,6 +36,39 @@ export function Dashboard() {
             <Row label="Name"    value={nodeInfo.name} />
           </dl>
         )}
+      </section>
+
+      {/* API Token */}
+      <section className='bg-howm-bg-surface border border-howm-border rounded-xl p-5 mb-5'>
+      <h2 className='text-xl font-semibold mt-0 mb-4'>API Token</h2>
+      {hasToken ? (
+        <div className='flex items-center gap-3'>
+        <span className='text-howm-success font-semibold'>● Connected</span>
+        <span className='text-howm-text-muted text-sm'>Token is set</span>
+        </div>
+      ) : (
+        <div>
+        <p className='text-howm-warning mb-2 mt-0'>
+        ⚠ No API token set — mutations (invites, peer removal, posting) will be rejected.
+        </p>
+        <p className='text-howm-text-muted text-sm mb-3 mt-0'>
+        Copy the token printed by the daemon on first run (or from the howm.sh startup box).
+        </p>
+        <div className='flex gap-2'>
+        <input
+        type="password"
+        placeholder="Paste API token..."
+        value={tokenInput}
+        onChange={e => setTokenInput(e.target.value)}
+        onKeyDown={e => e.key === 'Enter' && handleSetToken()}
+        className='flex-1 py-1.5 px-2.5 bg-howm-bg-secondary border border-howm-border rounded text-howm-text-primary text-sm font-mono'
+      />
+      <button onClick={handleSetToken} disabled={!tokenInput.trim()} className='py-1.5 px-3.5 bg-howm-accent border-none rounded text-white cursor-pointer text-sm'>
+      Set Token
+      </button>
+      </div>
+      </div>
+      )}
       </section>
 
       {/* Peers */}
