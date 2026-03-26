@@ -73,12 +73,18 @@ pub struct NotificationBuffer {
 const MAX_ENTRIES: usize = 50;
 const EXPIRY_MS: u64 = 60_000;
 
-impl NotificationBuffer {
-    pub fn new() -> Self {
+impl Default for NotificationBuffer {
+    fn default() -> Self {
         Self {
             entries: VecDeque::with_capacity(MAX_ENTRIES),
             next_id: AtomicU64::new(1),
         }
+    }
+}
+
+impl NotificationBuffer {
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// Push a new notification. Prunes expired entries and evicts the oldest
@@ -121,6 +127,12 @@ impl NotificationBuffer {
     #[cfg(test)]
     pub fn len(&self) -> usize {
         self.entries.len()
+    }
+
+    /// Whether the buffer is empty (for testing).
+    #[cfg(test)]
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
     }
 
     fn prune(&mut self, now: u64) {
