@@ -20,13 +20,14 @@ pub async fn proxy_request_with_peer(
     req: Request<Body>,
     peer_pubkey: Option<&str>,
 ) -> Result<Response<Body>, AppError> {
-    // Find capability by name — match against the installed name, or any
-    // dot-separated segment (e.g. "feed" matches installed name "feed",
-    // and a future "social.feed" would also match on "social" or "feed").
+    // Find capability by route_name (exact match), then fall back to full name.
+    // route_name is derived from manifest api.base_path at install time
+    // (e.g. "/cap/feed" → "feed"). This avoids ambiguity when multiple
+    // capabilities share a namespace segment.
     let cap = {
         let caps = state.capabilities.read().await;
         caps.iter()
-            .find(|c| c.name == cap_name || c.name.split('.').any(|seg| seg == cap_name))
+            .find(|c| c.route_name.as_deref() == Some(cap_name) || c.name == cap_name)
             .cloned()
     };
 

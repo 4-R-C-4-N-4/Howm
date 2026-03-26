@@ -23,7 +23,7 @@
 
 ## Issues
 
-### Issue #1: Feed page stuck on "Loading feed…" — JS never executes
+### Issue #1: Feed page stuck on "Loading feed…" — JS never executes ✅ COMPLETED
 
 | Field | Value |
 |-------|-------|
@@ -58,7 +58,7 @@ Uncaught ReferenceError: setFilter is not defined
 
 ---
 
-### Issue #2: Files page renders completely blank
+### Issue #2: Files page renders completely blank ✅ COMPLETED
 
 | Field | Value |
 |-------|-------|

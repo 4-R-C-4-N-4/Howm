@@ -269,7 +269,7 @@ echo -e "${GREEN}┌────────────────────
 echo -e "${GREEN}│  Howm is running                                │${NC}"
 echo -e "${GREEN}├─────────────────────────────────────────────────┤${NC}"
 if [[ -n "$API_TOKEN" ]]; then
-printf "${GREEN}│${NC}  API Token:   %-33s${GREEN}│${NC}\n" "$API_TOKEN"
+printf "${GREEN}│${NC}  API Token:   %-33s${GREEN}│${NC}\n" "${API_TOKEN:0:8}… (see $EFFECTIVE_DATA_DIR/api_token)"
 fi
 if [[ $NO_UI -eq 0 ]]; then
   if [[ -n "$DEV_FLAG" ]]; then

@@ -17,8 +17,8 @@
   },
   "ui": {
     "label": "Feed",
-    "icon": "message-circle",
+    "icon": "feed",
     "entry": "/ui/",
-    "style": "iframe"
+    "style": "nav"
   }
 }

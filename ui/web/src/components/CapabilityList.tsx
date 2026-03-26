@@ -11,9 +11,9 @@ export function CapabilityList() {
   });
 
   const statusColor = (status: Capability['status']) => {
-    if (status === 'Running') return 'var(--howm-success, #4ade80)';
-    if (status === 'Stopped') return 'var(--howm-warning, #fbbf24)';
-    return 'var(--howm-error, #f87171)';
+    if (status === 'Running') return 'var(--howm-success, #22c55e)';
+    if (status === 'Stopped') return 'var(--howm-warning, #eab308)';
+    return 'var(--howm-error, #ef4444)';
   };
 
   const statusLabel = (status: Capability['status']) => {
@@ -22,34 +22,26 @@ export function CapabilityList() {
     return 'Unknown';
   };
 
-  if (isLoading) return <p style={mutedStyle}>Loading capabilities…</p>;
+  if (isLoading) return <p className='text-howm-text-muted m-0 text-sm'>Loading capabilities…</p>;
 
   return (
     <div>
-      <h3 style={{ margin: '0 0 12px' }}>Capabilities ({capabilities.length})</h3>
+      <h3 className='m-0 mb-3'>Capabilities ({capabilities.length})</h3>
       {capabilities.length === 0 ? (
-        <p style={mutedStyle}>No capabilities installed.</p>
+        <p className='text-howm-text-muted m-0 text-sm'>No capabilities installed.</p>
       ) : (
-        <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+        <ul className='list-none p-0 m-0'>
           {capabilities.map((cap: Capability) => (
-            <li key={cap.name} style={rowStyle}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
-                <strong style={{ whiteSpace: 'nowrap' }}>{cap.name}</strong>
-                <span style={mutedStyle}>v{cap.version}</span>
-                <span style={{ ...mutedStyle, fontFamily: 'var(--howm-font-mono, monospace)', fontSize: '0.8em' }}>:{cap.port}</span>
+            <li key={cap.name} className='py-2.5 px-3 border border-howm-border rounded mb-1.5 flex justify-between items-center gap-3 bg-howm-bg-secondary'>
+              <div className='flex items-center gap-2 min-w-0'>
+                <strong className='whitespace-nowrap'>{cap.name}</strong>
+                <span className='text-howm-text-muted m-0 text-sm'>v{cap.version}</span>
+                <span className='text-howm-text-muted m-0 text-sm font-mono text-xs'>:{cap.port}</span>
                 {/* Task 4: link to capability UI page if available */}
                 {cap.ui && (
                   <Link
                     to={`/app/${cap.name}`}
-                    style={{
-                      fontSize: '0.8em',
-                      padding: '2px 8px',
-                      background: 'var(--howm-accent-dim, rgba(108,140,255,0.15))',
-                      color: 'var(--howm-accent, #6c8cff)',
-                      borderRadius: 'var(--howm-radius-sm, 4px)',
-                      textDecoration: 'none',
-                      whiteSpace: 'nowrap',
-                    }}
+                    className='text-xs py-0.5 px-2 bg-howm-accent-dim text-howm-accent rounded no-underline whitespace-nowrap'
                   >
                     Open {cap.ui.label} →
                   </Link>
@@ -70,13 +62,3 @@ export function CapabilityList() {
     </div>
   );
 }
-
-const mutedStyle: React.CSSProperties = { color: 'var(--howm-text-muted, #5c6170)', margin: 0, fontSize: '0.875rem' };
-const rowStyle: React.CSSProperties = {
-  padding: '10px 12px',
-  border: '1px solid var(--howm-border, #2e3341)',
-  borderRadius: 'var(--howm-radius-sm, 4px)',
-  marginBottom: '6px',
-  display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px',
-  background: 'var(--howm-bg-secondary, #1a1d27)',
-};

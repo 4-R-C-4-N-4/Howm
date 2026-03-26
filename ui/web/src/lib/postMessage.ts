@@ -4,7 +4,7 @@
  * Envelope: { type: string, payload?: any }
  *
  * Shell → Capability:
- *   howm:token:reply    { token: string }
+ *   howm:token:reply    { token: string, name?: string }  (name = canonical cap name)
  *   howm:theme:changed  {}   (capability should reload /theme.css or re-apply)
  *   howm:navigate:to    { params: Record<string, string> }  deep-link into a view
  *
@@ -27,9 +27,9 @@ export interface HowmMessage {
 
 // ── Shell → capability helpers ────────────────────────────────────────────────
 
-export function sendTokenReply(iframe: HTMLIFrameElement, token: string) {
+export function sendTokenReply(iframe: HTMLIFrameElement, token: string, capName?: string) {
   iframe.contentWindow?.postMessage(
-    { type: 'howm:token:reply', payload: { token } } satisfies HowmMessage,
+    { type: 'howm:token:reply', payload: { token, name: capName } } satisfies HowmMessage,
     window.location.origin,
   );
 }

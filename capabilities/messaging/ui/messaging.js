@@ -33,12 +33,23 @@ var DAEMON_BASE = (function () {
 
   // Ask parent shell for the token
   window.parent.postMessage({ type: 'howm:token:request' }, window.location.origin);
-  setTimeout(startOnce, 500);
+
+  // Canonical name — updated from token reply if available, else fallback.
+  var _capName = 'messaging';
+  var _readySent = false;
+
+  function signalReady() {
+    if (_readySent) return;
+    _readySent = true;
+    window.parent.postMessage({ type: 'howm:ready', payload: { name: _capName } }, window.location.origin);
+  }
 
   window.addEventListener('message', function (e) {
     if (e.origin !== window.location.origin) return;
     if (e.data && e.data.type === 'howm:token:reply') {
       apiToken = e.data && e.data.payload && e.data.payload.token;
+      if (e.data.payload && e.data.payload.name) _capName = e.data.payload.name;
+      signalReady();
       startOnce();
     }
     // Deep link from shell
@@ -50,7 +61,8 @@ var DAEMON_BASE = (function () {
     }
   });
 
-  window.parent.postMessage({ type: 'howm:ready', payload: { name: 'messaging' } }, window.location.origin);
+  // If no token reply within 500ms, signal ready with fallback name and start anyway
+  setTimeout(function () { signalReady(); startOnce(); }, 500);
 
   // Hash routing
   window.addEventListener('hashchange', route);

@@ -19,55 +19,28 @@ export function DemotionWarning({ peerName, targetGroupId, currentCapabilities, 
     : targetGroupId.endsWith('0002') ? 'Friends' : 'Trusted';
 
   return (
-    <div style={containerStyle}>
-      <div style={headerStyle}>⚠ Warning</div>
-      <p style={textStyle}>
+    <div className="bg-[rgba(234,179,8,0.08)] border border-[rgba(234,179,8,0.3)] rounded-lg p-4 mt-3">
+      <div className="font-semibold mb-2 text-howm-warning">⚠ Warning</div>
+      <p className="m-0 text-sm text-howm-text-primary">
         Moving <strong>{peerName}</strong> to {tierLabel} will remove access to:
       </p>
-      <div style={{ margin: '8px 0' }}>
+      <div className="my-2">
         {losing.map(cap => (
-          <div key={cap} style={{ color: '#f87171', fontSize: '0.875rem', fontFamily: 'var(--howm-font-mono, monospace)', padding: '2px 0' }}>
+          <div key={cap} className="text-howm-error text-sm font-mono py-0.5">
             ✕ {cap}
           </div>
         ))}
       </div>
-      <p style={{ ...textStyle, fontSize: '0.8rem', opacity: 0.8, marginTop: '8px' }}>
+      <p className="text-xs text-howm-text-primary opacity-80 mt-2">
         This takes effect immediately. {peerName}'s active session will be renegotiated.
       </p>
-      <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', marginTop: '12px' }}>
-        <button onClick={onCancel} style={cancelBtnStyle}>Cancel</button>
-        <button onClick={onConfirm} disabled={isPending} style={confirmBtnStyle}>
+      <div className="flex gap-2 justify-end mt-3">
+        <button onClick={onCancel} className="px-3.5 py-1.5 bg-howm-bg-elevated border border-howm-border rounded text-howm-text-primary cursor-pointer text-sm">Cancel</button>
+        <button onClick={onConfirm} disabled={isPending}
+          className="px-3.5 py-1.5 bg-[rgba(234,179,8,0.15)] border border-[rgba(234,179,8,0.4)] rounded text-howm-warning cursor-pointer text-sm font-semibold">
           {isPending ? 'Updating…' : 'Confirm Demotion'}
         </button>
       </div>
     </div>
   );
 }
-
-const containerStyle: React.CSSProperties = {
-  background: 'rgba(251,191,36,0.08)',
-  border: '1px solid rgba(251,191,36,0.3)',
-  borderRadius: '8px', padding: '16px', marginTop: '12px',
-};
-
-const headerStyle: React.CSSProperties = {
-  fontWeight: 600, marginBottom: '8px', color: '#fbbf24',
-};
-
-const textStyle: React.CSSProperties = {
-  margin: 0, fontSize: '0.875rem', color: 'var(--howm-text-primary, #e1e4eb)',
-};
-
-const cancelBtnStyle: React.CSSProperties = {
-  padding: '6px 14px', background: 'var(--howm-bg-elevated, #2a2e3d)',
-  border: '1px solid var(--howm-border, #2e3341)',
-  borderRadius: '4px', color: 'var(--howm-text-primary, #e1e4eb)',
-  cursor: 'pointer', fontSize: '0.85rem',
-};
-
-const confirmBtnStyle: React.CSSProperties = {
-  padding: '6px 14px', background: 'rgba(251,191,36,0.15)',
-  border: '1px solid rgba(251,191,36,0.4)',
-  borderRadius: '4px', color: '#fbbf24',
-  cursor: 'pointer', fontSize: '0.85rem', fontWeight: 600,
-};

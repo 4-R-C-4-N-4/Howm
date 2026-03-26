@@ -48,61 +48,62 @@ export function CreateGroupModal({ onClose, onToast }: CreateGroupModalProps) {
   const valid = name.trim().length >= 1 && name.trim().length <= 64;
 
   return (
-    <div style={overlayStyle} onClick={onClose}>
-      <div style={modalStyle} onClick={e => e.stopPropagation()}>
-        <h3 style={{ margin: '0 0 16px', fontSize: '1.1rem' }}>Create Access Group</h3>
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[250]" onClick={onClose}>
+      <div className="bg-howm-bg-surface border border-howm-border rounded-xl p-6 max-w-[500px] w-[90%] max-h-[80vh] overflow-y-auto shadow-[0_16px_48px_rgba(0,0,0,0.6)]" onClick={e => e.stopPropagation()}>
+        <h3 className="m-0 mb-4 text-lg">Create Access Group</h3>
 
-        <div style={{ marginBottom: '12px' }}>
-          <label style={labelStyle}>Name</label>
+        <div className="mb-3">
+          <label className="block text-xs font-semibold text-howm-text-secondary mb-1.5">Name</label>
           <input
             value={name} onChange={e => setName(e.target.value)}
             placeholder="my-custom-group"
-            style={inputStyle}
+            className="w-full p-2 bg-howm-bg-secondary border border-howm-border rounded text-howm-text-primary text-sm"
             maxLength={64}
           />
         </div>
 
-        <div style={{ marginBottom: '16px' }}>
-          <label style={labelStyle}>Description</label>
+        <div className="mb-4">
+          <label className="block text-xs font-semibold text-howm-text-secondary mb-1.5">Description</label>
           <input
             value={description} onChange={e => setDescription(e.target.value)}
             placeholder="Optional description"
-            style={inputStyle}
+            className="w-full p-2 bg-howm-bg-secondary border border-howm-border rounded text-howm-text-primary text-sm"
           />
         </div>
 
-        <div style={sectionStyle}>
-          <label style={labelStyle}>Capabilities</label>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginBottom: '12px' }}>
+        <div className="bg-howm-bg-secondary border border-howm-border rounded-lg p-3">
+          <label className="block text-xs font-semibold text-howm-text-secondary mb-1.5">Capabilities</label>
+          <div className="flex flex-col gap-1 mb-3">
             {ALL_CAPABILITIES.map(cap => (
-              <label key={cap} style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '0.875rem' }}>
+              <label key={cap} className="flex items-center gap-2 cursor-pointer text-sm">
                 <input
                   type="checkbox"
                   checked={selected.has(cap)}
                   onChange={() => toggle(cap)}
-                  style={{ accentColor: 'var(--howm-accent, #6c8cff)' }}
+                  style={{ accentColor: 'var(--howm-accent, #3b82f6)' }}
                 />
-                <span style={{ fontFamily: 'var(--howm-font-mono, monospace)' }}>{cap}</span>
-                {isCore(cap) && <span style={{ fontSize: '0.7rem', color: 'var(--howm-text-muted, #5c6170)' }}>core</span>}
+                <span className="font-mono">{cap}</span>
+                {isCore(cap) && <span className="text-[0.7rem] text-howm-text-muted">core</span>}
               </label>
             ))}
           </div>
 
-          <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
-            <span style={{ fontSize: '0.8rem', color: 'var(--howm-text-muted, #5c6170)', alignSelf: 'center' }}>Presets:</span>
-            <button onClick={() => applyPreset(GROUP_DEFAULT)} style={presetBtnStyle}>Default</button>
-            <button onClick={() => applyPreset(GROUP_FRIENDS)} style={presetBtnStyle}>Friends</button>
-            <button onClick={() => applyPreset(GROUP_TRUSTED)} style={presetBtnStyle}>Trusted</button>
-            <button onClick={() => applyPreset(null)} style={presetBtnStyle}>None</button>
+          <div className="flex gap-1.5 flex-wrap">
+            <span className="text-xs text-howm-text-muted self-center">Presets:</span>
+            <button onClick={() => applyPreset(GROUP_DEFAULT)} className="py-1 px-2.5 bg-howm-bg-elevated border border-howm-border rounded text-howm-text-primary cursor-pointer text-xs">Default</button>
+            <button onClick={() => applyPreset(GROUP_FRIENDS)} className="py-1 px-2.5 bg-howm-bg-elevated border border-howm-border rounded text-howm-text-primary cursor-pointer text-xs">Friends</button>
+            <button onClick={() => applyPreset(GROUP_TRUSTED)} className="py-1 px-2.5 bg-howm-bg-elevated border border-howm-border rounded text-howm-text-primary cursor-pointer text-xs">Trusted</button>
+            <button onClick={() => applyPreset(null)} className="py-1 px-2.5 bg-howm-bg-elevated border border-howm-border rounded text-howm-text-primary cursor-pointer text-xs">None</button>
           </div>
         </div>
 
-        <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', marginTop: '20px' }}>
-          <button onClick={onClose} style={cancelBtnStyle}>Cancel</button>
+        <div className="flex gap-2 justify-end mt-5">
+          <button onClick={onClose} className="py-2 px-5 bg-howm-bg-elevated border border-howm-border rounded-md text-howm-text-primary cursor-pointer text-sm">Cancel</button>
           <button
             onClick={() => mutation.mutate()}
             disabled={!valid || mutation.isPending}
-            style={{ ...createBtnStyle, opacity: valid ? 1 : 0.5 }}
+            className="py-2 px-5 bg-howm-accent border-none rounded-md text-white cursor-pointer text-sm font-semibold"
+            style={{ opacity: valid ? 1 : 0.5 }}
           >
             {mutation.isPending ? 'Creating…' : 'Create'}
           </button>
@@ -111,47 +112,3 @@ export function CreateGroupModal({ onClose, onToast }: CreateGroupModalProps) {
     </div>
   );
 }
-
-const overlayStyle: React.CSSProperties = {
-  position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)',
-  display: 'flex', alignItems: 'center', justifyContent: 'center',
-  zIndex: 250,
-};
-const modalStyle: React.CSSProperties = {
-  background: 'var(--howm-bg-surface, #232733)',
-  border: '1px solid var(--howm-border, #2e3341)',
-  borderRadius: '12px', padding: '24px',
-  maxWidth: '500px', width: '90%', maxHeight: '80vh', overflowY: 'auto',
-  boxShadow: '0 16px 48px rgba(0,0,0,0.6)',
-};
-const labelStyle: React.CSSProperties = {
-  display: 'block', fontSize: '0.8rem', fontWeight: 600,
-  color: 'var(--howm-text-secondary, #8b91a0)', marginBottom: '6px',
-};
-const inputStyle: React.CSSProperties = {
-  width: '100%', padding: '8px 10px', boxSizing: 'border-box',
-  background: 'var(--howm-bg-secondary, #1a1d27)',
-  border: '1px solid var(--howm-border, #2e3341)',
-  borderRadius: '4px', color: 'var(--howm-text-primary, #e1e4eb)',
-  fontSize: '0.9rem',
-};
-const sectionStyle: React.CSSProperties = {
-  background: 'var(--howm-bg-secondary, #1a1d27)',
-  border: '1px solid var(--howm-border, #2e3341)',
-  borderRadius: '8px', padding: '12px',
-};
-const presetBtnStyle: React.CSSProperties = {
-  padding: '4px 10px', background: 'var(--howm-bg-elevated, #2a2e3d)',
-  border: '1px solid var(--howm-border, #2e3341)', borderRadius: '4px',
-  color: 'var(--howm-text-primary, #e1e4eb)', cursor: 'pointer', fontSize: '0.75rem',
-};
-const cancelBtnStyle: React.CSSProperties = {
-  padding: '8px 20px', background: 'var(--howm-bg-elevated, #2a2e3d)',
-  border: '1px solid var(--howm-border, #2e3341)', borderRadius: '6px',
-  color: 'var(--howm-text-primary, #e1e4eb)', cursor: 'pointer', fontSize: '0.9rem',
-};
-const createBtnStyle: React.CSSProperties = {
-  padding: '8px 20px', background: 'var(--howm-accent, #6c8cff)',
-  border: 'none', borderRadius: '6px', color: '#fff',
-  cursor: 'pointer', fontSize: '0.9rem', fontWeight: 600,
-};

@@ -14,6 +14,8 @@ export interface Capability {
   status: string | { Error: string };
   visibility: string;
   ui?: CapabilityUi;
+  /** Short proxy route prefix (e.g. "feed"). Set at install time — authoritative. */
+  route_name?: string;
 }
 
 export const getCapabilities = () =>

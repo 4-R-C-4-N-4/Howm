@@ -1,12 +1,12 @@
 /* Howm Messaging — Capability UI */
 :root {
-  --bg: var(--howm-bg-primary, #0f1117);
-  --surface: var(--howm-bg-surface, #232733);
-  --border: var(--howm-border, #2e3341);
-  --text: var(--howm-text-primary, #e2e4e9);
-  --text-dim: var(--howm-text-muted, #6b7280);
-  --text-secondary: var(--howm-text-secondary, #8b91a0);
-  --accent: var(--howm-accent, #6c8cff);
+  --bg: var(--howm-bg-primary, #000000);
+  --surface: var(--howm-bg-surface, #111111);
+  --border: var(--howm-border, #222222);
+  --text: var(--howm-text-primary, #ffffff);
+  --text-dim: var(--howm-text-muted, #666666);
+  --text-secondary: var(--howm-text-secondary, #a0a0a0);
+  --accent: var(--howm-accent, #3b82f6);
   --sent-bg: #1f3a5f;
   --recv-bg: var(--surface);
   --danger: #ef4444;

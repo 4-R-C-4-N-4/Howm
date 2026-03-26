@@ -11,7 +11,7 @@ pub struct UiManifest {
 }
 
 fn default_ui_style() -> String {
-    "iframe".to_string()
+    "nav".to_string()
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -33,6 +33,15 @@ pub struct CapabilityEntry {
     pub status: CapStatus,
     pub visibility: String,
     pub ui: Option<UiManifest>,
+    /// Short name used for proxy route matching (e.g. "feed" from base_path "/cap/feed").
+    /// Derived from manifest api.base_path at install time. Falls back to last segment of name.
+    #[serde(default)]
+    pub route_name: Option<String>,
+    /// Fully-qualified P2P-CD capability name (e.g. "howm.social.feed.1").
+    /// Set at install time from `howm.{manifest.name}.{major_version}`.
+    /// Used for deterministic AccessDb permission checks — no fuzzy matching.
+    #[serde(default)]
+    pub p2pcd_name: Option<String>,
 }
 
 /// Capability manifest read from manifest.json on disk.

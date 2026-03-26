@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { getNodeInfo } from '../api/nodes';
-import { getApiToken, setApiToken, clearApiToken } from '../api/client';
+import { getApiToken, setApiToken } from '../api/client';
 import { PeerList } from '../components/PeerList';
 import { CapabilityList } from '../components/CapabilityList';
 import { useState } from 'react';
@@ -22,69 +22,62 @@ export function Dashboard() {
       queryClient.invalidateQueries();
     }
   };
-  const handleClearToken = () => {
-    clearApiToken();
-    queryClient.invalidateQueries();
-  };
 
   return (
-    <div style={pageStyle}>
-      <h1 style={h1Style}>Dashboard</h1>
-
-      {/* API Token */}
-      <section style={cardStyle}>
-        <h2 style={h2Style}>API Token</h2>
-        {hasToken ? (
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-            <span style={{ color: 'var(--howm-success, #4ade80)', fontWeight: 600 }}>● Connected</span>
-            <span style={mutedStyle}>Token is set</span>
-            <button onClick={handleClearToken} style={{ ...btnStyle, marginLeft: 'auto', background: 'rgba(248,113,113,0.15)', color: 'var(--howm-error, #f87171)', border: '1px solid var(--howm-error, #f87171)' }}>
-              Clear Token
-            </button>
-          </div>
-        ) : (
-          <div>
-            <p style={{ color: 'var(--howm-warning, #fbbf24)', margin: '0 0 8px' }}>
-              ⚠ No API token set — mutations (invites, peer removal, posting) will be rejected.
-            </p>
-            <p style={{ ...mutedStyle, fontSize: '0.85em', margin: '0 0 12px' }}>
-              Copy the token printed by the daemon on first run (or from the howm.sh startup box).
-            </p>
-            <div style={{ display: 'flex', gap: '8px' }}>
-              <input
-                type="password"
-                placeholder="Paste API token..."
-                value={tokenInput}
-                onChange={e => setTokenInput(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && handleSetToken()}
-                style={inputStyle}
-              />
-              <button onClick={handleSetToken} disabled={!tokenInput.trim()} style={accentBtnStyle}>
-                Set Token
-              </button>
-            </div>
-          </div>
-        )}
-      </section>
+    <div className='max-w-[800px] mx-auto p-6'>
+      <h1 className='text-2xl mb-6 font-semibold'>Dashboard</h1>
 
       {/* Node Info */}
-      <section style={cardStyle}>
-        <h2 style={h2Style}>Node Info</h2>
-        {nodeLoading ? <p style={mutedStyle}>Loading…</p> : nodeInfo && (
-          <dl style={dlStyle}>
+      <section className='bg-howm-bg-surface border border-howm-border rounded-xl p-5 mb-5'>
+        <h2 className='text-xl font-semibold mt-0 mb-4'>Node Info</h2>
+        {nodeLoading ? <p className='text-howm-text-muted text-sm'>Loading…</p> : nodeInfo && (
+          <dl className='grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 m-0'>
             <Row label="Node ID" value={nodeInfo.node_id} mono />
             <Row label="Name"    value={nodeInfo.name} />
           </dl>
         )}
       </section>
 
+      {/* API Token */}
+      <section className='bg-howm-bg-surface border border-howm-border rounded-xl p-5 mb-5'>
+      <h2 className='text-xl font-semibold mt-0 mb-4'>API Token</h2>
+      {hasToken ? (
+        <div className='flex items-center gap-3'>
+        <span className='text-howm-success font-semibold'>● Connected</span>
+        <span className='text-howm-text-muted text-sm'>Token is set</span>
+        </div>
+      ) : (
+        <div>
+        <p className='text-howm-warning mb-2 mt-0'>
+        ⚠ No API token set — mutations (invites, peer removal, posting) will be rejected.
+        </p>
+        <p className='text-howm-text-muted text-sm mb-3 mt-0'>
+        Copy the token printed by the daemon on first run (or from the howm.sh startup box).
+        </p>
+        <div className='flex gap-2'>
+        <input
+        type="password"
+        placeholder="Paste API token..."
+        value={tokenInput}
+        onChange={e => setTokenInput(e.target.value)}
+        onKeyDown={e => e.key === 'Enter' && handleSetToken()}
+        className='flex-1 py-1.5 px-2.5 bg-howm-bg-secondary border border-howm-border rounded text-howm-text-primary text-sm font-mono'
+      />
+      <button onClick={handleSetToken} disabled={!tokenInput.trim()} className='py-1.5 px-3.5 bg-howm-accent border-none rounded text-white cursor-pointer text-sm'>
+      Set Token
+      </button>
+      </div>
+      </div>
+      )}
+      </section>
+
       {/* Peers */}
-      <section style={cardStyle}>
+      <section className='bg-howm-bg-surface border border-howm-border rounded-xl p-5 mb-5'>
         <PeerList />
       </section>
 
       {/* Capabilities */}
-      <section style={cardStyle}>
+      <section className='bg-howm-bg-surface border border-howm-border rounded-xl p-5 mb-5'>
         <CapabilityList />
       </section>
     </div>
@@ -94,48 +87,10 @@ export function Dashboard() {
 function Row({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
   return (
     <>
-      <dt style={dtStyle}>{label}</dt>
-      <dd style={{ ...ddStyle, fontFamily: mono ? 'var(--howm-font-mono, monospace)' : 'inherit', wordBreak: 'break-all' }}>
+      <dt className='font-semibold text-howm-text-secondary text-sm self-start pt-px'>{label}</dt>
+      <dd className={`m-0 text-sm break-all ${mono ? 'font-mono' : ''}`}>
         {value}
       </dd>
     </>
   );
 }
-
-const pageStyle: React.CSSProperties = { maxWidth: '800px', margin: '0 auto', padding: '24px' };
-const h1Style: React.CSSProperties = { fontSize: 'var(--howm-font-size-2xl, 1.5rem)', marginBottom: '24px', fontWeight: 600 };
-const h2Style: React.CSSProperties = { fontSize: 'var(--howm-font-size-xl, 1.25rem)', fontWeight: 600, marginTop: 0, marginBottom: '16px' };
-const cardStyle: React.CSSProperties = {
-  background: 'var(--howm-bg-surface, #232733)',
-  border: '1px solid var(--howm-border, #2e3341)',
-  borderRadius: 'var(--howm-radius-lg, 12px)',
-  padding: '20px',
-  marginBottom: '20px',
-};
-const dlStyle: React.CSSProperties = { display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '6px 16px', margin: 0 };
-const dtStyle: React.CSSProperties = { fontWeight: 600, color: 'var(--howm-text-secondary, #8b91a0)', fontSize: '0.875rem', alignSelf: 'start', paddingTop: '1px' };
-const ddStyle: React.CSSProperties = { margin: 0, fontSize: '0.9rem' };
-const mutedStyle: React.CSSProperties = { color: 'var(--howm-text-muted, #5c6170)', margin: 0, fontSize: '0.9rem' };
-const inputStyle: React.CSSProperties = {
-  flex: 1, padding: '6px 10px',
-  background: 'var(--howm-bg-secondary, #1a1d27)',
-  border: '1px solid var(--howm-border, #2e3341)',
-  borderRadius: 'var(--howm-radius-sm, 4px)',
-  color: 'var(--howm-text-primary, #e1e4eb)',
-  fontSize: '0.9em', fontFamily: 'var(--howm-font-mono, monospace)',
-};
-const btnStyle: React.CSSProperties = {
-  padding: '6px 14px',
-  background: 'var(--howm-bg-elevated, #2a2e3d)',
-  border: '1px solid var(--howm-border, #2e3341)',
-  borderRadius: 'var(--howm-radius-sm, 4px)',
-  color: 'var(--howm-text-primary, #e1e4eb)',
-  cursor: 'pointer', fontSize: '0.9em',
-};
-const accentBtnStyle: React.CSSProperties = {
-  padding: '6px 14px',
-  background: 'var(--howm-accent, #6c8cff)',
-  border: 'none',
-  borderRadius: 'var(--howm-radius-sm, 4px)',
-  color: '#fff', cursor: 'pointer', fontSize: '0.9em',
-};

@@ -108,9 +108,9 @@ export function GroupDetail() {
 
   if (isLoading || !group) {
     return (
-      <div style={pageStyle}>
-        <Link to="/access/groups" style={backStyle}>← Back to Groups</Link>
-        <p style={mutedStyle}>{isLoading ? 'Loading…' : 'Group not found'}</p>
+      <div className='max-w-[800px] mx-auto p-6'>
+        <Link to="/access/groups" className='text-howm-text-muted no-underline text-sm'>← Back to Groups</Link>
+        <p className='text-howm-text-muted text-sm m-0'>{isLoading ? 'Loading…' : 'Group not found'}</p>
       </div>
     );
   }
@@ -166,54 +166,54 @@ export function GroupDetail() {
     .filter(p => !peerSearch || p.name.toLowerCase().includes(peerSearch.toLowerCase()));
 
   return (
-    <div style={pageStyle}>
-      <Link to="/access/groups" style={backStyle}>← Back to Groups</Link>
+    <div className='max-w-[800px] mx-auto p-6'>
+      <Link to="/access/groups" className='text-howm-text-muted no-underline text-sm'>← Back to Groups</Link>
 
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginTop: '12px', marginBottom: '16px' }}>
-        <div style={{ flex: 1 }}>
+      <div className='flex justify-between items-start mt-3 mb-4'>
+        <div className='flex-1'>
           {isBuiltIn ? (
-            <h1 style={{ margin: 0, fontSize: '1.5rem' }}>{group.name}</h1>
+            <h1 className='m-0 text-2xl'>{group.name}</h1>
           ) : (
             <input
               value={editName} onChange={e => setEditName(e.target.value)}
               onBlur={handleNameSave} onKeyDown={e => e.key === 'Enter' && handleNameSave()}
-              style={{ ...editInputStyle, fontSize: '1.5rem', fontWeight: 600 }}
+              className='bg-transparent border-none border-b border-b-transparent text-howm-text-primary outline-none w-full py-0.5 px-0 text-2xl font-semibold'
             />
           )}
           {isBuiltIn ? (
-            <p style={{ ...mutedStyle, marginTop: '4px' }}>{group.description}</p>
+            <p className='text-howm-text-muted text-sm m-0 mt-1'>{group.description}</p>
           ) : (
             <input
               value={editDesc} onChange={e => setEditDesc(e.target.value)}
               onBlur={handleDescSave}
               placeholder="Add description..."
-              style={{ ...editInputStyle, fontSize: '0.9rem', marginTop: '4px', color: 'var(--howm-text-muted, #5c6170)' }}
+              className='bg-transparent border-none border-b border-b-transparent text-howm-text-muted outline-none w-full py-0.5 px-0 text-sm mt-1'
             />
           )}
         </div>
         {isBuiltIn && (
-          <span style={lockedBadgeStyle}>Built-in 🔒</span>
+          <span className='text-xs py-1 px-2.5 rounded bg-gray-500/10 text-gray-400'>Built-in 🔒</span>
         )}
       </div>
 
       {/* Members */}
-      <section style={cardStyle}>
-        <h3 style={h3Style}>Members</h3>
+      <section className='bg-howm-bg-surface border border-howm-border rounded-xl p-5 mb-4'>
+        <h3 className='text-base font-semibold m-0 mb-3 text-howm-text-secondary'>Members</h3>
         {memberPeers.length === 0 ? (
-          <p style={mutedStyle}>No members in this group</p>
+          <p className='text-howm-text-muted text-sm m-0'>No members in this group</p>
         ) : (
           <div>
             {memberPeers.map(p => {
               const hexId = peerIdToHex(p.wg_pubkey);
               return (
-                <div key={p.node_id} style={memberRowStyle}>
-                  <Link to={`/peers/${hexId}`} style={{ textDecoration: 'none', color: 'inherit', flex: 1 }}>
-                    <span style={{ fontWeight: 500 }}>{p.name}</span>
+                <div key={p.node_id} className='flex items-center justify-between py-2 px-3 rounded bg-howm-bg-secondary mb-1'>
+                  <Link to={`/peers/${hexId}`} className='no-underline text-inherit flex-1'>
+                    <span className='font-medium'>{p.name}</span>
                   </Link>
                   <button
                     onClick={() => removePeerMutation.mutate(hexId)}
                     disabled={removePeerMutation.isPending}
-                    style={removeBtnStyle}
+                    className='bg-red-500/10 border border-red-500/30 rounded text-red-500 cursor-pointer text-xs py-0.5 px-2'
                   >
                     Remove from group
                   </button>
@@ -222,24 +222,24 @@ export function GroupDetail() {
             })}
           </div>
         )}
-        <div style={{ position: 'relative', marginTop: '8px' }} ref={addRef}>
-          <button onClick={() => setShowAddPeer(!showAddPeer)} style={addPeerBtnStyle}>
+        <div className='relative mt-2' ref={addRef}>
+          <button onClick={() => setShowAddPeer(!showAddPeer)} className='bg-blue-500/10 border border-blue-500/25 rounded text-howm-accent cursor-pointer text-xs py-1.5 px-3'>
             + Add Peer
           </button>
           {showAddPeer && (
-            <div style={dropdownStyle}>
+            <div className='absolute left-0 top-full mt-1 bg-howm-bg-surface border border-howm-border rounded-lg z-200 min-w-[200px] shadow-xl overflow-hidden'>
               <input
                 autoFocus placeholder="Search peers..."
                 value={peerSearch} onChange={e => setPeerSearch(e.target.value)}
-                style={searchInputStyle}
+                className='w-full py-2 px-3 border-none border-b border-b-howm-border bg-transparent text-howm-text-primary text-sm outline-none box-border'
               />
               {availablePeers.length === 0 ? (
-                <div style={{ padding: '8px 12px', color: 'var(--howm-text-muted, #5c6170)', fontSize: '0.8rem' }}>No peers available</div>
+                <div className='py-2 px-3 text-howm-text-muted text-xs'>No peers available</div>
               ) : availablePeers.map(p => (
                 <button
                   key={p.node_id}
                   onClick={() => addPeerMutation.mutate(peerIdToHex(p.wg_pubkey))}
-                  style={dropItemStyle}
+                  className='block w-full text-left bg-none border-none py-2 px-3 cursor-pointer text-sm text-howm-text-primary'
                 >
                   {p.name}
                 </button>
@@ -250,16 +250,16 @@ export function GroupDetail() {
       </section>
 
       {/* Capability Rules */}
-      <section style={cardStyle}>
-        <h3 style={h3Style}>Capability Rules</h3>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+      <section className='bg-howm-bg-surface border border-howm-border rounded-xl p-5 mb-4'>
+        <h3 className='text-base font-semibold m-0 mb-3 text-howm-text-secondary'>Capability Rules</h3>
+        <div className='flex flex-col gap-1'>
           {ALL_CAPABILITIES.map(cap => {
             const rule = capMap.get(cap);
             const allowed = rule?.allow ?? false;
             return (
-              <div key={cap} style={{ display: 'flex', alignItems: 'center', padding: '4px 0' }}>
+              <div key={cap} className='flex items-center py-1'>
                 {isBuiltIn ? (
-                  <span style={{ color: allowed ? '#4ade80' : '#f87171', marginRight: '8px', width: '16px' }}>
+                  <span style={{ color: allowed ? '#22c55e' : '#ef4444' }} className='mr-2 w-4'>
                     {allowed ? '✓' : '✕'}
                   </span>
                 ) : (
@@ -267,10 +267,10 @@ export function GroupDetail() {
                     type="checkbox"
                     checked={allowed}
                     onChange={() => handleCapToggle(cap)}
-                    style={{ marginRight: '8px', accentColor: 'var(--howm-accent, #6c8cff)' }}
+                    className='mr-2 accent-howm-accent'
                   />
                 )}
-                <span style={{ fontSize: '0.875rem', fontFamily: 'var(--howm-font-mono, monospace)' }}>
+                <span className='text-sm font-mono'>
                   {cap}
                 </span>
               </div>
@@ -281,20 +281,20 @@ export function GroupDetail() {
 
       {/* Delete (custom only) */}
       {!isBuiltIn && (
-        <section style={{ ...cardStyle, borderColor: 'rgba(248,113,113,0.3)' }}>
-          <h3 style={{ ...h3Style, color: '#f87171' }}>Danger Zone</h3>
-          <p style={{ ...mutedStyle, marginBottom: '12px' }}>
+        <section className='bg-howm-bg-surface border border-howm-border rounded-xl p-5 mb-4' style={{ borderColor: 'rgba(239,68,68,0.3)' }}>
+          <h3 className='text-base font-semibold m-0 mb-3 text-red-500'>Danger Zone</h3>
+          <p className='text-howm-text-muted text-sm m-0 mb-3'>
             Delete this group? Members will be removed from this group but retain other group memberships.
           </p>
           {showDeleteConfirm ? (
-            <div style={{ display: 'flex', gap: '8px' }}>
-              <button onClick={() => setShowDeleteConfirm(false)} style={cancelBtnStyle}>Cancel</button>
-              <button onClick={() => deleteMutation.mutate()} disabled={deleteMutation.isPending} style={deleteBtnStyle}>
+            <div className='flex gap-2'>
+              <button onClick={() => setShowDeleteConfirm(false)} className='py-1.5 px-3.5 bg-howm-bg-elevated border border-howm-border rounded text-howm-text-primary cursor-pointer text-sm'>Cancel</button>
+              <button onClick={() => deleteMutation.mutate()} disabled={deleteMutation.isPending} className='py-1.5 px-3.5 bg-red-500/15 border border-red-500/40 rounded text-red-500 cursor-pointer text-sm font-semibold'>
                 {deleteMutation.isPending ? 'Deleting…' : `Delete "${group.name}"`}
               </button>
             </div>
           ) : (
-            <button onClick={() => setShowDeleteConfirm(true)} style={deleteBtnStyle}>
+            <button onClick={() => setShowDeleteConfirm(true)} className='py-1.5 px-3.5 bg-red-500/15 border border-red-500/40 rounded text-red-500 cursor-pointer text-sm font-semibold'>
               🔴 Delete Group
             </button>
           )}
@@ -302,7 +302,7 @@ export function GroupDetail() {
       )}
 
       {toasts.length > 0 && (
-        <div style={{ position: 'fixed', bottom: '24px', left: '50%', transform: 'translateX(-50%)', display: 'flex', flexDirection: 'column', gap: '8px', zIndex: 300 }}>
+        <div className='fixed bottom-6 left-1/2 -translate-x-1/2 flex flex-col gap-2 z-300'>
           {toasts.map(t => (
             <div key={t.id} style={{
               padding: '8px 16px', borderRadius: '8px', fontSize: '0.85rem',
@@ -319,67 +319,3 @@ export function GroupDetail() {
     </div>
   );
 }
-
-const pageStyle: React.CSSProperties = { maxWidth: '800px', margin: '0 auto', padding: '24px' };
-const backStyle: React.CSSProperties = { color: 'var(--howm-text-muted, #5c6170)', textDecoration: 'none', fontSize: '0.9rem' };
-const h3Style: React.CSSProperties = { fontSize: '1rem', fontWeight: 600, margin: '0 0 12px', color: 'var(--howm-text-secondary, #8b91a0)' };
-const cardStyle: React.CSSProperties = {
-  background: 'var(--howm-bg-surface, #232733)',
-  border: '1px solid var(--howm-border, #2e3341)',
-  borderRadius: '12px', padding: '20px', marginBottom: '16px',
-};
-const mutedStyle: React.CSSProperties = { color: 'var(--howm-text-muted, #5c6170)', fontSize: '0.9rem', margin: 0 };
-const lockedBadgeStyle: React.CSSProperties = {
-  fontSize: '0.8rem', padding: '4px 10px', borderRadius: '4px',
-  background: 'rgba(156,163,175,0.12)', color: '#9ca3af',
-};
-const memberRowStyle: React.CSSProperties = {
-  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-  padding: '8px 12px', borderRadius: '4px',
-  background: 'var(--howm-bg-secondary, #1a1d27)',
-  marginBottom: '4px',
-};
-const removeBtnStyle: React.CSSProperties = {
-  background: 'rgba(248,113,113,0.12)', border: '1px solid rgba(248,113,113,0.3)',
-  borderRadius: '4px', color: '#f87171', cursor: 'pointer',
-  fontSize: '0.75rem', padding: '3px 8px',
-};
-const addPeerBtnStyle: React.CSSProperties = {
-  background: 'rgba(108,140,255,0.12)', border: '1px solid rgba(108,140,255,0.25)',
-  borderRadius: '4px', color: 'var(--howm-accent, #6c8cff)',
-  cursor: 'pointer', fontSize: '0.8rem', padding: '6px 12px',
-};
-const editInputStyle: React.CSSProperties = {
-  background: 'transparent', border: 'none', borderBottom: '1px solid transparent',
-  color: 'var(--howm-text-primary, #e1e4eb)', outline: 'none', width: '100%',
-  padding: '2px 0',
-};
-const dropdownStyle: React.CSSProperties = {
-  position: 'absolute', left: 0, top: '100%', marginTop: '4px',
-  background: 'var(--howm-bg-surface, #232733)',
-  border: '1px solid var(--howm-border, #2e3341)',
-  borderRadius: '8px', zIndex: 200, minWidth: '200px',
-  boxShadow: '0 8px 24px rgba(0,0,0,0.5)', overflow: 'hidden',
-};
-const searchInputStyle: React.CSSProperties = {
-  width: '100%', padding: '8px 12px', border: 'none',
-  borderBottom: '1px solid var(--howm-border, #2e3341)',
-  background: 'transparent', color: 'var(--howm-text-primary, #e1e4eb)',
-  fontSize: '0.85rem', outline: 'none', boxSizing: 'border-box',
-};
-const dropItemStyle: React.CSSProperties = {
-  display: 'block', width: '100%', textAlign: 'left',
-  background: 'none', border: 'none', padding: '8px 12px',
-  cursor: 'pointer', fontSize: '0.85rem',
-  color: 'var(--howm-text-primary, #e1e4eb)',
-};
-const cancelBtnStyle: React.CSSProperties = {
-  padding: '6px 14px', background: 'var(--howm-bg-elevated, #2a2e3d)',
-  border: '1px solid var(--howm-border, #2e3341)', borderRadius: '4px',
-  color: 'var(--howm-text-primary, #e1e4eb)', cursor: 'pointer', fontSize: '0.85rem',
-};
-const deleteBtnStyle: React.CSSProperties = {
-  padding: '6px 14px', background: 'rgba(248,113,113,0.15)',
-  border: '1px solid rgba(248,113,113,0.4)', borderRadius: '4px',
-  color: '#f87171', cursor: 'pointer', fontSize: '0.85rem', fontWeight: 600,
-};

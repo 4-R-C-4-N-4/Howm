@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import tailwindcss from '@tailwindcss/vite'
 
 // Proxy API and capability requests to the Howm daemon.
 // SPA routes live under /app, /dashboard, /peers, etc. — no conflict with
@@ -8,7 +9,7 @@ import react from '@vitejs/plugin-react'
 const daemon = { target: 'http://localhost:7000', changeOrigin: true };
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), tailwindcss()],
   server: {
     proxy: {
       '/node':         daemon,

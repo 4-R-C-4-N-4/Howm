@@ -640,7 +640,7 @@ async fn do_initiate_matchmake(
     // Build punch config and run
     let config =
         punch_config_from_exchange_msg(&exchange, our_nat, Some(psk.to_string()), assigned_ip);
-    let punch_result = punch::run_punch(
+    let punch_result = punch::run_punch_system(
         &config,
         &state.config.data_dir,
         "howm0",
@@ -735,7 +735,7 @@ async fn do_handle_incoming(
 
     // Build punch config from request and run punch
     let config = punch_config_from_request(request, our_nat);
-    let punch_result = punch::run_punch(
+    let punch_result = punch::run_punch_system(
         &config,
         &state.config.data_dir,
         "howm0",

@@ -4,26 +4,17 @@ use std::sync::Arc;
 use tracing::info;
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
-mod accept;
-mod api;
-mod capabilities;
-mod config;
-mod embedded_ui;
-mod error;
-mod executor;
-mod identity;
-mod invite;
-mod matchmake;
-mod net_detect;
-mod notifications;
-mod open_invite;
-mod p2pcd;
-mod peers;
-mod proxy;
-mod punch;
-mod state;
-mod stun;
-mod wireguard;
+use howm::api;
+use howm::capabilities;
+use howm::config;
+use howm::executor;
+use howm::identity;
+use howm::matchmake;
+use howm::net_detect;
+use howm::p2pcd;
+use howm::peers;
+use howm::state;
+use howm::wireguard;
 
 use config::Config;
 
@@ -35,6 +26,11 @@ async fn main() -> anyhow::Result<()> {
     // Set up logging: file-based with optional stdout in debug mode
     let log_dir = config.data_dir.join("logs");
     std::fs::create_dir_all(&log_dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&log_dir, std::fs::Permissions::from_mode(0o700));
+    }
     let file_appender = tracing_appender::rolling::daily(&log_dir, "howm.log");
     let env_filter = EnvFilter::from_default_env().add_directive("info".parse()?);
 
@@ -154,7 +150,10 @@ async fn main() -> anyhow::Result<()> {
 
     // Generate or load API bearer token (S2)
     let api_token = api::auth_layer::load_or_create_token(&config.data_dir)?;
-    info!("API bearer token: {}", api_token);
+    info!(
+        "API bearer token loaded ({}…)",
+        &api_token[..8.min(api_token.len())]
+    );
 
     // Initialise access control database (group-based permissions)
     let access_db = {

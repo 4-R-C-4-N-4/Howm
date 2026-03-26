@@ -97,7 +97,18 @@ pub async fn install_capability(
         .to_string_lossy()
         .to_string();
 
-    // 3. Check for duplicate
+    // Derive route_name early so we can check for collisions before doing anything else.
+    // Source: manifest api.base_path (e.g. "/cap/feed" → "feed"),
+    // falling back to last dot-segment of the capability name (e.g. "social.feed" → "feed").
+    let route_name: Option<String> = manifest
+        .api
+        .as_ref()
+        .and_then(|a| a.base_path.as_deref())
+        .and_then(|bp| bp.trim_matches('/').rsplit('/').next())
+        .or_else(|| manifest.name.rsplit('.').next())
+        .map(|s| s.to_string());
+
+    // 3. Check for duplicate name AND duplicate route_name
     {
         let caps = state.capabilities.read().await;
         if caps.iter().any(|c| c.name == manifest.name) {
@@ -105,6 +116,15 @@ pub async fn install_capability(
                 "capability '{}' already installed",
                 manifest.name
             )));
+        }
+        if let Some(ref rn) = route_name {
+            if let Some(existing) = caps.iter().find(|c| c.route_name.as_deref() == Some(rn)) {
+                return Err(AppError::BadRequest(format!(
+                    "route name '{}' conflicts with installed capability '{}' — \
+                     set a unique api.base_path in manifest.json",
+                    rn, existing.name
+                )));
+            }
         }
     }
 
@@ -144,6 +164,13 @@ pub async fn install_capability(
         .to_string_lossy()
         .to_string();
 
+    // route_name already derived above (before duplicate check).
+
+    // Derive P2P-CD fully-qualified name: howm.{manifest.name}.{major_version}
+    // e.g. manifest.name="social.feed", version="0.1.0" → "howm.social.feed.0"
+    let major_version = manifest.version.split('.').next().unwrap_or("1");
+    let p2pcd_name = Some(format!("howm.{}.{}", manifest.name, major_version));
+
     let entry = CapabilityEntry {
         name: manifest.name.clone(),
         version: manifest.version.clone(),
@@ -155,6 +182,8 @@ pub async fn install_capability(
         status: CapStatus::Running,
         visibility,
         ui: manifest.ui.clone(),
+        route_name,
+        p2pcd_name,
     };
 
     // 7. Persist

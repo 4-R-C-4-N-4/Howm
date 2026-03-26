@@ -75,7 +75,8 @@ async fn proxy_handler_inner(
         }
 
         // Map installed capability short name (e.g. "feed") to P2P-CD
-        // fully-qualified name (e.g. "howm.feed.1") for permission check.
+        // fully-qualified name (e.g. "howm.social.feed.0") for permission check.
+        // Deterministic: reads the p2pcd_name stored on the CapabilityEntry at install time.
         let p2pcd_cap_name = resolve_p2pcd_cap_name(&state, &name).await;
 
         if let Some(cap_name) = &p2pcd_cap_name {
@@ -104,38 +105,19 @@ async fn proxy_handler_inner(
     proxy::proxy_request_with_peer(&state, &name, &rest, req, None).await
 }
 
-/// Map an installed capability short name to its P2P-CD fully-qualified name.
+/// Map an installed capability's proxy route name to its P2P-CD fully-qualified name.
 ///
-/// Installed capabilities use short names like "feed" while AccessDb
-/// rules use P2P-CD names like "howm.social.feed.1".
-///
-/// Resolution: scan the P2P-CD engine's local manifest for any capability
-/// whose second or third namespace segment matches the short name.
-/// e.g. "feed" matches "howm.social.feed.1" (third segment),
-///      "social" matches "howm.social.feed.1" (second segment).
-/// Falls back to `howm.{short_name}.1` if no manifest match.
+/// Deterministic lookup: find the installed capability by route_name (or name),
+/// then read its `p2pcd_name` field which was set at install time.
+/// No segment-scanning or guessing — the mapping is explicit.
 async fn resolve_p2pcd_cap_name(state: &AppState, short_name: &str) -> Option<String> {
-    if let Some(engine) = &state.p2pcd_engine {
-        let manifest = engine.local_manifest().await;
-        for cap in &manifest.capabilities {
-            let parts: Vec<&str> = cap.name.split('.').collect();
-            if parts.len() >= 3 {
-                // Match against any middle segment (between prefix and version)
-                // e.g. for "howm.social.feed.1", check "social" and "feed"
-                let middle = &parts[1..parts.len() - 1];
-                if middle.contains(&short_name) {
-                    return Some(cap.name.clone());
-                }
-                // Also match the joined middle: "social.feed"
-                let joined = middle.join(".");
-                if joined == short_name {
-                    return Some(cap.name.clone());
-                }
-            }
-        }
-    }
+    let caps = state.capabilities.read().await;
+    let cap = caps
+        .iter()
+        .find(|c| c.route_name.as_deref() == Some(short_name) || c.name == short_name);
 
-    // Fallback: construct from convention
-    let candidate = format!("howm.{}.1", short_name);
-    Some(candidate)
+    match cap {
+        Some(c) => c.p2pcd_name.clone(),
+        None => None,
+    }
 }

@@ -2,8 +2,8 @@
 
 body {
   font-family: var(--howm-font-family, system-ui, sans-serif);
-  background: var(--howm-bg-primary, #0f1117);
-  color: var(--howm-text-primary, #e1e4eb);
+  background: var(--howm-bg-primary, #000000);
+  color: var(--howm-text-primary, #ffffff);
   padding: var(--howm-space-md, 16px);
 }
 
@@ -12,8 +12,8 @@ body {
 /* ── Composer ──────────────────────────────────────────────────────────────── */
 
 #composer {
-  background: var(--howm-bg-surface, #232733);
-  border: 1px solid var(--howm-border, #2e3341);
+  background: var(--howm-bg-surface, #111111);
+  border: 1px solid var(--howm-border, #222222);
   border-radius: var(--howm-radius-md, 8px);
   padding: var(--howm-space-md, 16px);
   margin-bottom: var(--howm-space-lg, 24px);
@@ -21,17 +21,17 @@ body {
 
 #post-content {
   width: 100%;
-  background: var(--howm-bg-secondary, #1a1d27);
-  border: 1px solid var(--howm-border, #2e3341);
+  background: var(--howm-bg-secondary, #0a0a0a);
+  border: 1px solid var(--howm-border, #222222);
   border-radius: var(--howm-radius-sm, 4px);
-  color: var(--howm-text-primary, #e1e4eb);
+  color: var(--howm-text-primary, #ffffff);
   font-family: inherit;
   font-size: var(--howm-font-size-base, 1rem);
   padding: var(--howm-space-sm, 8px) var(--howm-space-md, 16px);
   resize: vertical;
   display: block;
 }
-#post-content:focus { outline: none; border-color: var(--howm-accent, #6c8cff); }
+#post-content:focus { outline: none; border-color: var(--howm-accent, #3b82f6); }
 
 #composer-actions {
   display: flex;
@@ -42,7 +42,7 @@ body {
 
 button {
   padding: 6px 18px;
-  background: var(--howm-accent, #6c8cff);
+  background: var(--howm-accent, #3b82f6);
   color: #fff;
   border: none;
   border-radius: var(--howm-radius-sm, 4px);
@@ -51,12 +51,12 @@ button {
   font-family: inherit;
   transition: background 0.15s;
 }
-button:hover { background: var(--howm-accent-hover, #8da6ff); }
+button:hover { background: var(--howm-accent-hover, #60a5fa); }
 button:disabled { opacity: 0.5; cursor: not-allowed; }
 
-#post-status { font-size: var(--howm-font-size-sm, 0.875rem); color: var(--howm-text-muted, #5c6170); }
-#post-status.ok  { color: var(--howm-success, #4ade80); }
-#post-status.err { color: var(--howm-error,   #f87171); }
+#post-status { font-size: var(--howm-font-size-sm, 0.875rem); color: var(--howm-text-muted, #666666); }
+#post-status.ok  { color: var(--howm-success, #22c55e); }
+#post-status.err { color: var(--howm-error,   #ef4444); }
 
 /* ── Attach button ─────────────────────────────────────────────────────────── */
 
@@ -67,7 +67,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   border-radius: var(--howm-radius-sm, 4px);
   transition: background 0.15s;
 }
-#attach-btn:hover { background: var(--howm-bg-secondary, #1a1d27); }
+#attach-btn:hover { background: var(--howm-bg-secondary, #0a0a0a); }
 #attach-btn input[type="file"] { display: none; }
 
 /* ── Attachment preview (composer) ─────────────────────────────────────────── */
@@ -90,7 +90,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   height: 80px;
   object-fit: cover;
   border-radius: var(--howm-radius-sm, 4px);
-  border: 1px solid var(--howm-border, #2e3341);
+  border: 1px solid var(--howm-border, #222222);
   display: block;
 }
 
@@ -98,7 +98,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--howm-bg-secondary, #1a1d27);
+  background: var(--howm-bg-secondary, #0a0a0a);
   font-size: 2rem;
 }
 
@@ -113,7 +113,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   line-height: 20px;
   text-align: center;
   border-radius: 50%;
-  background: var(--howm-error, #f87171);
+  background: var(--howm-error, #ef4444);
   color: #fff;
 }
 .attach-remove:hover { background: #ef4444; }
@@ -121,7 +121,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .attach-name {
   display: block;
   font-size: 0.7rem;
-  color: var(--howm-text-muted, #5c6170);
+  color: var(--howm-text-muted, #666666);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -141,31 +141,31 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 #filter-buttons { display: flex; gap: 4px; }
 .filter-btn {
   background: transparent;
-  color: var(--howm-text-secondary, #8b91a0);
-  border: 1px solid var(--howm-border, #2e3341);
+  color: var(--howm-text-secondary, #a0a0a0);
+  border: 1px solid var(--howm-border, #222222);
   padding: 4px 12px;
 }
 .filter-btn.active {
-  background: var(--howm-bg-surface, #232733);
-  color: var(--howm-text-primary, #e1e4eb);
-  border-color: var(--howm-accent, #6c8cff);
+  background: var(--howm-bg-surface, #111111);
+  color: var(--howm-text-primary, #ffffff);
+  border-color: var(--howm-accent, #3b82f6);
 }
 
 .error-banner {
   background: rgba(248,113,113,0.1);
-  border: 1px solid var(--howm-error, #f87171);
+  border: 1px solid var(--howm-error, #ef4444);
   border-radius: var(--howm-radius-sm, 4px);
   padding: var(--howm-space-sm, 8px) var(--howm-space-md, 16px);
   font-size: var(--howm-font-size-sm, 0.875rem);
-  color: var(--howm-error, #f87171);
+  color: var(--howm-error, #ef4444);
   margin-bottom: var(--howm-space-sm, 8px);
 }
 
 /* ── Post cards ────────────────────────────────────────────────────────────── */
 
 .post-card {
-  background: var(--howm-bg-surface, #232733);
-  border: 1px solid var(--howm-border, #2e3341);
+  background: var(--howm-bg-surface, #111111);
+  border: 1px solid var(--howm-border, #222222);
   border-radius: var(--howm-radius-md, 8px);
   padding: var(--howm-space-md, 16px);
   margin-bottom: var(--howm-space-sm, 8px);
@@ -181,20 +181,20 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   align-items: center;
   gap: 8px;
 }
-.post-author { font-weight: 600; color: var(--howm-accent, #6c8cff); }
-.post-time   { font-size: var(--howm-font-size-sm, 0.875rem); color: var(--howm-text-muted, #5c6170); }
+.post-author { font-weight: 600; color: var(--howm-accent, #3b82f6); }
+.post-time   { font-size: var(--howm-font-size-sm, 0.875rem); color: var(--howm-text-muted, #666666); }
 .post-body   { white-space: pre-wrap; line-height: 1.5; }
 
 .post-delete {
   background: transparent;
-  color: var(--howm-text-muted, #5c6170);
+  color: var(--howm-text-muted, #666666);
   padding: 2px 6px;
   font-size: 0.8rem;
   border: 1px solid transparent;
 }
 .post-delete:hover {
-  color: var(--howm-error, #f87171);
-  border-color: var(--howm-error, #f87171);
+  color: var(--howm-error, #ef4444);
+  border-color: var(--howm-error, #ef4444);
 }
 
 /* ── Media grid ────────────────────────────────────────────────────────────── */
@@ -239,7 +239,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .media-item {
   position: relative;
   overflow: hidden;
-  background: var(--howm-bg-secondary, #1a1d27);
+  background: var(--howm-bg-secondary, #0a0a0a);
   min-height: 100px;
 }
 
@@ -270,14 +270,14 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   height: 100%;
   min-height: 120px;
   gap: 8px;
-  color: var(--howm-text-muted, #5c6170);
+  color: var(--howm-text-muted, #666666);
 }
 
 .media-spinner {
   width: 24px;
   height: 24px;
-  border: 3px solid var(--howm-border, #2e3341);
-  border-top-color: var(--howm-accent, #6c8cff);
+  border: 3px solid var(--howm-border, #222222);
+  border-top-color: var(--howm-accent, #3b82f6);
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
 }
@@ -298,7 +298,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   height: 100%;
   min-height: 120px;
   gap: 4px;
-  color: var(--howm-text-muted, #5c6170);
+  color: var(--howm-text-muted, #666666);
 }
 
 .media-hint {
@@ -329,7 +329,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 /* ── General ───────────────────────────────────────────────────────────────── */
 
 .muted {
-  color: var(--howm-text-muted, #5c6170);
+  color: var(--howm-text-muted, #666666);
   text-align: center;
   padding: var(--howm-space-xl, 32px) 0;
 }

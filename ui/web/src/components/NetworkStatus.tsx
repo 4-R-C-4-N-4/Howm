@@ -2,20 +2,19 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { detectNetwork, type NetworkStatus as NetworkStatusType, type Reachability } from '../api/network';
 
 const reachabilityBadge: Record<Reachability, { label: string; color: string; bg: string; icon: string }> = {
-  direct:       { label: 'Directly reachable',                    color: 'var(--howm-success, #4ade80)',  bg: 'rgba(74,222,128,0.12)',  icon: '✓' },
-  punchable:    { label: 'NAT — two-way exchange for NAT peers',  color: 'var(--howm-warning, #fbbf24)',  bg: 'rgba(251,191,36,0.12)',  icon: '●' },
+  direct:       { label: 'Directly reachable',                    color: 'var(--howm-success, #22c55e)',  bg: 'rgba(34,197,94,0.12)',  icon: '✓' },
+  punchable:    { label: 'NAT — two-way exchange for NAT peers',  color: 'var(--howm-warning, #eab308)',  bg: 'rgba(234,179,8,0.12)',  icon: '●' },
   'relay-only': { label: 'Symmetric NAT — relay needed for NAT peers', color: '#fb923c', bg: 'rgba(251,146,60,0.12)', icon: '⚠' },
-  unknown:      { label: 'Network not yet detected',              color: 'var(--howm-text-muted, #5c6170)', bg: 'rgba(92,97,112,0.12)', icon: '?' },
+  unknown:      { label: 'Network not yet detected',              color: 'var(--howm-text-muted, #666666)', bg: 'rgba(102,102,102,0.12)', icon: '?' },
 };
 
 function formatTimestamp(ts: number): string {
-  const d = new Date(ts * 1000);
   const now = Date.now();
   const delta = Math.floor((now - ts * 1000) / 1000);
   if (delta < 60) return 'just now';
   if (delta < 3600) return `${Math.floor(delta / 60)}m ago`;
   if (delta < 86400) return `${Math.floor(delta / 3600)}h ago`;
-  return d.toLocaleDateString();
+  return new Date(ts * 1000).toLocaleDateString();
 }
 
 export function NetworkStatus({ status }: { status: NetworkStatusType }) {
@@ -33,29 +32,29 @@ export function NetworkStatus({ status }: { status: NetworkStatusType }) {
   const endpointMissing = wg && !wg.endpoint;
 
   return (
-    <div style={cardStyle}>
-      <h2 style={h2Style}>Your Network</h2>
+    <div className="bg-howm-bg-surface border border-howm-border rounded-xl p-5 mb-5">
+      <h2 className="text-xl font-semibold mt-0 mb-4">Your Network</h2>
 
       {/* Endpoint warning */}
       {endpointMissing && (
-        <div style={warnBannerStyle}>
+        <div className="bg-[rgba(234,179,8,0.1)] border border-howm-warning rounded p-3.5 mb-4 text-sm text-howm-warning leading-normal">
           ⚠ WireGuard endpoint not set — invites won't work for remote peers.
           Run network detection below or restart with{' '}
-          <code style={codeStyle}>--wg-endpoint &lt;public-ip&gt;:41641</code>.
+          <code className="font-mono text-sm bg-white/[0.08] px-1 py-px rounded-sm">--wg-endpoint &lt;public-ip&gt;:41641</code>.
         </div>
       )}
 
       {/* Reachability badge */}
-      <div style={{ ...badgeContainerStyle, background: badge.bg }}>
-        <span style={{ color: badge.color, fontWeight: 600 }}>
+      <div className="p-2 px-3 rounded mb-4 text-sm" style={{ background: badge.bg }}>
+        <span style={{ color: badge.color }} className="font-semibold">
           {badge.icon} {badge.label}
         </span>
       </div>
 
       {/* Status grid */}
-      <dl style={dlStyle}>
+      <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 m-0">
         <Row label="Status" value={
-          <span style={{ color: wg.status === 'connected' ? 'var(--howm-success, #4ade80)' : 'var(--howm-warning, #fbbf24)' }}>
+          <span style={{ color: wg.status === 'connected' ? 'var(--howm-success, #22c55e)' : 'var(--howm-warning, #eab308)' }}>
             {wg.status}
           </span>
         } />
@@ -63,12 +62,12 @@ export function NetworkStatus({ status }: { status: NetworkStatusType }) {
         {/* Public IPs */}
         {nat?.external_ipv4 && (
           <Row label="Public IP" value={
-            <span style={monoStyle}>{nat.external_ipv4} <span style={tagStyle}>IPv4</span></span>
+            <span className="font-mono">{nat.external_ipv4} <span className="text-[0.7rem] px-1.5 py-px rounded-sm bg-howm-accent-dim text-howm-accent ml-1.5 font-sans align-middle">IPv4</span></span>
           } />
         )}
         {ipv6.available && ipv6.global_addresses.map((addr, i) => (
           <Row key={addr} label={i === 0 && !nat?.external_ipv4 ? 'Public IP' : ''} value={
-            <span style={monoStyle}>{addr} <span style={{ ...tagStyle, background: 'rgba(74,222,128,0.15)', color: 'var(--howm-success, #4ade80)' }}>IPv6 Global</span></span>
+            <span className="font-mono">{addr} <span className="text-[0.7rem] px-1.5 py-px rounded-sm bg-[rgba(34,197,94,0.15)] text-howm-success ml-1.5 font-sans align-middle">IPv6 Global</span></span>
           } />
         ))}
 
@@ -80,33 +79,34 @@ export function NetworkStatus({ status }: { status: NetworkStatusType }) {
                nat.nat_type === 'cone' ? 'Cone (port-preserving)' :
                nat.nat_type === 'symmetric' ? 'Symmetric' : 'Unknown'}
               {nat.observed_stride !== 0 && (
-                <span style={mutedStyle}> · stride {nat.observed_stride}</span>
+                <span className="text-howm-text-muted text-xs"> · stride {nat.observed_stride}</span>
               )}
             </span>
           } />
         ) : (
-          <Row label="NAT Type" value={<span style={mutedStyle}>Not detected</span>} />
+          <Row label="NAT Type" value={<span className="text-howm-text-muted text-xs">Not detected</span>} />
         )}
 
         {/* WG details */}
-        {wg.listen_port != null && <Row label="WG Port" value={<span style={monoStyle}>{wg.listen_port}</span>} />}
-        {wg.endpoint && <Row label="Endpoint" value={<span style={monoStyle}>{wg.endpoint}</span>} />}
-        {wg.public_key && <Row label="Public Key" value={<span style={{ ...monoStyle, wordBreak: 'break-all' }}>{wg.public_key}</span>} />}
+        {wg.listen_port != null && <Row label="WG Port" value={<span className="font-mono">{wg.listen_port}</span>} />}
+        {wg.endpoint && <Row label="Endpoint" value={<span className="font-mono">{wg.endpoint}</span>} />}
+        {wg.public_key && <Row label="Public Key" value={<span className="font-mono break-all">{wg.public_key}</span>} />}
         {wg.active_tunnels != null && <Row label="Active Tunnels" value={<span>{wg.active_tunnels}</span>} />}
       </dl>
 
       {/* Detection controls */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginTop: '16px', paddingTop: '16px', borderTop: '1px solid var(--howm-border, #2e3341)' }}>
-        <button onClick={() => detectMutation.mutate()} disabled={detectMutation.isPending} style={btnStyle}>
+      <div className="flex items-center gap-3 mt-4 pt-4 border-t border-howm-border">
+        <button onClick={() => detectMutation.mutate()} disabled={detectMutation.isPending}
+          className="px-3.5 py-1.5 bg-howm-bg-elevated border border-howm-border rounded text-howm-text-primary cursor-pointer text-sm">
           {detectMutation.isPending ? 'Detecting…' : nat?.detected ? 'Re-detect Network' : 'Detect My Network'}
         </button>
         {nat?.detected && (
-          <span style={{ ...mutedStyle, fontSize: '0.8rem' }}>
+          <span className="text-howm-text-muted text-xs">
             Last detected {formatTimestamp(nat.detected_at)}
           </span>
         )}
         {detectMutation.isError && (
-          <span style={{ color: 'var(--howm-error, #f87171)', fontSize: '0.85em' }}>
+          <span className="text-howm-error text-sm">
             Detection failed
           </span>
         )}
@@ -118,67 +118,8 @@ export function NetworkStatus({ status }: { status: NetworkStatusType }) {
 function Row({ label, value }: { label: string; value: React.ReactNode }) {
   return (
     <>
-      <dt style={dtStyle}>{label}</dt>
-      <dd style={ddStyle}>{value}</dd>
+      <dt className="font-semibold text-howm-text-secondary text-sm self-start pt-px">{label}</dt>
+      <dd className="m-0 text-sm">{value}</dd>
     </>
   );
 }
-
-// ── Styles ───────────────────────────────────────────────────────────────────
-
-const cardStyle: React.CSSProperties = {
-  background: 'var(--howm-bg-surface, #232733)',
-  border: '1px solid var(--howm-border, #2e3341)',
-  borderRadius: 'var(--howm-radius-lg, 12px)',
-  padding: '20px',
-  marginBottom: '20px',
-};
-const h2Style: React.CSSProperties = {
-  fontSize: 'var(--howm-font-size-xl, 1.25rem)',
-  fontWeight: 600, marginTop: 0, marginBottom: '16px',
-};
-const dlStyle: React.CSSProperties = {
-  display: 'grid', gridTemplateColumns: 'auto 1fr',
-  gap: '6px 16px', margin: 0,
-};
-const dtStyle: React.CSSProperties = {
-  fontWeight: 600, color: 'var(--howm-text-secondary, #8b91a0)',
-  fontSize: '0.875rem', alignSelf: 'start', paddingTop: '1px',
-  minHeight: dtMinHeight(),
-};
-const ddStyle: React.CSSProperties = { margin: 0, fontSize: '0.9rem' };
-const monoStyle: React.CSSProperties = { fontFamily: 'var(--howm-font-mono, monospace)' };
-const mutedStyle: React.CSSProperties = { color: 'var(--howm-text-muted, #5c6170)', fontSize: '0.85em' };
-const tagStyle: React.CSSProperties = {
-  fontSize: '0.7rem', padding: '1px 6px', borderRadius: '3px',
-  background: 'rgba(108,140,255,0.15)', color: 'var(--howm-accent, #6c8cff)',
-  marginLeft: '6px', fontFamily: 'var(--howm-font-family, system-ui)',
-  verticalAlign: 'middle',
-};
-const badgeContainerStyle: React.CSSProperties = {
-  padding: '8px 12px', borderRadius: 'var(--howm-radius-sm, 4px)',
-  marginBottom: '16px', fontSize: '0.875rem',
-};
-const btnStyle: React.CSSProperties = {
-  padding: '6px 14px',
-  background: 'var(--howm-bg-elevated, #2a2e3d)',
-  border: '1px solid var(--howm-border, #2e3341)',
-  borderRadius: 'var(--howm-radius-sm, 4px)',
-  color: 'var(--howm-text-primary, #e1e4eb)',
-  cursor: 'pointer', fontSize: '0.875em',
-};
-const warnBannerStyle: React.CSSProperties = {
-  background: 'rgba(251,191,36,0.1)',
-  border: '1px solid var(--howm-warning, #fbbf24)',
-  borderRadius: 'var(--howm-radius-sm, 4px)',
-  padding: '10px 14px', marginBottom: '16px',
-  fontSize: '0.875rem', color: 'var(--howm-warning, #fbbf24)',
-  lineHeight: 1.5,
-};
-const codeStyle: React.CSSProperties = {
-  fontFamily: 'var(--howm-font-mono, monospace)',
-  fontSize: '0.875em', background: 'rgba(255,255,255,0.08)',
-  padding: '1px 5px', borderRadius: '3px',
-};
-
-function dtMinHeight(): string { return '0'; }
