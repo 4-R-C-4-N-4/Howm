@@ -17,19 +17,19 @@ export function Connection() {
 
   if (isLoading || !status) {
     return (
-      <div style={pageStyle}>
-        <h1 style={h1Style}>Connection</h1>
-        <p style={mutedStyle}>Loading network status…</p>
+      <div className='max-w-[800px] mx-auto p-6'>
+        <h1 className='text-2xl mb-6 font-semibold'>Connection</h1>
+        <p className='text-howm-text-muted m-0 text-sm'>Loading network status…</p>
       </div>
     );
   }
 
   return (
-    <div style={pageStyle}>
+    <div className='max-w-[800px] mx-auto p-6'>
       {/* Header with info button */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
-        <h1 style={{ ...h1Style, marginBottom: 0 }}>Connection</h1>
-        <button onClick={() => setInfoOpen(true)} style={infoBtnStyle} title="How does this work?">
+      <div className='flex justify-between items-center mb-6'>
+        <h1 className='text-2xl font-semibold mb-0'>Connection</h1>
+        <button onClick={() => setInfoOpen(true)} className='py-1.5 px-3.5 bg-howm-accent-dim border border-howm-accent rounded text-howm-accent cursor-pointer text-sm font-semibold' title="How does this work?">
           ⓘ Info
         </button>
       </div>
@@ -48,26 +48,3 @@ export function Connection() {
     </div>
   );
 }
-
-// ── Styles ───────────────────────────────────────────────────────────────────
-
-const pageStyle: React.CSSProperties = {
-  maxWidth: '800px', margin: '0 auto', padding: '24px',
-};
-const h1Style: React.CSSProperties = {
-  fontSize: 'var(--howm-font-size-2xl, 1.5rem)',
-  marginBottom: '24px', fontWeight: 600,
-};
-const mutedStyle: React.CSSProperties = {
-  color: 'var(--howm-text-muted, #5c6170)',
-  margin: 0, fontSize: '0.9rem',
-};
-const infoBtnStyle: React.CSSProperties = {
-  padding: '6px 14px',
-  background: 'rgba(108,140,255,0.1)',
-  border: '1px solid var(--howm-accent, #6c8cff)',
-  borderRadius: 'var(--howm-radius-sm, 4px)',
-  color: 'var(--howm-accent, #6c8cff)',
-  cursor: 'pointer', fontSize: '0.875rem',
-  fontWeight: 600,
-};

@@ -71,26 +71,26 @@ export function PeersPage() {
   }, []);
 
   return (
-    <div style={pageStyle}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-        <h1 style={h1Style}>Peers ({peers.length})</h1>
-        <Link to="/connection" style={inviteBtnStyle}>+ Invite</Link>
+    <div className='max-w-[800px] mx-auto p-6'>
+      <div className='flex justify-between items-center mb-4'>
+        <h1 className='text-2xl font-semibold m-0'>Peers ({peers.length})</h1>
+        <Link to="/connection" className='py-2 px-4 bg-howm-accent border-none rounded-md text-white cursor-pointer text-sm font-semibold no-underline'>+ Invite</Link>
       </div>
 
-      <div style={{ display: 'flex', gap: '8px', marginBottom: '12px' }}>
-        <div style={{ position: 'relative', flex: 1 }}>
+      <div className='flex gap-2 mb-3'>
+        <div className='relative flex-1'>
           <input
             placeholder="Search peers..."
             value={search}
             onChange={e => setSearch(e.target.value)}
             onKeyDown={e => e.key === 'Escape' && setSearch('')}
-            style={searchStyle}
+            className='w-full py-2 px-2.5 box-border bg-howm-bg-secondary border border-howm-border rounded text-howm-text-primary text-sm'
           />
         </div>
         <select
           value={filter}
           onChange={e => setFilter(e.target.value as FilterOption)}
-          style={selectStyle}
+          className='py-2 px-2.5 bg-howm-bg-secondary border border-howm-border rounded text-howm-text-primary text-sm cursor-pointer'
         >
           {(['All', 'Trusted', 'Friends', 'Default', 'Custom', 'Denied', 'Online'] as const).map(f => (
             <option key={f} value={f}>{f}</option>
@@ -99,9 +99,9 @@ export function PeersPage() {
       </div>
 
       {filtered.length === 0 ? (
-        <p style={mutedStyle}>
+        <p className='text-howm-text-muted text-sm'>
           {peers.length === 0
-            ? <>No peers yet. Go to <Link to="/connection" style={linkStyle}>Connection</Link> to create or redeem an invite.</>
+            ? <>No peers yet. Go to <Link to="/connection" className='text-howm-accent no-underline'>Connection</Link> to create or redeem an invite.</>
             : 'No peers match the current filter.'}
         </p>
       ) : (
@@ -123,7 +123,7 @@ export function PeersPage() {
 
       {/* New peer toasts */}
       {newPeers.length > 0 && (
-        <div style={{ position: 'fixed', bottom: '24px', right: '24px', display: 'flex', flexDirection: 'column', gap: '8px', zIndex: 300 }}>
+        <div className='fixed bottom-6 right-6 flex flex-col gap-2 z-300'>
           {newPeers.map(p => (
             <NewPeerToast key={p.node_id} peer={p} onDismiss={() => dismissNewPeer(p.node_id)} />
           ))}
@@ -132,14 +132,12 @@ export function PeersPage() {
 
       {/* Inline toasts */}
       {toasts.length > 0 && (
-        <div style={{ position: 'fixed', bottom: '24px', left: '50%', transform: 'translateX(-50%)', display: 'flex', flexDirection: 'column', gap: '8px', zIndex: 300 }}>
+        <div className='fixed bottom-6 left-1/2 -translate-x-1/2 flex flex-col gap-2 z-300'>
           {toasts.map(t => (
-            <div key={t.id} style={{
-              padding: '8px 16px', borderRadius: '8px', fontSize: '0.85rem',
+            <div key={t.id} className='py-2 px-4 rounded-lg text-sm shadow-[0_4px_12px_rgba(0,0,0,0.5)]' style={{
               background: t.level === 'success' ? '#14532d' : '#7f1d1d',
               color: t.level === 'success' ? '#86efac' : '#fca5a5',
               border: `1px solid ${t.level === 'success' ? '#16a34a' : '#dc2626'}`,
-              boxShadow: '0 4px 12px rgba(0,0,0,0.5)',
             }}>
               {t.msg}
             </div>
@@ -180,28 +178,3 @@ function useQueries(peers: Peer[]): Record<string, AccessGroup[]> {
 
   return peerGroupsMap;
 }
-
-const pageStyle: React.CSSProperties = { maxWidth: '800px', margin: '0 auto', padding: '24px' };
-const h1Style: React.CSSProperties = { fontSize: '1.5rem', fontWeight: 600, margin: 0 };
-const searchStyle: React.CSSProperties = {
-  width: '100%', padding: '8px 10px', boxSizing: 'border-box',
-  background: 'var(--howm-bg-secondary, #1a1d27)',
-  border: '1px solid var(--howm-border, #2e3341)',
-  borderRadius: '4px', color: 'var(--howm-text-primary, #e1e4eb)',
-  fontSize: '0.9rem',
-};
-const selectStyle: React.CSSProperties = {
-  padding: '8px 10px',
-  background: 'var(--howm-bg-secondary, #1a1d27)',
-  border: '1px solid var(--howm-border, #2e3341)',
-  borderRadius: '4px', color: 'var(--howm-text-primary, #e1e4eb)',
-  fontSize: '0.9rem', cursor: 'pointer',
-};
-const inviteBtnStyle: React.CSSProperties = {
-  padding: '8px 16px', background: 'var(--howm-accent, #6c8cff)',
-  border: 'none', borderRadius: '6px', color: '#fff',
-  cursor: 'pointer', fontSize: '0.9rem', fontWeight: 600,
-  textDecoration: 'none',
-};
-const mutedStyle: React.CSSProperties = { color: 'var(--howm-text-muted, #5c6170)', fontSize: '0.9rem' };
-const linkStyle: React.CSSProperties = { color: 'var(--howm-accent, #6c8cff)', textDecoration: 'none' };

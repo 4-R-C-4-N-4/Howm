@@ -23,48 +23,27 @@ export function NewPeerToast({ peer, onDismiss }: NewPeerToastProps) {
   });
 
   return (
-    <div style={toastStyle}>
-      <div style={{ marginBottom: '6px' }}>
+    <div className="bg-howm-bg-surface border border-howm-border rounded-lg px-4 py-3 shadow-[0_8px_24px_rgba(0,0,0,0.5)] max-w-[340px]">
+      <div className="mb-1.5">
         <strong>🆕 {peer.name}</strong> just joined via invite link
       </div>
-      <div style={{ fontSize: '0.8rem', color: 'var(--howm-text-muted, #5c6170)', marginBottom: '8px' }}>
+      <div className="text-xs text-howm-text-muted mb-2">
         Currently: Default
       </div>
-      <div style={{ display: 'flex', gap: '8px' }}>
+      <div className="flex gap-2">
         <button
           onClick={() => promoteMutation.mutate()}
           disabled={promoteMutation.isPending}
-          style={promoteBtnStyle}
+          className="py-1 px-2.5 bg-[rgba(96,165,250,0.15)] border border-[rgba(96,165,250,0.3)] rounded text-[#60a5fa] cursor-pointer text-xs"
         >
           Promote to Friend
         </button>
-        <button onClick={() => navigate(`/peers/${hexId}`)} style={viewBtnStyle}>
+        <button onClick={() => navigate(`/peers/${hexId}`)}
+          className="py-1 px-2.5 bg-howm-bg-elevated border border-howm-border rounded text-howm-text-primary cursor-pointer text-xs">
           View
         </button>
-        <button onClick={onDismiss} style={dismissBtnStyle}>✕</button>
+        <button onClick={onDismiss} className="bg-transparent border-none text-howm-text-muted cursor-pointer text-sm ml-auto p-1">✕</button>
       </div>
     </div>
   );
 }
-
-const toastStyle: React.CSSProperties = {
-  background: 'var(--howm-bg-surface, #232733)',
-  border: '1px solid var(--howm-border, #2e3341)',
-  borderRadius: '8px', padding: '12px 16px',
-  boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
-  maxWidth: '340px',
-};
-const promoteBtnStyle: React.CSSProperties = {
-  padding: '4px 10px', background: 'rgba(96,165,250,0.15)',
-  border: '1px solid rgba(96,165,250,0.3)', borderRadius: '4px',
-  color: '#60a5fa', cursor: 'pointer', fontSize: '0.8rem',
-};
-const viewBtnStyle: React.CSSProperties = {
-  padding: '4px 10px', background: 'var(--howm-bg-elevated, #2a2e3d)',
-  border: '1px solid var(--howm-border, #2e3341)', borderRadius: '4px',
-  color: 'var(--howm-text-primary, #e1e4eb)', cursor: 'pointer', fontSize: '0.8rem',
-};
-const dismissBtnStyle: React.CSSProperties = {
-  background: 'none', border: 'none', color: 'var(--howm-text-muted, #5c6170)',
-  cursor: 'pointer', fontSize: '0.9rem', marginLeft: 'auto', padding: '4px',
-};

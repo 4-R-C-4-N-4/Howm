@@ -6,47 +6,34 @@ interface PermissionGridProps {
 }
 
 export function PermissionGrid({ permissions, isLoading }: PermissionGridProps) {
-  if (isLoading) return <p style={mutedStyle}>Loading permissions…</p>;
-  if (!permissions) return <p style={mutedStyle}>No permission data</p>;
+  if (isLoading) return <p className="text-howm-text-muted text-sm m-0">Loading permissions…</p>;
+  if (!permissions) return <p className="text-howm-text-muted text-sm m-0">No permission data</p>;
 
   const entries = Object.entries(permissions.permissions);
   const allowed = entries.filter(([, v]) => v.allowed).sort((a, b) => a[0].localeCompare(b[0]));
   const denied = entries.filter(([, v]) => !v.allowed).sort((a, b) => a[0].localeCompare(b[0]));
   const sorted = [...allowed, ...denied];
 
-  if (sorted.length === 0) return <p style={mutedStyle}>No capabilities configured</p>;
+  if (sorted.length === 0) return <p className="text-howm-text-muted text-sm m-0">No capabilities configured</p>;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+    <div className="flex flex-col gap-1">
       {sorted.map(([cap, perm]) => (
-        <div key={cap} style={permRowStyle}>
-          <span style={{ color: perm.allowed ? '#4ade80' : '#f87171', marginRight: '8px' }}>
+        <div key={cap} className="flex items-center py-1">
+          <span style={{ color: perm.allowed ? '#22c55e' : '#ef4444' }} className="mr-2">
             {perm.allowed ? '✓' : '✕'}
           </span>
-          <span style={{ fontSize: '0.875rem', fontFamily: 'var(--howm-font-mono, monospace)' }}>
+          <span className="text-sm font-mono">
             {cap}
           </span>
           {perm.rate_limit && (
-            <span style={subStyle}>(rate: {perm.rate_limit}/min)</span>
+            <span className="text-xs text-howm-text-muted ml-2">(rate: {perm.rate_limit}/min)</span>
           )}
           {perm.ttl && (
-            <span style={subStyle}>(ttl: {perm.ttl}s)</span>
+            <span className="text-xs text-howm-text-muted ml-2">(ttl: {perm.ttl}s)</span>
           )}
         </div>
       ))}
     </div>
   );
 }
-
-const permRowStyle: React.CSSProperties = {
-  display: 'flex', alignItems: 'center',
-  padding: '4px 0',
-};
-
-const subStyle: React.CSSProperties = {
-  fontSize: '0.75rem', color: 'var(--howm-text-muted, #5c6170)', marginLeft: '8px',
-};
-
-const mutedStyle: React.CSSProperties = {
-  color: 'var(--howm-text-muted, #5c6170)', margin: 0, fontSize: '0.875rem',
-};

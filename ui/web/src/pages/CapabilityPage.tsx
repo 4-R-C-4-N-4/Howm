@@ -95,12 +95,12 @@ export function CapabilityPage() {
   }, [searchParams]);
 
   if (!capabilities) {
-    return <div style={loadingStyle}>Loading…</div>;
+    return <div className='flex items-center justify-center h-[calc(100vh-48px)] text-howm-text-muted'>Loading…</div>;
   }
 
   if (!cap?.ui) {
     return (
-      <div style={loadingStyle}>
+      <div className='flex items-center justify-center h-[calc(100vh-48px)] text-howm-text-muted'>
         Capability <strong>{name}</strong> not found or has no UI.
       </div>
     );
@@ -116,15 +116,15 @@ export function CapabilityPage() {
 
   if (loadError) {
     return (
-      <div style={errorStyle}>
-        <div style={{ fontSize: '2rem', marginBottom: '0.5rem' }}>⚠</div>
+      <div className='flex flex-col items-center justify-center h-[calc(100vh-48px)] text-center gap-1' style={{ color: 'var(--howm-text, #e0e0e0)' }}>
+        <div className='text-3xl mb-2'>⚠</div>
         <div><strong>{cap.ui.label}</strong> failed to load.</div>
-        <div style={{ color: 'var(--howm-text-muted, #5c6170)', fontSize: '0.85rem', marginTop: '0.25rem' }}>
+        <div className='text-howm-text-muted text-sm mt-1'>
           The capability process may not be running.
         </div>
         <button
           onClick={() => { setLoadError(false); readySent.current = false; }}
-          style={retryButtonStyle}
+          className='mt-4 py-2 px-6 rounded-md border border-howm-border bg-howm-bg-elevated cursor-pointer text-sm' style={{ color: 'var(--howm-text, #e0e0e0)' }}
         >
           Retry
         </button>
@@ -133,11 +133,11 @@ export function CapabilityPage() {
   }
 
   return (
-    <div style={{ position: 'relative', width: '100%', height: 'calc(100vh - 48px)' }}>
+    <div className='relative w-full h-[calc(100vh-48px)]'>
       {loading && (
-        <div style={loadingOverlayStyle}>
-          <div style={spinnerStyle} />
-          <div style={{ marginTop: '12px', color: 'var(--howm-text-muted, #5c6170)', fontSize: '0.85rem' }}>
+        <div className='absolute inset-0 flex flex-col items-center justify-center bg-howm-bg-primary z-10'>
+          <div className='w-7 h-7 border-3 border-howm-border border-t-howm-accent rounded-full animate-spin' />
+          <div className='mt-3 text-howm-text-muted text-sm'>
             Loading {cap.ui.label}…
           </div>
         </div>
@@ -146,7 +146,7 @@ export function CapabilityPage() {
         ref={iframeRef}
         src={src}
         title={cap.ui.label}
-        style={iframeStyle}
+        className='w-full h-full border-none block'
         // Restrict iframe capabilities; adjust as needed for specific caps
         sandbox="allow-scripts allow-same-origin allow-forms"
         onError={() => { setLoading(false); setLoadError(true); }}
@@ -154,60 +154,3 @@ export function CapabilityPage() {
     </div>
   );
 }
-
-const loadingStyle: React.CSSProperties = {
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  height: 'calc(100vh - 48px)',
-  color: 'var(--howm-text-muted, #5c6170)',
-};
-
-const errorStyle: React.CSSProperties = {
-  display: 'flex',
-  flexDirection: 'column',
-  alignItems: 'center',
-  justifyContent: 'center',
-  height: 'calc(100vh - 48px)',
-  color: 'var(--howm-text, #e0e0e0)',
-  textAlign: 'center',
-  gap: '0.25rem',
-};
-
-const retryButtonStyle: React.CSSProperties = {
-  marginTop: '1rem',
-  padding: '0.5rem 1.5rem',
-  borderRadius: '6px',
-  border: '1px solid var(--howm-border, #333)',
-  background: 'var(--howm-surface, #1a1a2e)',
-  color: 'var(--howm-text, #e0e0e0)',
-  cursor: 'pointer',
-  fontSize: '0.9rem',
-};
-
-const loadingOverlayStyle: React.CSSProperties = {
-  position: 'absolute',
-  inset: 0,
-  display: 'flex',
-  flexDirection: 'column',
-  alignItems: 'center',
-  justifyContent: 'center',
-  background: 'var(--howm-bg-primary, #0f1117)',
-  zIndex: 10,
-};
-
-const spinnerStyle: React.CSSProperties = {
-  width: '28px',
-  height: '28px',
-  border: '3px solid var(--howm-border, #2e3341)',
-  borderTop: '3px solid var(--howm-accent, #6c8cff)',
-  borderRadius: '50%',
-  animation: 'howm-spin 0.8s linear infinite',
-};
-
-const iframeStyle: React.CSSProperties = {
-  width: '100%',
-  height: '100%',
-  border: 'none',
-  display: 'block',
-};

@@ -20,8 +20,8 @@
   },
   "ui": {
     "label": "Messages",
-    "icon": "message-square",
+    "icon": "chat-bubble",
     "entry": "/ui/",
-    "style": "iframe"
+    "style": "fab"
   }
 }

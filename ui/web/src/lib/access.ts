@@ -5,7 +5,7 @@ export const GROUP_TRUSTED  = '00000000-0000-0000-0000-000000000003';
 export const BUILT_IN_TIERS = [
   { id: GROUP_DEFAULT, label: 'Default', color: '#9ca3af', bg: 'rgba(156,163,175,0.12)', order: 0 },
   { id: GROUP_FRIENDS, label: 'Friends', color: '#60a5fa', bg: 'rgba(96,165,250,0.12)', order: 1 },
-  { id: GROUP_TRUSTED, label: 'Trusted', color: '#fbbf24', bg: 'rgba(251,191,36,0.12)', order: 2 },
+  { id: GROUP_TRUSTED, label: 'Trusted', color: '#eab308', bg: 'rgba(234,179,8,0.12)', order: 2 },
 ] as const;
 
 export interface TierBadge {
@@ -16,11 +16,11 @@ export interface TierBadge {
 
 export function effectiveTier(groups: { group_id: string; built_in: boolean }[]): TierBadge {
   const builtInIds = new Set(groups.filter(g => g.built_in).map(g => g.group_id));
-  if (builtInIds.has(GROUP_TRUSTED)) return { label: 'Trusted', color: '#fbbf24', bg: 'rgba(251,191,36,0.12)' };
+  if (builtInIds.has(GROUP_TRUSTED)) return { label: 'Trusted', color: '#eab308', bg: 'rgba(234,179,8,0.12)' };
   if (builtInIds.has(GROUP_FRIENDS)) return { label: 'Friends', color: '#60a5fa', bg: 'rgba(96,165,250,0.12)' };
   if (builtInIds.has(GROUP_DEFAULT)) return { label: 'Default', color: '#9ca3af', bg: 'rgba(156,163,175,0.12)' };
   if (groups.length > 0)            return { label: 'Custom',  color: '#c084fc', bg: 'rgba(192,132,252,0.12)' };
-  return { label: 'Denied', color: '#f87171', bg: 'rgba(248,113,113,0.12)' };
+  return { label: 'Denied', color: '#ef4444', bg: 'rgba(239,68,68,0.12)' };
 }
 
 export function peerIdToHex(pubkey: string): string {

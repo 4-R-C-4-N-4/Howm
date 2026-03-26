@@ -52,36 +52,36 @@ export function PeerList() {
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-        <h3 style={{ margin: 0 }}>Peers</h3>
+      <div className='flex justify-between items-center mb-3'>
+        <h3 className='m-0'>Peers</h3>
       </div>
 
-      <p style={summaryStyle}>
+      <p className='m-0 text-sm text-howm-text-secondary'>
         {peers.length} peers  •  {onlineCount} online  •  {friendsCount} friends  •  {trustedCount} trusted
       </p>
 
       {recent.length > 0 && (
-        <div style={{ marginTop: '8px' }}>
-          <p style={{ ...mutedStyle, fontSize: '0.8rem', marginBottom: '6px' }}>Recent:</p>
+        <div className='mt-2'>
+          <p className='text-howm-text-muted m-0 text-xs mb-1.5'>Recent:</p>
           {recent.map(peer => {
             const hexId = peerIdToHex(peer.wg_pubkey);
             const groups = peerGroupsMap[hexId] || [];
             const badge = effectiveTier(groups);
             const online = isOnline(peer.last_seen, now);
             return (
-              <Link key={peer.node_id} to={`/peers/${hexId}`} style={{ textDecoration: 'none', color: 'inherit' }}>
-                <div style={recentRowStyle}>
-                  <span style={{ color: online ? '#4ade80' : '#5c6170', marginRight: '8px' }}>
+              <Link key={peer.node_id} to={`/peers/${hexId}`} className='no-underline text-inherit'>
+                <div className='flex items-center py-1.5 px-2 rounded mb-0.5 cursor-pointer'>
+                  <span style={{ color: online ? '#22c55e' : '#666666' }} className='mr-2'>
                     {online ? '●' : '○'}
                   </span>
-                  <span style={{ fontWeight: 500, marginRight: '8px' }}>{peer.name}</span>
+                  <span className='font-medium mr-2'>{peer.name}</span>
                   <span style={{
                     fontSize: '0.75rem', padding: '1px 7px', borderRadius: '4px',
                     background: badge.bg, color: badge.color,
                   }}>
                     {badge.label}
                   </span>
-                  <span style={{ marginLeft: 'auto', fontSize: '0.8rem', color: 'var(--howm-text-muted, #5c6170)' }}>
+                  <span className='ml-auto text-xs text-howm-text-muted'>
                     {formatLastSeen(peer.last_seen, now)}
                   </span>
                 </div>
@@ -91,24 +91,7 @@ export function PeerList() {
         </div>
       )}
 
-      <Link to="/peers" style={viewAllStyle}>View All Peers →</Link>
+      <Link to="/peers" className='inline-block mt-3 text-howm-accent no-underline text-sm font-medium'>View All Peers →</Link>
     </div>
   );
 }
-
-const summaryStyle: React.CSSProperties = {
-  margin: 0, fontSize: '0.9rem', color: 'var(--howm-text-secondary, #8b91a0)',
-};
-const mutedStyle: React.CSSProperties = {
-  color: 'var(--howm-text-muted, #5c6170)', margin: 0,
-};
-const recentRowStyle: React.CSSProperties = {
-  display: 'flex', alignItems: 'center', padding: '6px 8px',
-  borderRadius: '4px', marginBottom: '2px',
-  cursor: 'pointer',
-};
-const viewAllStyle: React.CSSProperties = {
-  display: 'inline-block', marginTop: '12px',
-  color: 'var(--howm-accent, #6c8cff)', textDecoration: 'none',
-  fontSize: '0.9rem', fontWeight: 500,
-};

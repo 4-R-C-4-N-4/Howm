@@ -49,14 +49,14 @@ export function Settings() {
   }
 
   return (
-    <div style={pageStyle}>
-      <h1 style={h1Style}>Settings</h1>
+    <div className='max-w-[720px] mx-auto p-6'>
+      <h1 className='text-2xl mb-6 font-semibold'>Settings</h1>
 
       {/* Node */}
-      <section style={sectionStyle}>
-        <h2 style={h2Style}>Node</h2>
+      <section className='bg-howm-bg-surface border border-howm-border rounded-xl p-5 mb-5'>
+        <h2 className='text-xl font-semibold mt-0 mb-4'>Node</h2>
         {node ? (
-          <dl style={dlStyle}>
+          <dl className='grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 m-0'>
             <Row label="Node ID"    value={node.node_id} mono />
             <Row label="Name"       value={node.name} />
             <Row label="WG Address" value={node.wg_address} mono />
@@ -64,31 +64,31 @@ export function Settings() {
             <Row label="Data Dir"   value={node.data_dir} mono />
           </dl>
         ) : (
-          <p style={mutedStyle}>Loading…</p>
+          <p className='text-howm-text-muted m-0'>Loading…</p>
         )}
       </section>
 
       {/* Identity */}
-      <section style={sectionStyle}>
-        <h2 style={h2Style}>Identity</h2>
+      <section className='bg-howm-bg-surface border border-howm-border rounded-xl p-5 mb-5'>
+        <h2 className='text-xl font-semibold mt-0 mb-4'>Identity</h2>
         {identity ? (
-          <dl style={dlStyle}>
+          <dl className='grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 m-0'>
             <Row label="Display Name" value={identity.display_name} />
             <Row label="Public Key"   value={identity.public_key} mono />
           </dl>
         ) : (
-          <p style={mutedStyle}>Loading…</p>
+          <p className='text-howm-text-muted m-0'>Loading…</p>
         )}
       </section>
 
       {/* P2P-CD config */}
-      <section style={sectionStyle}>
-        <h2 style={h2Style}>P2P-CD</h2>
-        <p style={{ ...mutedStyle, marginBottom: '4px' }}>
+      <section className='bg-howm-bg-surface border border-howm-border rounded-xl p-5 mb-5'>
+        <h2 className='text-xl font-semibold mt-0 mb-4'>P2P-CD</h2>
+        <p className='text-howm-text-muted m-0 mb-1'>
           Edit as JSON. Changes take effect after daemon restart.
         </p>
         {node?.data_dir && (
-          <p style={{ ...mutedStyle, marginBottom: '12px', fontSize: '0.8rem', fontFamily: 'var(--howm-font-mono, monospace)' }}>
+          <p className='text-howm-text-muted m-0 mb-3 text-xs font-mono'>
             {node.data_dir}/p2pcd-peer.toml
           </p>
         )}
@@ -96,15 +96,15 @@ export function Settings() {
           value={p2pcdDraft}
           onChange={e => setP2pcdDraft(e.target.value)}
           rows={12}
-          style={textareaStyle}
+          className='w-full bg-howm-bg-secondary border border-howm-border rounded text-howm-text-primary font-mono text-sm py-2.5 px-3.5 resize-y box-border'
           spellCheck={false}
         />
-        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginTop: '8px' }}>
-          <button onClick={handleSaveP2pcd} disabled={saveStatus === 'saving'} style={btnStyle}>
+        <div className='flex items-center gap-3 mt-2'>
+          <button onClick={handleSaveP2pcd} disabled={saveStatus === 'saving'} className='py-1.5 px-4.5 bg-howm-accent text-white border-none rounded cursor-pointer text-sm'>
             {saveStatus === 'saving' ? 'Saving…' : 'Save'}
           </button>
-          {saveStatus === 'ok'  && <span style={{ color: 'var(--howm-success, #4ade80)' }}>Saved</span>}
-          {saveStatus === 'err' && <span style={{ color: 'var(--howm-error, #f87171)' }}>Failed — check JSON</span>}
+          {saveStatus === 'ok'  && <span className='text-howm-success'>Saved</span>}
+          {saveStatus === 'err' && <span className='text-howm-error'>Failed — check JSON</span>}
         </div>
       </section>
     </div>
@@ -114,46 +114,10 @@ export function Settings() {
 function Row({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
   return (
     <>
-      <dt style={dtStyle}>{label}</dt>
-      <dd style={{ ...ddStyle, fontFamily: mono ? 'var(--howm-font-mono, monospace)' : 'inherit', wordBreak: 'break-all' }}>
+      <dt className='font-semibold text-howm-text-secondary text-sm self-start pt-px'>{label}</dt>
+      <dd className={`m-0 text-sm break-all ${mono ? 'font-mono' : ''}`}>
         {value}
       </dd>
     </>
   );
 }
-
-const pageStyle: React.CSSProperties = { maxWidth: '720px', margin: '0 auto', padding: '24px' };
-const h1Style: React.CSSProperties = { fontSize: 'var(--howm-font-size-2xl, 1.5rem)', marginBottom: '24px', fontWeight: 600 };
-const h2Style: React.CSSProperties = { fontSize: 'var(--howm-font-size-xl, 1.25rem)', fontWeight: 600, marginTop: 0, marginBottom: '16px' };
-const sectionStyle: React.CSSProperties = {
-  background: 'var(--howm-bg-surface, #232733)',
-  border: '1px solid var(--howm-border, #2e3341)',
-  borderRadius: 'var(--howm-radius-lg, 12px)',
-  padding: '20px',
-  marginBottom: '20px',
-};
-const dlStyle: React.CSSProperties = { display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '6px 16px', margin: 0 };
-const dtStyle: React.CSSProperties = { fontWeight: 600, color: 'var(--howm-text-secondary, #8b91a0)', fontSize: '0.875rem', alignSelf: 'start', paddingTop: '1px' };
-const ddStyle: React.CSSProperties = { margin: 0, fontSize: '0.9rem' };
-const mutedStyle: React.CSSProperties = { color: 'var(--howm-text-muted, #5c6170)', margin: 0 };
-const textareaStyle: React.CSSProperties = {
-  width: '100%',
-  background: 'var(--howm-bg-secondary, #1a1d27)',
-  border: '1px solid var(--howm-border, #2e3341)',
-  borderRadius: 'var(--howm-radius-sm, 4px)',
-  color: 'var(--howm-text-primary, #e1e4eb)',
-  fontFamily: 'var(--howm-font-mono, monospace)',
-  fontSize: '0.875rem',
-  padding: '10px 14px',
-  resize: 'vertical',
-  boxSizing: 'border-box',
-};
-const btnStyle: React.CSSProperties = {
-  padding: '6px 18px',
-  background: 'var(--howm-accent, #6c8cff)',
-  color: '#fff',
-  border: 'none',
-  borderRadius: 'var(--howm-radius-sm, 4px)',
-  cursor: 'pointer',
-  fontSize: '0.875rem',
-};

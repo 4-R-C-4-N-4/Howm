@@ -8,7 +8,7 @@ import { CreateGroupModal } from '../components/CreateGroupModal';
 const tierColors: Record<string, string> = {
   [GROUP_DEFAULT]: '#9ca3af',
   [GROUP_FRIENDS]: '#60a5fa',
-  [GROUP_TRUSTED]: '#fbbf24',
+  [GROUP_TRUSTED]: '#eab308',
 };
 
 export function GroupsPage() {
@@ -37,25 +37,21 @@ export function GroupsPage() {
   const custom = groups.filter(g => !g.built_in).sort((a, b) => a.name.localeCompare(b.name));
 
   return (
-    <div style={pageStyle}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-        <h1 style={h1Style}>Access Groups</h1>
-        <button onClick={() => setShowCreate(true)} style={createBtnStyle}>+ Create Group</button>
+    <div className='max-w-[800px] mx-auto p-6'>
+      <div className='flex justify-between items-center mb-5'>
+        <h1 className='text-2xl font-semibold m-0'>Access Groups</h1>
+        <button onClick={() => setShowCreate(true)} className='py-2 px-4 bg-howm-accent border-none rounded-md text-white cursor-pointer text-sm font-semibold'>+ Create Group</button>
       </div>
 
       {/* Built-in */}
-      <section style={sectionStyle}>
-        <h3 style={sectionLabelStyle}>Built-in</h3>
+      <section className='bg-howm-bg-surface border border-howm-border rounded-xl p-4 mb-4'>
+        <h3 className='text-xs font-semibold uppercase text-howm-text-muted m-0 mb-2.5 tracking-wide'>Built-in</h3>
         {builtIn.map(g => (
-          <Link key={g.group_id} to={`/access/groups/${g.group_id}`} style={{ textDecoration: 'none', color: 'inherit' }}>
-            <div
-              style={groupRowStyle}
-              onMouseEnter={e => (e.currentTarget.style.background = 'var(--howm-bg-elevated, #2a2e3d)')}
-              onMouseLeave={e => (e.currentTarget.style.background = 'var(--howm-bg-secondary, #1a1d27)')}
-            >
-              <span style={{ color: tierColors[g.group_id] || '#c084fc', marginRight: '10px' }}>●</span>
-              <span style={{ fontWeight: 500, flex: 1 }}>{g.name}</span>
-              <span style={metaStyle}>{g.capabilities?.length || 0} capabilities</span>
+          <Link key={g.group_id} to={`/access/groups/${g.group_id}`} className='no-underline text-inherit'>
+            <div className='flex items-center py-2.5 px-3 rounded cursor-pointer transition-colors duration-150 bg-howm-bg-secondary mb-1 hover:bg-howm-bg-elevated'>
+              <span style={{ color: tierColors[g.group_id] || '#c084fc' }} className='mr-2.5'>●</span>
+              <span className='font-medium flex-1'>{g.name}</span>
+              <span className='text-xs text-howm-text-muted'>{g.capabilities?.length || 0} capabilities</span>
             </div>
           </Link>
         ))}
@@ -63,18 +59,14 @@ export function GroupsPage() {
 
       {/* Custom */}
       {custom.length > 0 && (
-        <section style={sectionStyle}>
-          <h3 style={sectionLabelStyle}>Custom</h3>
+        <section className='bg-howm-bg-surface border border-howm-border rounded-xl p-4 mb-4'>
+          <h3 className='text-xs font-semibold uppercase text-howm-text-muted m-0 mb-2.5 tracking-wide'>Custom</h3>
           {custom.map(g => (
-            <Link key={g.group_id} to={`/access/groups/${g.group_id}`} style={{ textDecoration: 'none', color: 'inherit' }}>
-              <div
-                style={groupRowStyle}
-                onMouseEnter={e => (e.currentTarget.style.background = 'var(--howm-bg-elevated, #2a2e3d)')}
-                onMouseLeave={e => (e.currentTarget.style.background = 'var(--howm-bg-secondary, #1a1d27)')}
-              >
-                <span style={{ color: '#c084fc', marginRight: '10px' }}>●</span>
-                <span style={{ fontWeight: 500, flex: 1 }}>{g.name}</span>
-                <span style={metaStyle}>{g.capabilities?.length || 0} capabilities</span>
+            <Link key={g.group_id} to={`/access/groups/${g.group_id}`} className='no-underline text-inherit'>
+              <div className='flex items-center py-2.5 px-3 rounded cursor-pointer transition-colors duration-150 bg-howm-bg-secondary mb-1 hover:bg-howm-bg-elevated'>
+                <span className='text-purple-400 mr-2.5'>●</span>
+                <span className='font-medium flex-1'>{g.name}</span>
+                <span className='text-xs text-howm-text-muted'>{g.capabilities?.length || 0} capabilities</span>
               </div>
             </Link>
           ))}
@@ -86,7 +78,7 @@ export function GroupsPage() {
       )}
 
       {toasts.length > 0 && (
-        <div style={{ position: 'fixed', bottom: '24px', left: '50%', transform: 'translateX(-50%)', display: 'flex', flexDirection: 'column', gap: '8px', zIndex: 300 }}>
+        <div className='fixed bottom-6 left-1/2 -translate-x-1/2 flex flex-col gap-2 z-300'>
           {toasts.map(t => (
             <div key={t.id} style={{
               padding: '8px 16px', borderRadius: '8px', fontSize: '0.85rem',
@@ -103,32 +95,3 @@ export function GroupsPage() {
     </div>
   );
 }
-
-const pageStyle: React.CSSProperties = { maxWidth: '800px', margin: '0 auto', padding: '24px' };
-const h1Style: React.CSSProperties = { fontSize: '1.5rem', fontWeight: 600, margin: 0 };
-const sectionStyle: React.CSSProperties = {
-  background: 'var(--howm-bg-surface, #232733)',
-  border: '1px solid var(--howm-border, #2e3341)',
-  borderRadius: '12px', padding: '16px', marginBottom: '16px',
-};
-const sectionLabelStyle: React.CSSProperties = {
-  fontSize: '0.8rem', fontWeight: 600, textTransform: 'uppercase',
-  color: 'var(--howm-text-muted, #5c6170)',
-  margin: '0 0 10px', letterSpacing: '0.05em',
-};
-const groupRowStyle: React.CSSProperties = {
-  display: 'flex', alignItems: 'center',
-  padding: '10px 12px',
-  borderRadius: '4px', cursor: 'pointer',
-  transition: 'background 0.15s',
-  background: 'var(--howm-bg-secondary, #1a1d27)',
-  marginBottom: '4px',
-};
-const metaStyle: React.CSSProperties = {
-  fontSize: '0.8rem', color: 'var(--howm-text-muted, #5c6170)',
-};
-const createBtnStyle: React.CSSProperties = {
-  padding: '8px 16px', background: 'var(--howm-accent, #6c8cff)',
-  border: 'none', borderRadius: '6px', color: '#fff',
-  cursor: 'pointer', fontSize: '0.9rem', fontWeight: 600,
-};

@@ -11,7 +11,7 @@ pub struct UiManifest {
 }
 
 fn default_ui_style() -> String {
-    "iframe".to_string()
+    "nav".to_string()
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

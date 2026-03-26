@@ -134,26 +134,38 @@ export function InviteManager({ reachability }: { reachability: Reachability }) 
   const hasPending = pending.length > 0;
 
   return (
-    <div style={cardStyle}>
-      <h2 style={h2Style}>Invites</h2>
+    <div className="bg-howm-bg-surface border border-howm-border rounded-xl p-5 mb-5">
+      <h2 className="text-xl font-semibold mt-0 mb-4">Invites</h2>
 
       {/* Action buttons */}
-      <div style={{ display: 'flex', gap: '8px', marginBottom: '16px', flexWrap: 'wrap' }}>
+      <div className="flex gap-2 mb-4 flex-wrap">
         <button
           onClick={() => { setActiveTab(activeTab === 'create' ? null : 'create'); setGeneratedInvite(null); }}
-          style={activeTab === 'create' ? activeBtnStyle : btnStyle}
+          className={`px-3.5 py-1.5 border rounded text-sm cursor-pointer ${
+            activeTab === 'create'
+              ? 'bg-howm-accent-dim border-howm-accent text-howm-accent'
+              : 'bg-howm-bg-elevated border-howm-border text-howm-text-primary'
+          }`}
         >
           Create Invite
         </button>
         <button
           onClick={() => setActiveTab(activeTab === 'open' ? null : 'open')}
-          style={activeTab === 'open' ? activeBtnStyle : btnStyle}
+          className={`px-3.5 py-1.5 border rounded text-sm cursor-pointer ${
+            activeTab === 'open'
+              ? 'bg-howm-accent-dim border-howm-accent text-howm-accent'
+              : 'bg-howm-bg-elevated border-howm-border text-howm-text-primary'
+          }`}
         >
           {openStatus?.enabled ? 'Open Invite' : 'Create Open Invite'}
         </button>
         <button
           onClick={() => setActiveTab(activeTab === 'redeem' ? null : 'redeem')}
-          style={activeTab === 'redeem' ? activeBtnStyle : btnStyle}
+          className={`px-3.5 py-1.5 border rounded text-sm cursor-pointer ${
+            activeTab === 'redeem'
+              ? 'bg-howm-accent-dim border-howm-accent text-howm-accent'
+              : 'bg-howm-bg-elevated border-howm-border text-howm-text-primary'
+          }`}
         >
           Redeem
         </button>
@@ -161,30 +173,37 @@ export function InviteManager({ reachability }: { reachability: Reachability }) 
 
       {/* ── Create Invite ─────────────────────────────────────────────────── */}
       {activeTab === 'create' && (
-        <div style={panelStyle}>
+        <div className="p-3.5 px-4 bg-howm-bg-secondary border border-howm-border rounded mb-3">
           {!generatedInvite ? (
             <>
               {reachability === 'unknown' && (
-                <p style={hintStyle}>
+                <p className="text-sm text-howm-accent mt-2 mb-2.5 p-2 bg-[rgba(59,130,246,0.08)] rounded">
                   Run network detection first for the best connection experience.
                 </p>
               )}
-              <button onClick={() => inviteMutation.mutate()} disabled={inviteMutation.isPending} style={accentBtnStyle}>
+              <button onClick={() => inviteMutation.mutate()} disabled={inviteMutation.isPending}
+                className="px-3.5 py-1.5 bg-howm-accent border-none rounded text-white cursor-pointer text-sm">
                 {inviteMutation.isPending ? 'Generating…' : 'Generate Invite Link'}
               </button>
               {inviteMutation.isError && (
-                <div style={errorStyle}>{extractErrorMessage(inviteMutation.error)}</div>
+                <div className="bg-[rgba(239,68,68,0.1)] border border-howm-error rounded px-3 py-2 mt-2.5 text-sm text-howm-error">
+                  {extractErrorMessage(inviteMutation.error)}
+                </div>
               )}
             </>
           ) : (
             <>
-              <p style={{ ...guidanceStyle, marginTop: 0 }}>{inviteGuidance()}</p>
-              <div style={linkBoxStyle}>{generatedInvite}</div>
-              <div style={{ display: 'flex', gap: '8px', marginTop: '10px' }}>
-                <button onClick={() => navigator.clipboard?.writeText(generatedInvite)} style={btnStyle}>
+              <p className="text-sm text-howm-text-secondary mb-2.5 leading-normal">{inviteGuidance()}</p>
+              <div className="break-all font-mono text-xs bg-howm-bg-secondary p-2 rounded border border-howm-border text-howm-text-primary">
+                {generatedInvite}
+              </div>
+              <div className="flex gap-2 mt-2.5">
+                <button onClick={() => navigator.clipboard?.writeText(generatedInvite)}
+                  className="px-3.5 py-1.5 bg-howm-bg-elevated border border-howm-border rounded text-howm-text-primary cursor-pointer text-sm">
                   Copy Link
                 </button>
-                <button onClick={() => { setGeneratedInvite(null); setActiveTab(null); }} style={btnStyle}>
+                <button onClick={() => { setGeneratedInvite(null); setActiveTab(null); }}
+                  className="px-3.5 py-1.5 bg-howm-bg-elevated border border-howm-border rounded text-howm-text-primary cursor-pointer text-sm">
                   Dismiss
                 </button>
               </div>
@@ -195,35 +214,42 @@ export function InviteManager({ reachability }: { reachability: Reachability }) 
 
       {/* ── Open Invite ───────────────────────────────────────────────────── */}
       {activeTab === 'open' && (
-        <div style={panelStyle}>
+        <div className="p-3.5 px-4 bg-howm-bg-secondary border border-howm-border rounded mb-3">
           {openStatus?.enabled && openStatus.link ? (
-            <div style={activeBoxStyle}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-                <strong style={{ color: 'var(--howm-success, #4ade80)', fontSize: '0.875rem' }}>● Open Invite Active</strong>
-                <span style={mutedStyle}>
+            <div className="bg-[rgba(34,197,94,0.08)] border border-howm-success rounded p-3">
+              <div className="flex justify-between items-center mb-2">
+                <strong className="text-howm-success text-sm">● Open Invite Active</strong>
+                <span className="text-howm-text-muted text-sm">
                   {openStatus.current_peer_count}/{openStatus.max_peers} peers
                 </span>
               </div>
-              <div style={linkBoxStyle}>{openStatus.link}</div>
-              <div style={{ display: 'flex', gap: '8px', marginTop: '10px' }}>
-                <button onClick={() => navigator.clipboard?.writeText(openStatus.link!)} style={btnStyle}>
+              <div className="break-all font-mono text-xs bg-howm-bg-secondary p-2 rounded border border-howm-border text-howm-text-primary">
+                {openStatus.link}
+              </div>
+              <div className="flex gap-2 mt-2.5">
+                <button onClick={() => navigator.clipboard?.writeText(openStatus.link!)}
+                  className="px-3.5 py-1.5 bg-howm-bg-elevated border border-howm-border rounded text-howm-text-primary cursor-pointer text-sm">
                   Copy Link
                 </button>
-                <button onClick={() => revokeOpenMutation.mutate()} style={dangerBtnStyle}>
+                <button onClick={() => revokeOpenMutation.mutate()}
+                  className="px-3.5 py-1.5 bg-[rgba(239,68,68,0.15)] border border-howm-error rounded text-howm-error cursor-pointer text-sm">
                   {revokeOpenMutation.isPending ? 'Revoking…' : 'Revoke'}
                 </button>
               </div>
             </div>
           ) : (
             <>
-              <p style={{ ...mutedStyle, marginTop: 0, marginBottom: '12px' }}>
+              <p className="text-howm-text-muted text-sm mb-3">
                 Create a reusable invite link that anyone can use to connect to you.
               </p>
-              <button onClick={() => createOpenMutation.mutate()} disabled={createOpenMutation.isPending} style={accentBtnStyle}>
+              <button onClick={() => createOpenMutation.mutate()} disabled={createOpenMutation.isPending}
+                className="px-3.5 py-1.5 bg-howm-accent border-none rounded text-white cursor-pointer text-sm">
                 {createOpenMutation.isPending ? 'Creating…' : 'Create Open Invite'}
               </button>
               {createOpenMutation.isError && (
-                <div style={errorStyle}>{extractErrorMessage(createOpenMutation.error)}</div>
+                <div className="bg-[rgba(239,68,68,0.1)] border border-howm-error rounded px-3 py-2 mt-2.5 text-sm text-howm-error">
+                  {extractErrorMessage(createOpenMutation.error)}
+                </div>
               )}
             </>
           )}
@@ -232,22 +258,22 @@ export function InviteManager({ reachability }: { reachability: Reachability }) 
 
       {/* ── Redeem ────────────────────────────────────────────────────────── */}
       {activeTab === 'redeem' && (
-        <div style={panelStyle}>
-          <p style={{ ...mutedStyle, marginTop: 0, marginBottom: '10px' }}>
+        <div className="p-3.5 px-4 bg-howm-bg-secondary border border-howm-border rounded mb-3">
+          <p className="text-howm-text-muted text-sm mb-2.5">
             Paste any invite link — regular, open, or accept response.
           </p>
-          <div style={formStyle}>
+          <div className="flex gap-2 items-center flex-wrap">
             <input
               placeholder="howm://invite/...  howm://open/...  howm://accept/..."
               value={redeemInput}
               onChange={e => setRedeemInput(e.target.value)}
               onKeyDown={e => e.key === 'Enter' && redeemInput.trim() && handleRedeem()}
-              style={{ ...inputStyle, flex: 1 }}
+              className="flex-1 px-2.5 py-1.5 bg-howm-bg-primary border border-howm-border rounded text-howm-text-primary text-sm font-mono"
             />
             <button
               onClick={handleRedeem}
               disabled={!redeemInput.trim() || redeemMutation.isPending || acceptMutation.isPending || redeemOpenMutation.isPending}
-              style={accentBtnStyle}
+              className="px-3.5 py-1.5 bg-howm-accent border-none rounded text-white cursor-pointer text-sm"
             >
               {(redeemMutation.isPending || acceptMutation.isPending || redeemOpenMutation.isPending)
                 ? 'Redeeming…'
@@ -255,19 +281,21 @@ export function InviteManager({ reachability }: { reachability: Reachability }) 
             </button>
           </div>
           {isAcceptToken && (
-            <p style={hintStyle}>Detected an accept response — this will complete a two-way exchange.</p>
+            <p className="text-sm text-howm-accent mt-2 mb-2.5 p-2 bg-[rgba(59,130,246,0.08)] rounded">
+              Detected an accept response — this will complete a two-way exchange.
+            </p>
           )}
-          {redeemMutation.isError && <div style={errorStyle}>{extractErrorMessage(redeemMutation.error)}</div>}
-          {acceptMutation.isError && <div style={errorStyle}>{extractErrorMessage(acceptMutation.error)}</div>}
-          {redeemOpenMutation.isError && <div style={errorStyle}>{extractErrorMessage(redeemOpenMutation.error)}</div>}
+          {redeemMutation.isError && <div className="bg-[rgba(239,68,68,0.1)] border border-howm-error rounded px-3 py-2 mt-2.5 text-sm text-howm-error">{extractErrorMessage(redeemMutation.error)}</div>}
+          {acceptMutation.isError && <div className="bg-[rgba(239,68,68,0.1)] border border-howm-error rounded px-3 py-2 mt-2.5 text-sm text-howm-error">{extractErrorMessage(acceptMutation.error)}</div>}
+          {redeemOpenMutation.isError && <div className="bg-[rgba(239,68,68,0.1)] border border-howm-error rounded px-3 py-2 mt-2.5 text-sm text-howm-error">{extractErrorMessage(redeemOpenMutation.error)}</div>}
         </div>
       )}
 
       {/* ── Pending Exchanges ─────────────────────────────────────────────── */}
       {hasPending && (
-        <div style={{ marginTop: '16px' }}>
-          <h3 style={h3Style}>Pending Exchanges</h3>
-          <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+        <div className="mt-4">
+          <h3 className="text-sm font-semibold mt-0 mb-2.5 text-howm-text-secondary">Pending Exchanges</h3>
+          <ul className="list-none p-0 m-0">
             {activePending.map(p => (
               <PendingRow key={p.id} exchange={p} />
             ))}
@@ -280,7 +308,7 @@ export function InviteManager({ reachability }: { reachability: Reachability }) 
 
       {/* Empty state */}
       {activeTab === null && !hasPending && !openStatus?.enabled && (
-        <p style={mutedStyle}>
+        <p className="text-howm-text-muted text-sm">
           Create an invite to share with someone, or redeem one you've received.
         </p>
       )}
@@ -305,23 +333,20 @@ function PendingRow({ exchange }: { exchange: PendingExchange }) {
 
   if (exchange.status === 'waiting') {
     return (
-      <li style={pendingRowStyle}>
-        <div style={{ flex: 1 }}>
-          <span style={{ color: 'var(--howm-warning, #fbbf24)', fontWeight: 600, fontSize: '0.875rem' }}>
+      <li className="flex justify-between items-center px-3 py-2.5 border border-howm-border rounded mb-1.5 bg-howm-bg-secondary">
+        <div className="flex-1">
+          <span className="text-howm-warning font-semibold text-sm">
             ⏳ Waiting for response
           </span>
-          <span style={{ ...mutedStyle, marginLeft: '12px' }}>
+          <span className="text-howm-text-muted text-sm ml-3">
             Created {formatRelativeTime(exchange.created_at)}
           </span>
-          <p style={{ ...mutedStyle, margin: '4px 0 0', fontSize: '0.825rem' }}>
+          <p className="text-howm-text-muted text-xs mt-1">
             Paste their accept link in Redeem when they send it back.
           </p>
         </div>
-        <span style={{
-          fontFamily: 'var(--howm-font-mono, monospace)',
-          fontSize: '0.85rem',
-          color: remaining < 120 ? 'var(--howm-error, #f87171)' : 'var(--howm-text-secondary, #8b91a0)',
-          fontWeight: 600, whiteSpace: 'nowrap',
+        <span className="font-mono text-sm font-semibold whitespace-nowrap" style={{
+          color: remaining < 120 ? 'var(--howm-error, #ef4444)' : 'var(--howm-text-secondary, #a0a0a0)',
         }}>
           {formatTimeRemaining(remaining)}
         </span>
@@ -331,11 +356,11 @@ function PendingRow({ exchange }: { exchange: PendingExchange }) {
 
   if (exchange.status === 'completed') {
     return (
-      <li style={pendingRowStyle}>
-        <span style={{ color: 'var(--howm-success, #4ade80)', fontWeight: 600, fontSize: '0.875rem' }}>
+      <li className="flex justify-between items-center px-3 py-2.5 border border-howm-border rounded mb-1.5 bg-howm-bg-secondary">
+        <span className="text-howm-success font-semibold text-sm">
           ✓ Connected!
         </span>
-        <span style={{ ...mutedStyle, marginLeft: '12px', fontSize: '0.825rem' }}>
+        <span className="text-howm-text-muted text-xs ml-3">
           Peer joined via two-way exchange.
         </span>
       </li>
@@ -344,125 +369,13 @@ function PendingRow({ exchange }: { exchange: PendingExchange }) {
 
   // expired
   return (
-    <li style={pendingRowStyle}>
-      <span style={{ color: 'var(--howm-text-muted, #5c6170)', fontWeight: 600, fontSize: '0.875rem' }}>
+    <li className="flex justify-between items-center px-3 py-2.5 border border-howm-border rounded mb-1.5 bg-howm-bg-secondary">
+      <span className="text-howm-text-muted font-semibold text-sm">
         ✕ Expired
       </span>
-      <span style={{ ...mutedStyle, marginLeft: '12px', fontSize: '0.825rem' }}>
+      <span className="text-howm-text-muted text-xs ml-3">
         No response received. Create a new invite to try again.
       </span>
     </li>
   );
 }
-
-// ── Styles ───────────────────────────────────────────────────────────────────
-
-const cardStyle: React.CSSProperties = {
-  background: 'var(--howm-bg-surface, #232733)',
-  border: '1px solid var(--howm-border, #2e3341)',
-  borderRadius: 'var(--howm-radius-lg, 12px)',
-  padding: '20px',
-  marginBottom: '20px',
-};
-const h2Style: React.CSSProperties = {
-  fontSize: 'var(--howm-font-size-xl, 1.25rem)',
-  fontWeight: 600, marginTop: 0, marginBottom: '16px',
-};
-const h3Style: React.CSSProperties = {
-  fontSize: '0.95rem', fontWeight: 600,
-  marginTop: 0, marginBottom: '10px',
-  color: 'var(--howm-text-secondary, #8b91a0)',
-};
-const btnStyle: React.CSSProperties = {
-  padding: '6px 14px',
-  background: 'var(--howm-bg-elevated, #2a2e3d)',
-  border: '1px solid var(--howm-border, #2e3341)',
-  borderRadius: 'var(--howm-radius-sm, 4px)',
-  color: 'var(--howm-text-primary, #e1e4eb)',
-  cursor: 'pointer', fontSize: '0.875em',
-};
-const activeBtnStyle: React.CSSProperties = {
-  ...btnStyle,
-  background: 'rgba(108,140,255,0.15)',
-  borderColor: 'var(--howm-accent, #6c8cff)',
-  color: 'var(--howm-accent, #6c8cff)',
-};
-const accentBtnStyle: React.CSSProperties = {
-  padding: '6px 14px',
-  background: 'var(--howm-accent, #6c8cff)',
-  border: 'none',
-  borderRadius: 'var(--howm-radius-sm, 4px)',
-  color: '#fff', cursor: 'pointer', fontSize: '0.875em',
-};
-const dangerBtnStyle: React.CSSProperties = {
-  ...btnStyle,
-  background: 'rgba(248,113,113,0.15)',
-  color: 'var(--howm-error, #f87171)',
-  border: '1px solid var(--howm-error, #f87171)',
-};
-const panelStyle: React.CSSProperties = {
-  padding: '14px 16px',
-  background: 'var(--howm-bg-secondary, #1a1d27)',
-  border: '1px solid var(--howm-border, #2e3341)',
-  borderRadius: 'var(--howm-radius-sm, 4px)',
-  marginBottom: '12px',
-};
-const formStyle: React.CSSProperties = {
-  display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap',
-};
-const inputStyle: React.CSSProperties = {
-  padding: '6px 10px',
-  background: 'var(--howm-bg-primary, #0f1117)',
-  border: '1px solid var(--howm-border, #2e3341)',
-  borderRadius: 'var(--howm-radius-sm, 4px)',
-  color: 'var(--howm-text-primary, #e1e4eb)',
-  fontSize: '0.875em', fontFamily: 'var(--howm-font-mono, monospace)',
-};
-const linkBoxStyle: React.CSSProperties = {
-  wordBreak: 'break-all',
-  fontFamily: 'var(--howm-font-mono, monospace)',
-  fontSize: '0.8em',
-  background: 'var(--howm-bg-secondary, #1a1d27)',
-  padding: '8px 10px',
-  borderRadius: 'var(--howm-radius-sm, 4px)',
-  border: '1px solid var(--howm-border, #2e3341)',
-  color: 'var(--howm-text-primary, #e1e4eb)',
-};
-const activeBoxStyle: React.CSSProperties = {
-  background: 'rgba(74,222,128,0.08)',
-  border: '1px solid var(--howm-success, #4ade80)',
-  borderRadius: 'var(--howm-radius-sm, 4px)',
-  padding: '12px',
-};
-const errorStyle: React.CSSProperties = {
-  background: 'rgba(248,113,113,0.1)',
-  border: '1px solid var(--howm-error, #f87171)',
-  borderRadius: 'var(--howm-radius-sm, 4px)',
-  padding: '8px 12px', marginTop: '10px',
-  fontSize: '0.875em', color: 'var(--howm-error, #f87171)',
-};
-const hintStyle: React.CSSProperties = {
-  fontSize: '0.825rem',
-  color: 'var(--howm-accent, #6c8cff)',
-  marginTop: '8px', marginBottom: '10px',
-  padding: '8px 10px',
-  background: 'rgba(108,140,255,0.08)',
-  borderRadius: 'var(--howm-radius-sm, 4px)',
-};
-const guidanceStyle: React.CSSProperties = {
-  fontSize: '0.875rem',
-  color: 'var(--howm-text-secondary, #8b91a0)',
-  marginBottom: '10px', lineHeight: 1.5,
-};
-const mutedStyle: React.CSSProperties = {
-  color: 'var(--howm-text-muted, #5c6170)',
-  margin: 0, fontSize: '0.875rem',
-};
-const pendingRowStyle: React.CSSProperties = {
-  display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-  padding: '10px 12px',
-  border: '1px solid var(--howm-border, #2e3341)',
-  borderRadius: 'var(--howm-radius-sm, 4px)',
-  marginBottom: '6px',
-  background: 'var(--howm-bg-secondary, #1a1d27)',
-};

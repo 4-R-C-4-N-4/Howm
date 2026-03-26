@@ -1,3 +1,28 @@
+@import "tailwindcss";
+
+@theme {
+  --color-howm-bg-primary:   var(--howm-bg-primary);
+  --color-howm-bg-secondary: var(--howm-bg-secondary);
+  --color-howm-bg-surface:   var(--howm-bg-surface);
+  --color-howm-bg-elevated:  var(--howm-bg-elevated);
+
+  --color-howm-text-primary:   var(--howm-text-primary);
+  --color-howm-text-secondary: var(--howm-text-secondary);
+  --color-howm-text-muted:     var(--howm-text-muted);
+
+  --color-howm-accent:       var(--howm-accent);
+  --color-howm-accent-hover: var(--howm-accent-hover);
+  --color-howm-accent-dim:   var(--howm-accent-dim);
+
+  --color-howm-success: var(--howm-success);
+  --color-howm-warning: var(--howm-warning);
+  --color-howm-error:   var(--howm-error);
+  --color-howm-info:    var(--howm-info);
+
+  --color-howm-border:        var(--howm-border);
+  --color-howm-border-subtle: var(--howm-border-subtle);
+}
+
 *, *::before, *::after { box-sizing: border-box; }
 
 body {

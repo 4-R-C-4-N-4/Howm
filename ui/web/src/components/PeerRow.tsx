@@ -64,16 +64,14 @@ export function PeerRow({ peer, groups, now, onToast }: PeerRowProps) {
 
   return (
     <div
-      style={rowStyle}
+      className='flex items-center gap-2 py-2.5 px-3 border border-howm-border rounded mb-1 bg-howm-bg-secondary cursor-pointer transition-colors duration-150 hover:bg-howm-bg-elevated'
       onClick={() => navigate(`/peers/${hexId}`)}
-      onMouseEnter={e => (e.currentTarget.style.background = 'var(--howm-bg-elevated, #2a2e3d)')}
-      onMouseLeave={e => (e.currentTarget.style.background = 'var(--howm-bg-secondary, #1a1d27)')}
     >
-      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flex: 1, minWidth: 0 }}>
-        <span style={{ color: isDenied ? '#f87171' : online ? '#4ade80' : '#5c6170', fontSize: '0.9rem' }}>
+      <div className='flex items-center gap-2.5 flex-1 min-w-0'>
+        <span style={{ color: isDenied ? '#ef4444' : online ? '#22c55e' : '#666666' }} className='text-sm'>
           {isDenied ? '✕' : online ? '●' : '○'}
         </span>
-        <span style={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '180px' }}>
+        <span className='font-medium overflow-hidden text-ellipsis whitespace-nowrap max-w-[180px]'>
           {peer.name}
         </span>
         <span style={{
@@ -82,20 +80,20 @@ export function PeerRow({ peer, groups, now, onToast }: PeerRowProps) {
         }}>
           {badge.label}
         </span>
-        <span style={{ color: 'var(--howm-text-muted, #5c6170)', fontSize: '0.8rem', marginLeft: 'auto', whiteSpace: 'nowrap' }}>
+        <span className='text-howm-text-muted text-xs ml-auto whitespace-nowrap'>
           {isDenied ? '—' : formatLastSeen(peer.last_seen, now)}
         </span>
       </div>
 
-      <div style={{ position: 'relative' }} ref={menuRef}>
+      <div className='relative' ref={menuRef}>
         <button
           onClick={e => { e.stopPropagation(); setMenuOpen(!menuOpen); }}
-          style={overflowBtnStyle}
+          className='bg-none border-none text-howm-text-muted cursor-pointer text-lg py-1 px-2 rounded'
         >
           ⋯
         </button>
         {menuOpen && (
-          <div style={menuStyle} onClick={e => e.stopPropagation()}>
+          <div className='absolute right-0 top-full mt-1 bg-howm-bg-surface border border-howm-border rounded-lg py-1 z-200 min-w-[180px] shadow-xl' onClick={e => e.stopPropagation()}>
             {tierOptions.map(opt => {
               const isCurrent = opt.tier === currentTier;
               return (
@@ -103,17 +101,17 @@ export function PeerRow({ peer, groups, now, onToast }: PeerRowProps) {
                   key={opt.group}
                   disabled={isCurrent || moveMutation.isPending}
                   onClick={() => { moveMutation.mutate(opt.group); setMenuOpen(false); }}
-                  style={{ ...menuItemStyle, color: isCurrent ? 'var(--howm-text-muted, #5c6170)' : 'var(--howm-text-primary, #e1e4eb)' }}
+                  className={`block w-full text-left bg-none border-none py-2 px-3.5 cursor-pointer text-sm ${isCurrent ? 'text-howm-text-muted' : 'text-howm-text-primary'}`}
                 >
                   {isCurrent ? `✓ ${opt.tier}` : opt.label}
                 </button>
               );
             })}
-            <div style={{ borderTop: '1px solid var(--howm-border, #2e3341)', margin: '4px 0' }} />
+            <div className='border-t border-howm-border my-1' />
             <button
               onClick={() => { denyMutation.mutate(); setMenuOpen(false); }}
               disabled={denyMutation.isPending}
-              style={{ ...menuItemStyle, color: '#f87171' }}
+              className='block w-full text-left bg-none border-none py-2 px-3.5 cursor-pointer text-sm text-red-500'
             >
               🔴 Deny Peer
             </button>
@@ -123,34 +121,3 @@ export function PeerRow({ peer, groups, now, onToast }: PeerRowProps) {
     </div>
   );
 }
-
-const rowStyle: React.CSSProperties = {
-  display: 'flex', alignItems: 'center', gap: '8px',
-  padding: '10px 12px',
-  border: '1px solid var(--howm-border, #2e3341)',
-  borderRadius: 'var(--howm-radius-sm, 4px)',
-  marginBottom: '4px',
-  background: 'var(--howm-bg-secondary, #1a1d27)',
-  cursor: 'pointer',
-  transition: 'background 0.15s',
-};
-
-const overflowBtnStyle: React.CSSProperties = {
-  background: 'none', border: 'none', color: 'var(--howm-text-muted, #5c6170)',
-  cursor: 'pointer', fontSize: '1.2rem', padding: '4px 8px', borderRadius: '4px',
-};
-
-const menuStyle: React.CSSProperties = {
-  position: 'absolute', right: 0, top: '100%', marginTop: '4px',
-  background: 'var(--howm-bg-surface, #232733)',
-  border: '1px solid var(--howm-border, #2e3341)',
-  borderRadius: '8px', padding: '4px 0', zIndex: 200,
-  minWidth: '180px', boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
-};
-
-const menuItemStyle: React.CSSProperties = {
-  display: 'block', width: '100%', textAlign: 'left',
-  background: 'none', border: 'none', padding: '8px 14px',
-  cursor: 'pointer', fontSize: '0.875rem',
-  color: 'var(--howm-text-primary, #e1e4eb)',
-};

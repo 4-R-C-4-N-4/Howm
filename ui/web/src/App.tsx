@@ -14,6 +14,7 @@ import { getBadges, pollNotifications } from './api/notifications';
 import { getApiToken } from './api/client';
 import { listenFromCapabilities, type NotifyLevel } from './lib/postMessage';
 import { useBadgeStore } from './stores/badgeStore';
+import { FabLayer } from './components/FabLayer';
 
 const queryClient = new QueryClient();
 
@@ -30,9 +31,9 @@ let _toastId = 0;
 function ToastContainer({ toasts, dismiss }: { toasts: Toast[]; dismiss: (id: number) => void }) {
   if (!toasts.length) return null;
   return (
-    <div style={toastContainerStyle}>
+    <div className='fixed bottom-6 right-6 flex flex-col gap-2 z-300'>
       {toasts.map(t => (
-        <div key={t.id} style={{ ...toastStyle, ...toastLevelStyle[t.level] }} onClick={() => dismiss(t.id)}>
+        <div key={t.id} className='py-2.5 px-4 rounded-lg text-sm cursor-pointer max-w-80 shadow-[0_4px_12px_rgba(0,0,0,0.5)]' style={toastLevelStyle[t.level]} onClick={() => dismiss(t.id)}>
           {t.message}
         </div>
       ))}
@@ -40,23 +41,6 @@ function ToastContainer({ toasts, dismiss }: { toasts: Toast[]; dismiss: (id: nu
   );
 }
 
-const toastContainerStyle: React.CSSProperties = {
-  position: 'fixed',
-  bottom: '24px',
-  right: '24px',
-  display: 'flex',
-  flexDirection: 'column',
-  gap: '8px',
-  zIndex: 300,
-};
-const toastStyle: React.CSSProperties = {
-  padding: '10px 16px',
-  borderRadius: '8px',
-  fontSize: '0.875rem',
-  cursor: 'pointer',
-  maxWidth: '320px',
-  boxShadow: '0 4px 12px rgba(0,0,0,0.5)',
-};
 const toastLevelStyle: Record<NotifyLevel, React.CSSProperties> = {
   info:    { background: '#1e3a5f', color: '#93c5fd', border: '1px solid #2563eb' },
   success: { background: '#14532d', color: '#86efac', border: '1px solid #16a34a' },
@@ -81,37 +65,29 @@ function NavBar() {
   });
   const badges = badgeData?.badges ?? {};
 
-  const linkStyle = ({ isActive }: { isActive: boolean }): React.CSSProperties => ({
-    padding: '0 16px',
-    height: '48px',
-    display: 'flex',
-    alignItems: 'center',
-    textDecoration: 'none',
-    color: isActive
-      ? 'var(--howm-accent, #6c8cff)'
-      : 'var(--howm-text-secondary, #8b91a0)',
-    fontWeight: isActive ? 600 : 400,
-    fontSize: '0.9rem',
-    borderBottom: isActive ? '2px solid var(--howm-accent, #6c8cff)' : '2px solid transparent',
-    whiteSpace: 'nowrap',
-  });
+  const linkClass = ({ isActive }: { isActive: boolean }) =>
+    `px-4 h-12 flex items-center no-underline text-sm whitespace-nowrap border-b-2 ${
+      isActive
+        ? 'text-howm-accent font-semibold border-howm-accent'
+        : 'text-howm-text-secondary font-normal border-transparent'
+    }`;
 
   return (
-    <nav style={navStyle}>
-      <span style={brandStyle}>howm</span>
-      <NavLink to="/dashboard" style={linkStyle}>Dashboard</NavLink>
-      <NavLink to="/peers" style={linkStyle}>Peers</NavLink>
-      <NavLink to="/connection" style={linkStyle}>Connection</NavLink>
-      <NavLink to="/access/groups" style={linkStyle}>Groups</NavLink>
-      {capabilities?.filter(c => c.ui).map(cap => {
+    <nav className='flex items-center h-12 border-b border-howm-border bg-howm-bg-surface sticky top-0 z-100 pr-2 overflow-hidden'>
+      <span className='px-5 font-bold text-base text-howm-accent tracking-wide border-r border-howm-border h-full flex items-center'>howm</span>
+      <NavLink to="/dashboard" className={linkClass}>Dashboard</NavLink>
+      <NavLink to="/peers" className={linkClass}>Peers</NavLink>
+      <NavLink to="/connection" className={linkClass}>Connection</NavLink>
+      <NavLink to="/access/groups" className={linkClass}>Groups</NavLink>
+      {capabilities?.filter(c => c.ui && (!c.ui.style || c.ui.style === 'nav')).map(cap => {
         const badgeCount = badges[cap.name] ?? 0;
         return (
-          <NavLink key={cap.name} to={`/app/${cap.name}`} style={linkStyle}>
+          <NavLink key={cap.name} to={`/app/${cap.name}`} className={linkClass}>
             {({ isActive }) => (
-              <span style={{ display: 'flex', alignItems: 'center', gap: '6px', color: isActive ? 'var(--howm-accent, #6c8cff)' : 'inherit', fontWeight: isActive ? 600 : 400 }}>
+              <span className={`flex items-center gap-1.5 ${isActive ? 'text-howm-accent font-semibold' : 'text-inherit font-normal'}`}>
                 {cap.ui!.label}
                 {badgeCount > 0 && (
-                  <span style={{ background: '#ef4444', color: '#fff', borderRadius: '10px', padding: '1px 6px', fontSize: '0.7rem', fontWeight: 600, minWidth: '16px', textAlign: 'center' as const }}>
+                  <span className='bg-howm-error text-white rounded-xl py-px px-1.5 text-[0.7rem] font-semibold min-w-4 text-center'>
                     {badgeCount}
                   </span>
                 )}
@@ -120,13 +96,9 @@ function NavBar() {
           </NavLink>
         );
       })}
-      <NavLink to="/settings" style={{ ...linkStyle({ isActive: false }), marginLeft: 'auto' }}
-        className={({ isActive }) => isActive ? 'active' : ''}>
+      <NavLink to="/settings" className={({ isActive }) => `${linkClass({ isActive })} ml-auto`}>
         {({ isActive }) => (
-          <span style={{
-            color: isActive ? 'var(--howm-accent, #6c8cff)' : 'var(--howm-text-secondary, #8b91a0)',
-            fontWeight: isActive ? 600 : 400,
-          }}>
+          <span className={isActive ? 'text-howm-accent font-semibold' : 'text-howm-text-secondary font-normal'}>
             Settings
           </span>
         )}
@@ -134,30 +106,6 @@ function NavBar() {
     </nav>
   );
 }
-
-const navStyle: React.CSSProperties = {
-  display: 'flex',
-  alignItems: 'center',
-  height: '48px',
-  borderBottom: '1px solid var(--howm-border, #2e3341)',
-  background: 'var(--howm-bg-surface, #232733)',
-  position: 'sticky',
-  top: 0,
-  zIndex: 100,
-  paddingRight: '8px',
-  overflow: 'hidden',
-};
-const brandStyle: React.CSSProperties = {
-  padding: '0 20px',
-  fontWeight: 700,
-  fontSize: '1rem',
-  color: 'var(--howm-accent, #6c8cff)',
-  letterSpacing: '0.04em',
-  borderRight: '1px solid var(--howm-border, #2e3341)',
-  height: '100%',
-  display: 'flex',
-  alignItems: 'center',
-};
 
 // ── App shell ─────────────────────────────────────────────────────────────────
 
@@ -217,7 +165,7 @@ function Shell() {
   return (
     <>
       <NavBar />
-      <div style={{ background: 'var(--howm-bg-primary, #0f1117)', minHeight: 'calc(100vh - 48px)' }}>
+      <div className='bg-howm-bg-primary min-h-[calc(100vh-48px)]'>
         <Routes>
           <Route path="/" element={<Navigate to="/dashboard" replace />} />
           <Route path="/dashboard" element={<Dashboard />} />
@@ -230,6 +178,7 @@ function Shell() {
           <Route path="/app/:name" element={<CapabilityPage />} />
         </Routes>
       </div>
+      <FabLayer />
       <ToastContainer toasts={toasts} dismiss={dismissToast} />
     </>
   );
