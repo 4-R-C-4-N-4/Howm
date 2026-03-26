@@ -7,12 +7,16 @@ import {
   updateP2pcdConfig,
   type P2pcdConfig,
 } from '../api/settings';
+import { getCapabilities, startCapability, stopCapability, type Capability } from '../api/capabilities';
+import { CapIcon } from '../components/icons';
 
 export function Settings() {
   const qc = useQueryClient();
   const { data: node } = useQuery({ queryKey: ['settings-node'], queryFn: getNodeSettings });
   const { data: identity } = useQuery({ queryKey: ['settings-identity'], queryFn: getIdentity });
   const { data: p2pcd } = useQuery({ queryKey: ['settings-p2pcd'], queryFn: getP2pcdConfig });
+  const { data: capabilities } = useQuery({ queryKey: ['capabilities'], queryFn: getCapabilities, refetchInterval: 5000 });
+  const [togglingCap, setTogglingCap] = useState<string | null>(null);
 
   const [p2pcdDraft, setP2pcdDraft] = useState<string>('');
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'ok' | 'err'>('idle');
@@ -48,6 +52,21 @@ export function Settings() {
     }
   }
 
+  async function handleToggleCap(cap: Capability) {
+    const isRunning = cap.status === 'Running';
+    setTogglingCap(cap.name);
+    try {
+      if (isRunning) {
+        await stopCapability(cap.name);
+      } else {
+        await startCapability(cap.name);
+      }
+      qc.invalidateQueries({ queryKey: ['capabilities'] });
+    } finally {
+      setTogglingCap(null);
+    }
+  }
+
   return (
     <div className='max-w-[720px] mx-auto p-6'>
       <h1 className='text-2xl mb-6 font-semibold'>Settings</h1>
@@ -65,6 +84,58 @@ export function Settings() {
           </dl>
         ) : (
           <p className='text-howm-text-muted m-0'>Loading…</p>
+        )}
+      </section>
+
+      {/* Capabilities */}
+      <section className='bg-howm-bg-surface border border-howm-border rounded-xl p-5 mb-5'>
+        <h2 className='text-xl font-semibold mt-0 mb-4'>Capabilities</h2>
+        {!capabilities ? (
+          <p className='text-howm-text-muted m-0 text-sm'>Loading…</p>
+        ) : capabilities.length === 0 ? (
+          <p className='text-howm-text-muted m-0 text-sm'>No capabilities installed.</p>
+        ) : (
+          <ul className='list-none p-0 m-0 flex flex-col gap-2'>
+            {capabilities.map((cap: Capability) => {
+              const isRunning = cap.status === 'Running';
+              const isToggling = togglingCap === cap.name;
+              const statusText = typeof cap.status === 'string' ? cap.status : `Error: ${(cap.status as { Error: string }).Error}`;
+              return (
+                <li key={cap.name} className='flex items-center justify-between gap-3 py-3 px-4 bg-howm-bg-secondary border border-howm-border rounded-lg'>
+                  <div className='flex items-center gap-3 min-w-0'>
+                    <span className='text-howm-text-secondary shrink-0'>
+                      <CapIcon icon={cap.ui?.icon} />
+                    </span>
+                    <div className='min-w-0'>
+                      <div className='font-semibold text-sm'>{cap.ui?.label ?? cap.name}</div>
+                      <div className='text-howm-text-muted text-xs flex items-center gap-2'>
+                        <span className='font-mono'>{cap.name}</span>
+                        <span>v{cap.version}</span>
+                        <span className='font-mono'>:{cap.port}</span>
+                      </div>
+                    </div>
+                  </div>
+                  <div className='flex items-center gap-3 shrink-0'>
+                    <span className={`text-xs ${isRunning ? 'text-howm-success' : 'text-howm-text-muted'}`}>
+                      {statusText}
+                    </span>
+                    <button
+                      onClick={() => handleToggleCap(cap)}
+                      disabled={isToggling}
+                      className={`relative w-11 h-6 rounded-full border-none cursor-pointer transition-colors duration-200 ${
+                        isRunning ? 'bg-howm-accent' : 'bg-howm-bg-elevated'
+                      } ${isToggling ? 'opacity-50 cursor-wait' : ''}`}
+                      title={isRunning ? 'Stop' : 'Start'}
+                    >
+                      <span className={`absolute left-0.5 top-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200 ${
+                        isRunning ? 'translate-x-5' : 'translate-x-0'
+                      }`} />
+                    </button>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
         )}
       </section>
 
