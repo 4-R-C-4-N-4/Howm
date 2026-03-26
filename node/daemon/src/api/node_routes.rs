@@ -136,11 +136,12 @@ pub struct RedeemInviteRequest {
 }
 
 pub async fn redeem_invite(
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(state): State<AppState>,
     Json(req): Json<RedeemInviteRequest>,
 ) -> Result<Json<Value>, AppError> {
-    // S8: Rate limiting
-    if !state.invite_rate_limiter.check("redeem") {
+    // S8: Rate limiting (per source IP)
+    if !state.invite_rate_limiter.check(&addr.ip().to_string()) {
         return Err(AppError::BadRequest(
             "rate limit exceeded — try again later".to_string(),
         ));
@@ -307,11 +308,12 @@ pub struct CompleteInviteRequest {
 }
 
 pub async fn complete_invite(
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(state): State<AppState>,
     Json(req): Json<CompleteInviteRequest>,
 ) -> Result<Json<Value>, AppError> {
-    // S8: Rate limiting
-    if !state.invite_rate_limiter.check("complete") {
+    // S8: Rate limiting (per source IP)
+    if !state.invite_rate_limiter.check(&addr.ip().to_string()) {
         return Err(AppError::BadRequest(
             "rate limit exceeded — try again later".to_string(),
         ));
@@ -509,11 +511,12 @@ pub struct OpenJoinRequest {
 }
 
 pub async fn open_join(
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(state): State<AppState>,
     Json(req): Json<OpenJoinRequest>,
 ) -> Result<Json<Value>, AppError> {
-    // 1. Rate limit
-    if !state.open_join_rate_limiter.check("open-join") {
+    // 1. Rate limit (per source IP)
+    if !state.open_join_rate_limiter.check(&addr.ip().to_string()) {
         return Err(AppError::TooManyRequests(
             "rate limit exceeded — try again later".to_string(),
         ));
