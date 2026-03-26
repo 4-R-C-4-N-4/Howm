@@ -84,7 +84,9 @@ var MAX_FILE_SIZE = 500 * 1024 * 1024;
     }
   });
 
-  window.parent.postMessage({ type: 'howm:ready', payload: { name: 'files' } }, window.location.origin);
+  // Derive name from proxy path (/cap/{name}/ui/) instead of hardcoding
+  var _capName = (window.location.pathname.match(/^\/cap\/([^/]+)/) || [])[1] || 'files';
+  window.parent.postMessage({ type: 'howm:ready', payload: { name: _capName } }, window.location.origin);
 
   document.getElementById('file-input').addEventListener('change', onFileSelected);
   document.getElementById('upload-access').addEventListener('change', onAccessChange);

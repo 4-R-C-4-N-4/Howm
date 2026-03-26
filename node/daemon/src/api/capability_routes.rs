@@ -144,6 +144,21 @@ pub async fn install_capability(
         .to_string_lossy()
         .to_string();
 
+    // Derive route_name from manifest api.base_path (e.g. "/cap/feed" → "feed"),
+    // falling back to last dot-segment of the capability name (e.g. "social.feed" → "feed").
+    let route_name = manifest
+        .api
+        .as_ref()
+        .and_then(|a| a.base_path.as_deref())
+        .and_then(|bp| bp.trim_matches('/').rsplit('/').next())
+        .or_else(|| manifest.name.rsplit('.').next())
+        .map(|s| s.to_string());
+
+    // Derive P2P-CD fully-qualified name: howm.{manifest.name}.{major_version}
+    // e.g. manifest.name="social.feed", version="0.1.0" → "howm.social.feed.0"
+    let major_version = manifest.version.split('.').next().unwrap_or("1");
+    let p2pcd_name = Some(format!("howm.{}.{}", manifest.name, major_version));
+
     let entry = CapabilityEntry {
         name: manifest.name.clone(),
         version: manifest.version.clone(),
@@ -155,6 +170,8 @@ pub async fn install_capability(
         status: CapStatus::Running,
         visibility,
         ui: manifest.ui.clone(),
+        route_name,
+        p2pcd_name,
     };
 
     // 7. Persist

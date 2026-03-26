@@ -36,8 +36,9 @@ var BASE = (function () {
     }
   });
 
-  // Signal to the shell that we loaded
-  window.parent.postMessage({ type: 'howm:ready', payload: { name: 'feed' } }, window.location.origin);
+  // Signal to the shell that we loaded — derive name from proxy path (/cap/{name}/ui/)
+  var _capName = (window.location.pathname.match(/^\/cap\/([^/]+)/) || [])[1] || 'feed';
+  window.parent.postMessage({ type: 'howm:ready', payload: { name: _capName } }, window.location.origin);
 
   // File input change handler
   document.getElementById('file-input').addEventListener('change', onFilesSelected);

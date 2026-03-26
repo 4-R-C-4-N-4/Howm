@@ -50,7 +50,9 @@ var DAEMON_BASE = (function () {
     }
   });
 
-  window.parent.postMessage({ type: 'howm:ready', payload: { name: 'messaging' } }, window.location.origin);
+  // Derive name from proxy path (/cap/{name}/ui/) instead of hardcoding
+  var _capName = (window.location.pathname.match(/^\/cap\/([^/]+)/) || [])[1] || 'messaging';
+  window.parent.postMessage({ type: 'howm:ready', payload: { name: _capName } }, window.location.origin);
 
   // Hash routing
   window.addEventListener('hashchange', route);

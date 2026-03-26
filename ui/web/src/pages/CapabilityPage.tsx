@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useParams, useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { getCapabilities } from '../api/capabilities';
@@ -22,6 +22,8 @@ export function CapabilityPage() {
   const [searchParams] = useSearchParams();
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const readySent = useRef(false);
+  const [loadError, setLoadError] = useState(false);
+  const loadTimeout = useRef<ReturnType<typeof setTimeout>>();
 
   const { data: capabilities } = useQuery({
     queryKey: ['capabilities'],
@@ -31,9 +33,21 @@ export function CapabilityPage() {
   const cap = capabilities?.find(c => c.name === name);
   const token = getApiToken();
 
-  // Reply to token requests and send deep-link params after howm:ready
+  // Reply to token requests and send deep-link params after howm:ready.
+  // Also start a 10s timeout — if the capability never sends howm:ready,
+  // assume it failed to load and show an error state.
   useEffect(() => {
     if (!token) return;
+    setLoadError(false);
+    readySent.current = false;
+
+    // Start load timeout — capability should signal howm:ready within 10s
+    loadTimeout.current = setTimeout(() => {
+      if (!readySent.current) {
+        setLoadError(true);
+      }
+    }, 10_000);
+
     function handle(e: MessageEvent) {
       if (e.origin !== window.location.origin) return;
       if (e.data?.type === 'howm:token:request' && iframeRef.current) {
@@ -42,6 +56,8 @@ export function CapabilityPage() {
       // After capability signals ready, send any URL search params as deep-link
       if (e.data?.type === 'howm:ready' && iframeRef.current && !readySent.current) {
         readySent.current = true;
+        clearTimeout(loadTimeout.current);
+        setLoadError(false);
         const params: Record<string, string> = {};
         searchParams.forEach((v, k) => { params[k] = v; });
         if (Object.keys(params).length > 0) {
@@ -50,7 +66,10 @@ export function CapabilityPage() {
       }
     }
     window.addEventListener('message', handle);
-    return () => window.removeEventListener('message', handle);
+    return () => {
+      window.removeEventListener('message', handle);
+      clearTimeout(loadTimeout.current);
+    };
   }, [token, searchParams]);
 
   // Re-send deep-link params when searchParams change while iframe is open
@@ -83,6 +102,24 @@ export function CapabilityPage() {
     ? `/cap/${proxyPrefix}${cap.ui.entry}`
     : `/cap/${proxyPrefix}/${cap.ui.entry}`;
 
+  if (loadError) {
+    return (
+      <div style={errorStyle}>
+        <div style={{ fontSize: '2rem', marginBottom: '0.5rem' }}>⚠</div>
+        <div><strong>{cap.ui.label}</strong> failed to load.</div>
+        <div style={{ color: 'var(--howm-text-muted, #5c6170)', fontSize: '0.85rem', marginTop: '0.25rem' }}>
+          The capability process may not be running.
+        </div>
+        <button
+          onClick={() => { setLoadError(false); readySent.current = false; }}
+          style={retryButtonStyle}
+        >
+          Retry
+        </button>
+      </div>
+    );
+  }
+
   return (
     <iframe
       ref={iframeRef}
@@ -91,6 +128,7 @@ export function CapabilityPage() {
       style={iframeStyle}
       // Restrict iframe capabilities; adjust as needed for specific caps
       sandbox="allow-scripts allow-same-origin allow-forms"
+      onError={() => setLoadError(true)}
     />
   );
 }
@@ -101,6 +139,28 @@ const loadingStyle: React.CSSProperties = {
   justifyContent: 'center',
   height: 'calc(100vh - 48px)',
   color: 'var(--howm-text-muted, #5c6170)',
+};
+
+const errorStyle: React.CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  alignItems: 'center',
+  justifyContent: 'center',
+  height: 'calc(100vh - 48px)',
+  color: 'var(--howm-text, #e0e0e0)',
+  textAlign: 'center',
+  gap: '0.25rem',
+};
+
+const retryButtonStyle: React.CSSProperties = {
+  marginTop: '1rem',
+  padding: '0.5rem 1.5rem',
+  borderRadius: '6px',
+  border: '1px solid var(--howm-border, #333)',
+  background: 'var(--howm-surface, #1a1a2e)',
+  color: 'var(--howm-text, #e0e0e0)',
+  cursor: 'pointer',
+  fontSize: '0.9rem',
 };
 
 const iframeStyle: React.CSSProperties = {

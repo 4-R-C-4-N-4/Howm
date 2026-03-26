@@ -14,7 +14,7 @@ The architecture is well-structured with layered auth (bearer token, IP-based mi
 
 ## Critical Issues (Must Fix)
 
-### C1. API bearer token logged to file in plaintext
+### C1. API bearer token logged to file in plaintext ✅ COMPLETED
 
 **File:** `node/daemon/src/main.rs:157`  
 ```rust
@@ -27,7 +27,7 @@ The bearer token is written to the rolling log file (`{data_dir}/logs/howm.log`)
 
 ---
 
-### C2. Messaging capability binds to 0.0.0.0
+### C2. Messaging capability binds to 0.0.0.0 ✅ COMPLETED
 
 **File:** `capabilities/messaging/src/main.rs:90`  
 ```rust
@@ -57,7 +57,7 @@ The middleware correctly checks for localhost or the 100.222.0.0/16 subnet, but 
 
 ---
 
-### C4. WG peer configs stored with PSK in plaintext, no file permissions
+### C4. WG peer configs stored with PSK in plaintext, no file permissions ✅ COMPLETED
 
 **File:** `node/daemon/src/wireguard.rs:329`  
 ```rust
@@ -72,7 +72,7 @@ Peer config JSON files (in `{data_dir}/wireguard/peers/*.json`) contain the pre-
 
 ## Moderate Issues
 
-### M1. howm.sh prints API token to terminal stdout
+### M1. howm.sh prints API token to terminal stdout ✅ COMPLETED
 
 **File:** `howm.sh:272`  
 ```bash
@@ -85,7 +85,7 @@ The API token is printed in the startup banner. While this is for convenience, i
 
 ---
 
-### M2. Peer ceremony endpoints are fully public (by design, but risky)
+### M2. Peer ceremony endpoints are fully public (by design, but risky) ✅ COMPLETED (per-IP rate limiting added)
 
 **File:** `node/daemon/src/api/mod.rs:168-172`  
 ```rust
