@@ -3,6 +3,10 @@ name = "howm"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "howm"
+path = "src/lib.rs"
+
 [[bin]]
 name = "howm"
 path = "src/main.rs"
@@ -36,6 +40,7 @@ howm-access = { path = "../access" }
 ciborium = "0.2"
 include_dir = "0.7"
 hostname = "0.3"
+async-trait = "0.1"
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.29", features = ["signal", "process"] }

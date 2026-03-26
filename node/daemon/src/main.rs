@@ -4,26 +4,17 @@ use std::sync::Arc;
 use tracing::info;
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
-mod accept;
-mod api;
-mod capabilities;
-mod config;
-mod embedded_ui;
-mod error;
-mod executor;
-mod identity;
-mod invite;
-mod matchmake;
-mod net_detect;
-mod notifications;
-mod open_invite;
-mod p2pcd;
-mod peers;
-mod proxy;
-mod punch;
-mod state;
-mod stun;
-mod wireguard;
+use howm::api;
+use howm::capabilities;
+use howm::config;
+use howm::executor;
+use howm::identity;
+use howm::matchmake;
+use howm::net_detect;
+use howm::p2pcd;
+use howm::peers;
+use howm::state;
+use howm::wireguard;
 
 use config::Config;
 

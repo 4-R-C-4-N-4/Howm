@@ -994,7 +994,7 @@ pub async fn redeem_accept(
             we_initiate: crate::punch::should_we_initiate(our_nat, decoded.nat_type),
         };
 
-        let result = crate::punch::run_punch(
+        let result = crate::punch::run_punch_system(
             &punch_config,
             &state.config.data_dir,
             "howm0",

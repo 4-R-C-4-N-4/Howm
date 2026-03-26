@@ -7,15 +7,142 @@
 //! 3. Both rotate through candidate ports until WG handshake succeeds
 //!
 //! There is no custom probe protocol — WireGuard's handshake IS the probe.
+//!
+//! The WG operations are abstracted behind the `WgControl` trait so the
+//! punch loop can be tested without a real WireGuard interface.
 
 use std::time::{Duration, Instant};
 use tracing::{debug, info};
 
 use crate::stun::NatType;
 
+// ── WgControl trait ────────────────────────────────────────────────────────
+
+/// Abstraction over WireGuard control-plane operations.
+///
+/// Production: shells out to `wg` CLI.
+/// Tests: mock implementation with configurable handshake behavior.
+#[async_trait::async_trait]
+pub trait WgControl: Send + Sync {
+    /// Add a WG peer configured for punching (pubkey + allowed-ips + psk, no endpoint).
+    async fn add_peer(&self, config: &PunchConfig, wg_iface: &str) -> anyhow::Result<()>;
+
+    /// Set the endpoint for a WG peer.
+    async fn set_endpoint(
+        &self,
+        wg_iface: &str,
+        pubkey: &str,
+        endpoint: &str,
+    ) -> anyhow::Result<()>;
+
+    /// Check if a WG handshake has completed for a given peer.
+    async fn check_handshake(&self, wg_iface: &str, pubkey: &str) -> anyhow::Result<bool>;
+}
+
+// ── Production implementation (shells out to `wg` CLI) ─────────────────────
+
+/// Real WgControl that calls the `wg` binary.
+pub struct SystemWgControl {
+    pub data_dir: std::path::PathBuf,
+}
+
+#[async_trait::async_trait]
+impl WgControl for SystemWgControl {
+    async fn add_peer(&self, config: &PunchConfig, wg_iface: &str) -> anyhow::Result<()> {
+        let wg_dir = self.data_dir.join("wireguard");
+        let mut args: Vec<String> = vec![
+            "set".to_string(),
+            wg_iface.to_string(),
+            "peer".to_string(),
+            config.peer_pubkey.clone(),
+            "allowed-ips".to_string(),
+            format!("{}/32", config.allowed_ip),
+            "persistent-keepalive".to_string(),
+            "25".to_string(),
+        ];
+
+        let psk_file = if let Some(ref psk) = config.psk {
+            let path = wg_dir.join("psk_punch.tmp");
+            std::fs::create_dir_all(&wg_dir)?;
+            std::fs::write(&path, psk)?;
+            args.push("preshared-key".to_string());
+            args.push(path.to_str().unwrap().to_string());
+            Some(path)
+        } else {
+            None
+        };
+
+        let output = tokio::process::Command::new("wg")
+            .args(&args)
+            .output()
+            .await?;
+
+        if let Some(path) = psk_file {
+            let _ = std::fs::remove_file(&path);
+        }
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(anyhow::anyhow!("wg set peer failed: {}", stderr.trim()));
+        }
+
+        Ok(())
+    }
+
+    async fn set_endpoint(
+        &self,
+        wg_iface: &str,
+        pubkey: &str,
+        endpoint: &str,
+    ) -> anyhow::Result<()> {
+        let output = tokio::process::Command::new("wg")
+            .args(["set", wg_iface, "peer", pubkey, "endpoint", endpoint])
+            .output()
+            .await?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(anyhow::anyhow!("wg set endpoint failed: {}", stderr.trim()));
+        }
+
+        Ok(())
+    }
+
+    async fn check_handshake(&self, wg_iface: &str, pubkey: &str) -> anyhow::Result<bool> {
+        let output = tokio::process::Command::new("wg")
+            .args(["show", wg_iface, "dump"])
+            .output()
+            .await?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(anyhow::anyhow!("wg show failed: {}", stderr.trim()));
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        for line in stdout.lines().skip(1) {
+            let fields: Vec<&str> = line.split('\t').collect();
+            if fields.len() >= 5 && fields[0] == pubkey {
+                let handshake: u64 = fields[4].parse().unwrap_or(0);
+                if handshake > 0 && now.saturating_sub(handshake) < 180 {
+                    return Ok(true);
+                }
+            }
+        }
+
+        Ok(false)
+    }
+}
+
+// ── PunchConfig & PunchResult ──────────────────────────────────────────────
+
 /// Configuration for a hole punch attempt.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct PunchConfig {
     /// Peer's WG public key (base64).
     pub peer_pubkey: String,
@@ -49,6 +176,8 @@ pub enum PunchResult {
     /// Error during punch attempt.
     Error(String),
 }
+
+// ── Candidate generation ───────────────────────────────────────────────────
 
 /// Build the list of candidate endpoints to try, in priority order.
 ///
@@ -104,16 +233,16 @@ pub fn build_candidates(config: &PunchConfig) -> Vec<String> {
     ports.into_iter().map(|p| format!("{}:{}", ip, p)).collect()
 }
 
+// ── Punch loop ─────────────────────────────────────────────────────────────
+
 /// Run the hole punch — rotate WG endpoint through candidates until
 /// handshake succeeds or timeout.
 ///
 /// This is the core loop: set endpoint → wait → check handshake → rotate.
-///
-/// `data_dir` is used for PSK temp file management.
-/// `wg_iface` is the WireGuard interface name (e.g., "howm0").
+/// The `wg` parameter abstracts WireGuard operations for testability.
 pub async fn run_punch(
     config: &PunchConfig,
-    data_dir: &std::path::Path,
+    wg: &dyn WgControl,
     wg_iface: &str,
     timeout: Duration,
 ) -> PunchResult {
@@ -130,7 +259,7 @@ pub async fn run_punch(
     );
 
     // First, ensure the WG peer is configured (without endpoint — we'll set it in the loop)
-    if let Err(e) = add_peer_for_punch(config, data_dir, wg_iface).await {
+    if let Err(e) = wg.add_peer(config, wg_iface).await {
         return PunchResult::Error(format!("failed to add WG peer: {}", e));
     }
 
@@ -147,7 +276,10 @@ pub async fn run_punch(
         let candidate = &candidates[attempt % candidates.len()];
 
         // Set the WG peer endpoint
-        if let Err(e) = set_peer_endpoint(wg_iface, &config.peer_pubkey, candidate).await {
+        if let Err(e) = wg
+            .set_endpoint(wg_iface, &config.peer_pubkey, candidate)
+            .await
+        {
             debug!("Punch: failed to set endpoint {}: {}", candidate, e);
             // Continue to next candidate
         } else {
@@ -158,7 +290,7 @@ pub async fn run_punch(
         tokio::time::sleep(interval).await;
 
         // Check if WG handshake has completed
-        match check_handshake(wg_iface, &config.peer_pubkey).await {
+        match wg.check_handshake(wg_iface, &config.peer_pubkey).await {
             Ok(true) => {
                 let elapsed = start.elapsed();
                 info!(
@@ -189,104 +321,28 @@ pub async fn run_punch(
     }
 }
 
-/// Add a WG peer configured for punching (no endpoint initially, just pubkey + allowed-ips + psk).
-async fn add_peer_for_punch(
+// ── Legacy convenience wrappers ────────────────────────────────────────────
+
+/// Run punch using the real system `wg` CLI (backwards-compatible wrapper).
+pub async fn run_punch_system(
     config: &PunchConfig,
     data_dir: &std::path::Path,
     wg_iface: &str,
-) -> anyhow::Result<()> {
-    let wg_dir = data_dir.join("wireguard");
-    let mut args: Vec<String> = vec![
-        "set".to_string(),
-        wg_iface.to_string(),
-        "peer".to_string(),
-        config.peer_pubkey.clone(),
-        "allowed-ips".to_string(),
-        format!("{}/32", config.allowed_ip),
-        "persistent-keepalive".to_string(),
-        "25".to_string(),
-    ];
-
-    // Handle PSK
-    let psk_file = if let Some(ref psk) = config.psk {
-        let path = wg_dir.join("psk_punch.tmp");
-        std::fs::create_dir_all(&wg_dir)?;
-        std::fs::write(&path, psk)?;
-        args.push("preshared-key".to_string());
-        args.push(path.to_str().unwrap().to_string());
-        Some(path)
-    } else {
-        None
+    timeout: Duration,
+) -> PunchResult {
+    let wg = SystemWgControl {
+        data_dir: data_dir.to_path_buf(),
     };
-
-    let output = tokio::process::Command::new("wg")
-        .args(&args)
-        .output()
-        .await?;
-
-    if let Some(path) = psk_file {
-        let _ = std::fs::remove_file(&path);
-    }
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(anyhow::anyhow!("wg set peer failed: {}", stderr.trim()));
-    }
-
-    Ok(())
-}
-
-/// Set the endpoint for a WG peer.
-async fn set_peer_endpoint(wg_iface: &str, pubkey: &str, endpoint: &str) -> anyhow::Result<()> {
-    let output = tokio::process::Command::new("wg")
-        .args(["set", wg_iface, "peer", pubkey, "endpoint", endpoint])
-        .output()
-        .await?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(anyhow::anyhow!("wg set endpoint failed: {}", stderr.trim()));
-    }
-
-    Ok(())
-}
-
-/// Check if a WG handshake has completed for a given peer.
-/// Returns true if there's a recent handshake (within last 180 seconds).
-async fn check_handshake(wg_iface: &str, pubkey: &str) -> anyhow::Result<bool> {
-    let output = tokio::process::Command::new("wg")
-        .args(["show", wg_iface, "dump"])
-        .output()
-        .await?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(anyhow::anyhow!("wg show failed: {}", stderr.trim()));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-
-    for line in stdout.lines().skip(1) {
-        let fields: Vec<&str> = line.split('\t').collect();
-        if fields.len() >= 5 && fields[0] == pubkey {
-            let handshake: u64 = fields[4].parse().unwrap_or(0);
-            if handshake > 0 && now.saturating_sub(handshake) < 180 {
-                return Ok(true);
-            }
-        }
-    }
-
-    Ok(false)
+    run_punch(config, &wg, wg_iface, timeout).await
 }
 
 /// Public convenience wrapper: check if a WG handshake has completed for a peer.
 /// Used by the accept redemption flow for IPv6 direct connection attempts.
 pub async fn check_handshake_by_status(pubkey: &str) -> bool {
-    check_handshake("howm0", pubkey).await.unwrap_or(false)
+    let wg = SystemWgControl {
+        data_dir: std::path::PathBuf::new(), // not used for check_handshake
+    };
+    wg.check_handshake("howm0", pubkey).await.unwrap_or(false)
 }
 
 /// Determine if we should initiate first in a punch scenario.
