@@ -36,9 +36,10 @@ export function CapabilityPage() {
   // Reply to token requests and send deep-link params after howm:ready.
   // Also start a 10s timeout — if the capability never sends howm:ready,
   // assume it failed to load and show an error state.
+  // Note: setLoadError is only called from callbacks (timeout, message handler),
+  // never synchronously in the effect body, to satisfy the react-hooks lint rule.
   useEffect(() => {
     if (!token) return;
-    setLoadError(false);
     readySent.current = false;
 
     // Start load timeout — capability should signal howm:ready within 10s
