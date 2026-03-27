@@ -57,6 +57,11 @@ pub struct Config {
     #[arg(long, default_value = "false", env = "HOWM_ALLOW_RELAY")]
     pub allow_relay: bool,
 
+    /// Advertise this node on the local network via mDNS for LAN peer discovery.
+    /// Other howm nodes on the same WiFi/LAN can find this node automatically.
+    #[arg(long, default_value = "true", env = "HOWM_LAN_DISCOVERABLE")]
+    pub lan_discoverable: bool,
+
     #[arg(long, default_value = "false")]
     pub dev: bool,
 

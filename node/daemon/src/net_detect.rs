@@ -183,6 +183,100 @@ fn detect_ipv6_via_udp_connect() -> Option<Ipv6Addr> {
     None
 }
 
+// ── LAN IP Detection ────────────────────────────────────────────────────────
+
+/// Detect the primary LAN IPv4 address of this machine.
+///
+/// Uses the UDP connect trick: opens a UDP socket "connected" to a LAN-scoped
+/// multicast address, then reads back the local address the OS selected.
+/// This doesn't send any traffic — it just triggers source address selection.
+///
+/// Returns the first private IPv4 address (10.x, 172.16-31.x, 192.168.x).
+/// Excludes loopback (127.x) and the WireGuard subnet (100.222.x).
+pub fn detect_lan_ip() -> Option<String> {
+    // Connect to a LAN multicast address to trigger OS source address selection.
+    // 224.0.0.251 is the mDNS multicast group — guaranteed to exist on any
+    // multicast-capable network but we never actually send anything.
+    let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    socket.connect("224.0.0.251:5353").ok()?;
+    let local = socket.local_addr().ok()?;
+
+    if let std::net::IpAddr::V4(addr) = local.ip() {
+        if is_private_lan(addr) {
+            info!("LAN IP detected: {}", addr);
+            return Some(addr.to_string());
+        }
+    }
+
+    // Fallback: enumerate all interfaces on Unix
+    #[cfg(unix)]
+    {
+        if let Some(addr) = detect_lan_ip_unix() {
+            info!("LAN IP detected (interface scan): {}", addr);
+            return Some(addr.to_string());
+        }
+    }
+
+    debug!("LAN IP detection: no private LAN address found");
+    None
+}
+
+/// Check if an IPv4 address is a private LAN address (RFC 1918),
+/// excluding loopback and the WireGuard subnet.
+fn is_private_lan(addr: std::net::Ipv4Addr) -> bool {
+    let o = addr.octets();
+    // 10.0.0.0/8
+    if o[0] == 10 {
+        return true;
+    }
+    // 172.16.0.0/12
+    if o[0] == 172 && (16..=31).contains(&o[1]) {
+        return true;
+    }
+    // 192.168.0.0/16
+    if o[0] == 192 && o[1] == 168 {
+        return true;
+    }
+    false
+}
+
+/// Enumerate interfaces on Unix to find a private LAN IPv4 address.
+#[cfg(unix)]
+fn detect_lan_ip_unix() -> Option<std::net::Ipv4Addr> {
+    unsafe {
+        let mut ifaddrs: *mut libc::ifaddrs = std::ptr::null_mut();
+        if libc::getifaddrs(&mut ifaddrs) != 0 {
+            return None;
+        }
+
+        let mut result = None;
+        let mut current = ifaddrs;
+        while !current.is_null() {
+            let ifa = &*current;
+            if !ifa.ifa_addr.is_null() {
+                let family = (*ifa.ifa_addr).sa_family as i32;
+                if family == libc::AF_INET {
+                    let sockaddr_in = ifa.ifa_addr as *const libc::sockaddr_in;
+                    let raw = (*sockaddr_in).sin_addr.s_addr.to_ne_bytes();
+                    let addr = std::net::Ipv4Addr::new(raw[0], raw[1], raw[2], raw[3]);
+                    if is_private_lan(addr) {
+                        let iface_name = std::ffi::CStr::from_ptr(ifa.ifa_name)
+                            .to_str()
+                            .unwrap_or("unknown");
+                        debug!("LAN IPv4 found on {}: {}", iface_name, addr);
+                        result = Some(addr);
+                        break;
+                    }
+                }
+            }
+            current = ifa.ifa_next;
+        }
+
+        libc::freeifaddrs(ifaddrs);
+        result
+    }
+}
+
 // ── WG Port Fallback ────────────────────────────────────────────────────────
 
 /// Maximum number of ports to try in the fallback range.
@@ -254,6 +348,25 @@ mod tests {
         let port = find_available_wg_port(49999);
         // Should get 49999 or very close to it
         assert!((49999..=49999 + PORT_FALLBACK_RANGE).contains(&port));
+    }
+
+    #[test]
+    fn test_is_private_lan() {
+        use std::net::Ipv4Addr;
+        assert!(is_private_lan(Ipv4Addr::new(192, 168, 1, 100)));
+        assert!(is_private_lan(Ipv4Addr::new(10, 0, 0, 1)));
+        assert!(is_private_lan(Ipv4Addr::new(172, 16, 0, 1)));
+        assert!(is_private_lan(Ipv4Addr::new(172, 31, 255, 255)));
+        assert!(!is_private_lan(Ipv4Addr::new(172, 32, 0, 1)));
+        assert!(!is_private_lan(Ipv4Addr::new(100, 222, 0, 1))); // WG subnet
+        assert!(!is_private_lan(Ipv4Addr::new(127, 0, 0, 1))); // loopback
+        assert!(!is_private_lan(Ipv4Addr::new(8, 8, 8, 8))); // public
+    }
+
+    #[test]
+    fn test_detect_lan_ip_runs_without_panic() {
+        // Just verify it doesn't crash — may or may not find an address
+        let _ = detect_lan_ip();
     }
 
     #[test]

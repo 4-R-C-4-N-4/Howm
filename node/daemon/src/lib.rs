@@ -12,6 +12,7 @@ pub mod error;
 pub mod executor;
 pub mod identity;
 pub mod invite;
+pub mod lan_discovery;
 pub mod matchmake;
 pub mod net_detect;
 pub mod notifications;
