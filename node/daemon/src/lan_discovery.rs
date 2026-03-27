@@ -241,3 +241,69 @@ fn hostname_safe() -> String {
         .and_then(|h| h.into_string().ok())
         .unwrap_or_else(|| "howm-node".to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sanitise_instance_name() {
+        assert_eq!(sanitise_instance_name("alice"), "alice");
+        assert_eq!(sanitise_instance_name("my-node"), "my-node");
+        assert_eq!(sanitise_instance_name("My Node 2"), "My Node 2");
+        assert_eq!(sanitise_instance_name("node@home!"), "node-home-");
+        assert_eq!(sanitise_instance_name(""), "howm-node");
+        assert_eq!(
+            sanitise_instance_name("café☕"),
+            "café-" // unicode letters kept, emoji replaced
+        );
+    }
+
+    #[test]
+    fn test_extract_instance_name() {
+        assert_eq!(
+            extract_instance_name("my-node._howm._udp.local."),
+            "my-node"
+        );
+        assert_eq!(extract_instance_name("alice._howm._udp.local."), "alice");
+        // Edge case: no trailing dot
+        assert_eq!(extract_instance_name("bob._howm._udp.local"), "bob");
+    }
+
+    #[test]
+    fn test_lan_peer_serialization() {
+        let peer = LanPeer {
+            name: "alice".to_string(),
+            fingerprint: "dGVzdC1w".to_string(),
+            wg_pubkey: "dGVzdC1wdWJrZXktYWxpY2U=".to_string(),
+            lan_ip: "192.168.1.100".to_string(),
+            daemon_port: 7000,
+            wg_port: 41641,
+        };
+        let json = serde_json::to_value(&peer).unwrap();
+        assert_eq!(json["name"], "alice");
+        assert_eq!(json["lan_ip"], "192.168.1.100");
+        assert_eq!(json["daemon_port"], 7000);
+    }
+
+    #[test]
+    fn test_mdns_start_and_scan() {
+        // This test verifies the mDNS daemon can start and scan without crashing.
+        // On CI (no network), the scan simply returns empty results.
+        let discovery =
+            LanDiscovery::start("test-node", "dGVzdC1wdWJrZXk=", "127.0.0.1", 7000, 41641);
+
+        // mDNS may fail in some environments (containers, no multicast)
+        // so we just verify it doesn't panic
+        if let Ok(d) = discovery {
+            // Synchronous scan via blocking (can't use async in unit test easily)
+            let peers = scan_blocking(&d.daemon, "dGVzdC1wdWJrZXk=");
+            // Should not include ourselves
+            assert!(
+                peers.iter().all(|p| p.wg_pubkey != "dGVzdC1wdWJrZXk="),
+                "scan should exclude our own node"
+            );
+            d.shutdown();
+        }
+    }
+}
