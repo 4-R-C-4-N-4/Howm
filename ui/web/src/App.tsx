@@ -9,6 +9,7 @@ import { PeersPage } from './pages/PeersPage';
 import { PeerDetail } from './pages/PeerDetail';
 import { GroupsPage } from './pages/GroupsPage';
 import { GroupDetail } from './pages/GroupDetail';
+import { ProfilePage } from './pages/ProfilePage';
 import { getCapabilities } from './api/capabilities';
 import { getBadges, pollNotifications } from './api/notifications';
 import { getApiToken } from './api/client';
@@ -99,7 +100,14 @@ function NavBar() {
           </NavLink>
         );
       })}
-      <NavLink to="/settings" className={({ isActive }) => `${linkClass({ isActive })} ml-auto`}>
+      <NavLink to="/profile" className={({ isActive }) => `${linkClass({ isActive })} ml-auto`}>
+        {({ isActive }) => (
+          <span className={isActive ? 'text-howm-accent font-semibold' : 'text-howm-text-secondary font-normal'}>
+            Profile
+          </span>
+        )}
+      </NavLink>
+      <NavLink to="/settings" className={linkClass}>
         {({ isActive }) => (
           <span className={isActive ? 'text-howm-accent font-semibold' : 'text-howm-text-secondary font-normal'}>
             Settings
@@ -191,6 +199,7 @@ function Shell() {
           <Route path="/connection" element={<Connection />} />
           <Route path="/access/groups" element={<GroupsPage />} />
           <Route path="/access/groups/:groupId" element={<GroupDetail />} />
+          <Route path="/profile" element={<ProfilePage />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="/app/:name" element={<CapabilityPage />} />
         </Routes>

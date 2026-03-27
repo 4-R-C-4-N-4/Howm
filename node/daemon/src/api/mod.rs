@@ -159,6 +159,11 @@ pub fn build_router(state: AppState, ui_dir: Option<PathBuf>) -> Router {
         )
         .route("/network/lan/status", get(lan_routes::lan_status))
         .route("/profile", get(profile_routes::get_profile))
+        .route("/profile/sync", post(profile_routes::receive_profile_sync))
+        .route(
+            "/profile/cache/{node_id}",
+            get(profile_routes::get_cached_profile),
+        )
         .route("/peer/{id}/profile", get(profile_routes::get_peer_profile))
         .layer(middleware::from_fn(local_or_wg_middleware));
 

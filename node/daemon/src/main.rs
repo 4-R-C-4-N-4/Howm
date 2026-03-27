@@ -15,6 +15,7 @@ use howm::net_detect;
 use howm::p2pcd;
 use howm::peers;
 use howm::profile;
+use howm::profile_sync;
 use howm::state;
 use howm::wireguard;
 
@@ -318,6 +319,15 @@ async fn main() -> anyhow::Result<()> {
                 info!("Matchmake circuit event handler registered");
             }
         }
+    }
+
+    // Background: profile sync on boot (pushes to peers + fetches theirs)
+    {
+        let sync_state = state.clone();
+        tokio::spawn(async move {
+            profile_sync::boot_sync(sync_state).await;
+        });
+        info!("Profile boot sync scheduled (10s delay)");
     }
 
     // Background: capability health check loop (every 30s)

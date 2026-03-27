@@ -20,7 +20,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tracing::info;
 
-use crate::{error::AppError, profile, state::AppState};
+use crate::{error::AppError, profile, profile_sync, state::AppState};
 
 // ── GET /profile ──────────────────────────────────────────────────────────────
 
@@ -81,10 +81,14 @@ pub async fn update_profile(
 
     info!("Profile updated: {}", p.name);
 
-    Ok(Json(json!({
-        "name": p.name,
-        "bio": p.bio,
-    })))
+    let result = json!({ "name": p.name, "bio": p.bio });
+    drop(p);
+
+    // Broadcast update to peers (non-blocking)
+    let state_clone = state.clone();
+    tokio::spawn(async move { profile_sync::broadcast_profile(&state_clone).await });
+
+    Ok(Json(result))
 }
 
 // ── PUT /profile/avatar ───────────────────────────────────────────────────────
@@ -136,6 +140,11 @@ pub async fn upload_avatar(
         .map_err(|e| AppError::Internal(format!("Failed to save profile: {}", e)))?;
 
     info!("Avatar uploaded: {}", stored);
+    drop(p);
+
+    // Broadcast update to peers (non-blocking)
+    let state_clone = state.clone();
+    tokio::spawn(async move { profile_sync::broadcast_profile(&state_clone).await });
 
     Ok(Json(json!({
         "avatar": stored,
@@ -297,6 +306,54 @@ pub async fn get_peer_profile(
         .map_err(|e| AppError::Internal(format!("Invalid profile response: {}", e)))?;
 
     Ok(Json(body))
+}
+
+// ── POST /profile/sync ────────────────────────────────────────────────────
+
+/// Receive a profile metadata push from a peer.
+/// Called over WG by other nodes when their profile changes.
+pub async fn receive_profile_sync(
+    State(state): State<AppState>,
+    Json(meta): Json<profile_sync::ProfileMeta>,
+) -> Result<Json<Value>, AppError> {
+    // Verify the sender is a known peer
+    let peers = state.peers.read().await;
+    let is_known = peers.iter().any(|p| p.node_id == meta.node_id);
+    drop(peers);
+
+    if !is_known {
+        return Err(AppError::Forbidden(
+            "profile sync rejected — unknown node".to_string(),
+        ));
+    }
+
+    profile_sync::cache_peer_profile(&state.config.data_dir, &meta)
+        .map_err(|e| AppError::Internal(format!("Failed to cache profile: {}", e)))?;
+
+    info!("Profile sync received from {}", meta.name);
+
+    Ok(Json(json!({ "status": "ok" })))
+}
+
+// ── GET /profile/cache/{node_id} ──────────────────────────────────────────
+
+/// Get cached profile metadata for a peer (no network call — local cache only).
+pub async fn get_cached_profile(
+    State(state): State<AppState>,
+    Path(node_id): Path<String>,
+) -> Json<Value> {
+    match profile_sync::load_cached_profile(&state.config.data_dir, &node_id) {
+        Some(cached) => Json(json!({
+            "found": true,
+            "node_id": cached.node_id,
+            "name": cached.name,
+            "bio": cached.bio,
+            "avatar_hash": cached.avatar_hash,
+            "has_homepage": cached.has_homepage,
+            "updated_at": cached.updated_at,
+        })),
+        None => Json(json!({ "found": false })),
+    }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

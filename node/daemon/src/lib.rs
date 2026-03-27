@@ -20,6 +20,7 @@ pub mod open_invite;
 pub mod p2pcd;
 pub mod peers;
 pub mod profile;
+pub mod profile_sync;
 pub mod proxy;
 pub mod punch;
 pub mod state;
