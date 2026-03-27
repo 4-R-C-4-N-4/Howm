@@ -8,15 +8,17 @@ import {
 } from '../lib/access';
 import type { AccessGroup } from '../api/access';
 import type { Peer } from '../api/nodes';
+import type { PeerPresenceInfo } from '../pages/PeersPage';
 
 interface PeerRowProps {
   peer: Peer;
   groups: AccessGroup[];
   now: number;
   onToast?: (level: 'success' | 'error', msg: string) => void;
+  presence?: PeerPresenceInfo;
 }
 
-export function PeerRow({ peer, groups, now, onToast }: PeerRowProps) {
+export function PeerRow({ peer, groups, now, onToast, presence }: PeerRowProps) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [menuOpen, setMenuOpen] = useState(false);
@@ -68,12 +70,20 @@ export function PeerRow({ peer, groups, now, onToast }: PeerRowProps) {
       onClick={() => navigate(`/peers/${hexId}`)}
     >
       <div className='flex items-center gap-2.5 flex-1 min-w-0'>
-        <span style={{ color: isDenied ? '#ef4444' : online ? '#22c55e' : '#666666' }} className='text-sm'>
+        <span style={{ color: isDenied ? '#ef4444' : online ? (presence?.activity === 'away' ? '#eab308' : '#22c55e') : '#666666' }} className='text-sm'>
           {isDenied ? '✕' : online ? '●' : '○'}
         </span>
         <span className='font-medium overflow-hidden text-ellipsis whitespace-nowrap max-w-[180px]'>
           {peer.name}
         </span>
+        {presence?.emoji && (
+          <span className='text-sm'>{presence.emoji}</span>
+        )}
+        {presence?.status && (
+          <span className='text-howm-text-muted text-xs overflow-hidden text-ellipsis whitespace-nowrap max-w-[160px]'>
+            {presence.status}
+          </span>
+        )}
         <span style={{
           fontSize: '0.75rem', padding: '2px 8px', borderRadius: '4px',
           background: badge.bg, color: badge.color, whiteSpace: 'nowrap',

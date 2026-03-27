@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Presence — Howm</title>
+  <link rel="stylesheet" href="/theme.css" />
+  <link rel="stylesheet" href="presence.css" />
+</head>
+<body>
+  <div id="app">
+    <div id="my-status">
+      <h3>Your Status</h3>
+      <div id="status-display">
+        <span id="my-dot" class="dot active"></span>
+        <span id="my-emoji"></span>
+        <span id="my-status-text" class="muted">No status set</span>
+      </div>
+      <div id="status-form">
+        <div id="status-inputs">
+          <input type="text" id="emoji-input" placeholder="😊" maxlength="8" />
+          <input type="text" id="status-input" placeholder="What are you up to?" maxlength="128" />
+        </div>
+        <div id="status-actions">
+          <button id="save-btn" onclick="saveStatus()">Save</button>
+          <button id="clear-btn" onclick="clearStatus()">Clear</button>
+        </div>
+      </div>
+    </div>
+    <div id="peers-section">
+      <h3>Peers</h3>
+      <div id="peers-list"><p class="muted">Loading…</p></div>
+    </div>
+  </div>
+  <script src="presence.js"></script>
+</body>
+</html>

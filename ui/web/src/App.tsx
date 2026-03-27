@@ -12,6 +12,7 @@ import { GroupDetail } from './pages/GroupDetail';
 import { getCapabilities } from './api/capabilities';
 import { getBadges, pollNotifications } from './api/notifications';
 import { getApiToken } from './api/client';
+import api from './api/client';
 import { listenFromCapabilities, type NotifyLevel } from './lib/postMessage';
 import { useBadgeStore } from './stores/badgeStore';
 import { FabLayer } from './components/FabLayer';
@@ -161,6 +162,20 @@ function Shell() {
     }, 5_000);
     return () => clearInterval(interval);
   }, [addToast]);
+
+  // Presence heartbeat — signals active status while tab is focused
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (document.hasFocus()) {
+        api.post('/cap/presence/heartbeat').catch(() => {});
+      }
+    }, 30_000);
+    // Send an immediate heartbeat on mount
+    if (document.hasFocus()) {
+      api.post('/cap/presence/heartbeat').catch(() => {});
+    }
+    return () => clearInterval(interval);
+  }, []);
 
   return (
     <>

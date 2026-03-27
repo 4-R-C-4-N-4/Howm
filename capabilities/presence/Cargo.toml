@@ -1,0 +1,27 @@
+[package]
+name = "presence"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "presence"
+path = "src/main.rs"
+
+[dependencies]
+axum = "0.8"
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4", features = ["derive", "env"] }
+anyhow = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+base64 = "0.22"
+parking_lot = "0.12"
+ciborium = "0.2"
+p2pcd = { path = "../../node/p2pcd", features = ["bridge-client"] }
+include_dir = "0.7.4"
+
+[dev-dependencies]
+tempfile = "3"

@@ -28,16 +28,30 @@ export function FabLayer() {
 
   if (fabCaps.length === 0) return null;
 
+  const rightFabs = fabCaps.filter(c => c.ui?.position !== 'left');
+  const leftFabs = fabCaps.filter(c => c.ui?.position === 'left');
+
   return (
-    <div className="fixed bottom-6 right-6 flex flex-col-reverse gap-3 z-200">
-      {fabCaps.map((cap, i) => (
-        <FabButton key={cap.name} cap={cap} badgeCount={badges[cap.name] ?? 0} index={i} />
-      ))}
-    </div>
+    <>
+      {rightFabs.length > 0 && (
+        <div className="fixed bottom-6 right-6 flex flex-col-reverse gap-3 z-200">
+          {rightFabs.map((cap, i) => (
+            <FabButton key={cap.name} cap={cap} badgeCount={badges[cap.name] ?? 0} index={i} side="right" />
+          ))}
+        </div>
+      )}
+      {leftFabs.length > 0 && (
+        <div className="fixed bottom-6 left-6 flex flex-col-reverse gap-3 z-200">
+          {leftFabs.map((cap, i) => (
+            <FabButton key={cap.name} cap={cap} badgeCount={badges[cap.name] ?? 0} index={i} side="left" />
+          ))}
+        </div>
+      )}
+    </>
   );
 }
 
-function FabButton({ cap, badgeCount, index }: { cap: Capability; badgeCount: number; index: number }) {
+function FabButton({ cap, badgeCount, index, side = 'right' }: { cap: Capability; badgeCount: number; index: number; side?: 'left' | 'right' }) {
   const [open, setOpen] = useState(false);
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -92,7 +106,7 @@ function FabButton({ cap, badgeCount, index }: { cap: Capability; badgeCount: nu
       {open && (
         <div
           ref={panelRef}
-          className="fixed bottom-24 right-6 w-[380px] h-[560px] max-w-[calc(100vw-48px)] max-h-[calc(100vh-120px)] bg-howm-bg-surface border border-howm-border rounded-xl shadow-[0_12px_40px_rgba(0,0,0,0.6)] flex flex-col overflow-hidden z-200 sm:max-w-[380px]"
+          className={`fixed bottom-24 w-[380px] h-[560px] max-w-[calc(100vw-48px)] max-h-[calc(100vh-120px)] bg-howm-bg-surface border border-howm-border rounded-xl shadow-[0_12px_40px_rgba(0,0,0,0.6)] flex flex-col overflow-hidden z-200 sm:max-w-[380px] ${side === 'left' ? 'left-6' : 'right-6'}`}
           style={{ bottom: `${96 + index * 72}px` }}
         >
           {/* Panel header */}
