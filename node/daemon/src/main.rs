@@ -14,6 +14,7 @@ use howm::matchmake;
 use howm::net_detect;
 use howm::p2pcd;
 use howm::peers;
+use howm::profile;
 use howm::state;
 use howm::wireguard;
 
@@ -169,6 +170,10 @@ async fn main() -> anyhow::Result<()> {
     };
     info!("Access control database initialised");
 
+    // Load or create user profile
+    let user_profile = profile::load_or_create(&config.data_dir, &identity.name)?;
+    info!("Profile loaded: {}", user_profile.name);
+
     // Build app state
     let mut state = state::AppState::new(
         identity.clone(),
@@ -177,6 +182,7 @@ async fn main() -> anyhow::Result<()> {
         config.clone(),
         api_token,
         Arc::clone(&access_db),
+        user_profile,
     );
 
     // Build capability notifier and register running capabilities

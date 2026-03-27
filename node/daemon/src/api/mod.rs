@@ -22,6 +22,7 @@ pub mod network_routes;
 pub mod node_routes;
 pub mod notification_routes;
 pub mod p2pcd_routes;
+pub mod profile_routes;
 pub mod proxy_routes;
 pub mod settings_routes;
 
@@ -107,6 +108,9 @@ pub fn build_router(state: AppState, ui_dir: Option<PathBuf>) -> Router {
         )
         .route("/network/lan/scan", post(lan_routes::lan_scan))
         .route("/network/lan/invite", post(lan_routes::lan_invite))
+        .route("/profile", put(profile_routes::update_profile))
+        .route("/profile/avatar", put(profile_routes::upload_avatar))
+        .route("/profile/homepage", put(profile_routes::set_homepage))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             bearer_auth_middleware,
@@ -154,6 +158,8 @@ pub fn build_router(state: AppState, ui_dir: Option<PathBuf>) -> Router {
             get(connection_routes::matchmake_status),
         )
         .route("/network/lan/status", get(lan_routes::lan_status))
+        .route("/profile", get(profile_routes::get_profile))
+        .route("/peer/{id}/profile", get(profile_routes::get_peer_profile))
         .layer(middleware::from_fn(local_or_wg_middleware));
 
     // ── 2b. Bridge routes — localhost-only, for out-of-process capabilities ──
@@ -174,7 +180,13 @@ pub fn build_router(state: AppState, ui_dir: Option<PathBuf>) -> Router {
         .route("/node/open-join", post(node_routes::open_join))
         .route("/node/generate-accept", post(node_routes::generate_accept))
         .route("/node/redeem-accept", post(node_routes::redeem_accept))
-        .route("/node/lan-accept", post(lan_routes::lan_accept));
+        .route("/node/lan-accept", post(lan_routes::lan_accept))
+        .route("/profile/avatar", get(profile_routes::serve_avatar))
+        .route("/profile/home", get(profile_routes::serve_homepage))
+        .route(
+            "/profile/home/{*rest}",
+            get(profile_routes::serve_homepage_asset),
+        );
 
     // ── 4. Notification routes ─────────────────────────────────────────────
     // Write (badge set, push): localhost-only (capability processes only).
