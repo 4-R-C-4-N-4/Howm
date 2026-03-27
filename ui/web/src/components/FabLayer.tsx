@@ -84,7 +84,9 @@ function FabButton({ cap, badgeCount, index, side = 'right' }: { cap: Capability
   }, [open]);
 
   const routeName = cap.route_name ?? cap.name.split('.').pop() ?? cap.name;
-  const iframeSrc = `/cap/${routeName}/ui/${cap.ui!.entry}`;
+  const iframeSrc = cap.ui!.entry.startsWith('/')
+    ? `/cap/${routeName}${cap.ui!.entry}`
+    : `/cap/${routeName}/${cap.ui!.entry}`;
 
   return (
     <>

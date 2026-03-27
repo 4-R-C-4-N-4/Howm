@@ -16,6 +16,7 @@ import api from './api/client';
 import { listenFromCapabilities, type NotifyLevel } from './lib/postMessage';
 import { useBadgeStore } from './stores/badgeStore';
 import { FabLayer } from './components/FabLayer';
+import { CapIcon } from './components/icons';
 
 const queryClient = new QueryClient();
 
@@ -86,6 +87,7 @@ function NavBar() {
           <NavLink key={cap.name} to={`/app/${cap.name}`} className={linkClass}>
             {({ isActive }) => (
               <span className={`flex items-center gap-1.5 ${isActive ? 'text-howm-accent font-semibold' : 'text-inherit font-normal'}`}>
+                {cap.ui!.icon && <CapIcon icon={cap.ui!.icon} className="w-4 h-4" />}
                 {cap.ui!.label}
                 {badgeCount > 0 && (
                   <span className='bg-howm-error text-white rounded-xl py-px px-1.5 text-[0.7rem] font-semibold min-w-4 text-center'>
