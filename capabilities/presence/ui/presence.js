@@ -58,6 +58,7 @@ async function loadStatus() {
 
     // Pre-fill form
     document.getElementById('emoji-input').value = data.emoji || '';
+    document.getElementById('emoji-btn').textContent = data.emoji || '😊';
     document.getElementById('status-input').value = data.status || '';
   } catch (e) {
     console.error('Failed to load status:', e);
@@ -85,6 +86,7 @@ async function saveStatus() {
 async function clearStatus() {
   document.getElementById('status-input').value = '';
   document.getElementById('emoji-input').value = '';
+  document.getElementById('emoji-btn').textContent = '😊';
 
   try {
     await fetch(BASE + '/status', {
@@ -143,6 +145,63 @@ function esc(s) {
   d.textContent = s;
   return d.innerHTML;
 }
+
+// ── Emoji picker ──────────────────────────────────────────────────────────────
+
+const EMOJI_DATA = [
+  ['Smileys', '😊😄😂🥲😎🤩🥳😴🤔😏🙃😐😑🫡🤫🫠🥱😤😡🤯🥶🥵😈'],
+  ['Gestures', '👋👍👎✌️🤞🫶👏🙌🤝👊✊🫵💪🫡🙏'],
+  ['Activity', '🎮🎲🎯🎸🎵🎧🏀⚽🏈🎾🏓🎳🚴🧗🏋️🧘'],
+  ['Status', '💤😴🔴🟢🟡⛔🚫✅❌⏳💬🔕🔔📵🎯💡'],
+  ['Work', '💻🖥️⌨️📱💼📊📝✏️📁🔧🔨⚙️🛠️🔬📐🎨'],
+  ['Food', '☕🍵🍺🍕🍔🌮🍜🍣🥗🍰🧁🍩🥐🧋🍷🥤'],
+  ['Travel', '🏠🏡✈️🚗🚀🌍🏖️🏔️🌅🏕️🗺️🧭🚂🛶⛵🎪'],
+  ['Nature', '🌸🌺🌻🌴🌈☀️🌙⭐🔥❄️💧🍀🌿🍂🌊🦋'],
+  ['Hearts', '❤️🧡💛💚💙💜🖤🤍🤎💖💝💘💕💗💓💞'],
+  ['Misc', '🎉🎊🏆🥇🎁🪄✨🌟💎🔑🎶📌🚩🏁🕐💤'],
+];
+
+let pickerBuilt = false;
+
+function buildPicker() {
+  if (pickerBuilt) return;
+  pickerBuilt = true;
+
+  const picker = document.getElementById('emoji-picker');
+  let html = '';
+
+  for (const [category, emojis] of EMOJI_DATA) {
+    html += `<div class="emoji-category">${category}</div><div class="emoji-grid">`;
+    // Split emoji string into individual emoji (handles multi-byte)
+    const chars = [...emojis];
+    for (const ch of chars) {
+      html += `<button type="button" onclick="pickEmoji('${ch}')">${ch}</button>`;
+    }
+    html += '</div>';
+  }
+
+  picker.innerHTML = html;
+}
+
+function togglePicker() {
+  buildPicker();
+  const picker = document.getElementById('emoji-picker');
+  picker.classList.toggle('hidden');
+}
+
+function pickEmoji(emoji) {
+  document.getElementById('emoji-input').value = emoji;
+  document.getElementById('emoji-btn').textContent = emoji;
+  document.getElementById('emoji-picker').classList.add('hidden');
+}
+
+// Close picker on outside click
+document.addEventListener('mousedown', (e) => {
+  const wrap = document.getElementById('emoji-picker-wrap');
+  if (wrap && !wrap.contains(e.target)) {
+    document.getElementById('emoji-picker').classList.add('hidden');
+  }
+});
 
 // Auto-refresh peers every 5 seconds
 setInterval(loadPeers, 5000);
