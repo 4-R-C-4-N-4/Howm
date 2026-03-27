@@ -4,6 +4,7 @@ import { getNetworkStatus } from '../api/network';
 import { NetworkStatus } from '../components/NetworkStatus';
 import { ConnectionInfo } from '../components/ConnectionInfo';
 import { InviteManager } from '../components/InviteManager';
+import { LanDiscovery } from '../components/LanDiscovery';
 import { RelayConfig } from '../components/RelayConfig';
 
 export function Connection() {
@@ -36,6 +37,9 @@ export function Connection() {
 
       {/* Network Status */}
       <NetworkStatus status={status} />
+
+      {/* LAN Discovery */}
+      <LanDiscovery />
 
       {/* Invites */}
       <InviteManager reachability={status.reachability} />
