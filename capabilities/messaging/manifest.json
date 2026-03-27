@@ -22,6 +22,8 @@
     "label": "Messages",
     "icon": "chat-bubble",
     "entry": "/ui/",
-    "style": "fab"
+    "style": "fab",
+    "position": "right",
+    "index": 0
   }
 }
