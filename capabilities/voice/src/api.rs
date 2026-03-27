@@ -34,12 +34,14 @@ pub struct MuteRequest {
 
 // ── Peer ID extraction ───────────────────────────────────────────────────────
 
-/// Extract the peer ID from query params or a header.
-/// In production this would come from the daemon auth context.
-/// For now we use an `X-Peer-Id` header.
+/// Extract the calling peer's identity from proxy-injected headers.
+///
+/// Remote peers (via WG): daemon proxy injects `X-Peer-Id` (base64 WG pubkey).
+/// Local owner: no `X-Peer-Id`, fall back to `X-Node-Id` (this node = owner).
 fn extract_peer_id(headers: &axum::http::HeaderMap) -> Option<String> {
     headers
         .get("x-peer-id")
+        .or_else(|| headers.get("x-node-id"))
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string())
 }

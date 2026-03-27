@@ -27,7 +27,8 @@
     "icon": "voice",
     "entry": "/ui/",
     "style": "fab",
-    "position": "left"
+    "position": "right",
+    "index": 1
   },
   "resources": {
     "cpu": "low",
