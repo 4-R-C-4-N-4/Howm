@@ -20,3 +20,7 @@ anyhow = "1"
 parking_lot = "0.12"
 include_dir = "0.7.4"
 futures-util = "0.3"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+base64 = "0.22"
+ciborium = "0.2"
+p2pcd = { path = "../../node/p2pcd", features = ["bridge-client"] }

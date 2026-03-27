@@ -102,6 +102,11 @@ impl SignalHub {
         debug!("signal: {} disconnected from room {}", peer_id, room_id);
     }
 
+    /// Send a message to a specific peer in a room (public interface for bridge relay).
+    pub fn send_to_peer(&self, room_id: &str, peer_id: &str, msg: &str) {
+        self.send_to(room_id, peer_id, msg);
+    }
+
     /// Send a message to a specific peer in a room.
     fn send_to(&self, room_id: &str, peer_id: &str, msg: &str) {
         let conns = self.connections.read();

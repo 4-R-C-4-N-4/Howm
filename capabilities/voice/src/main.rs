@@ -12,9 +12,12 @@ use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 mod api;
+mod bridge;
+mod notifier;
 mod signal;
 mod state;
 
+use notifier::VoiceNotifier;
 use signal::SignalHub;
 use state::{RoomStore, VoiceConfig};
 
@@ -32,6 +35,10 @@ struct Config {
     /// Port the Howm daemon HTTP API listens on.
     #[arg(long, default_value = "7000", env = "HOWM_DAEMON_PORT")]
     daemon_port: u16,
+
+    /// Base URL for the Howm daemon (used for push notifications).
+    #[arg(long, default_value = "http://127.0.0.1:7000", env = "HOWM_DAEMON_URL")]
+    daemon_url: String,
 }
 
 /// Shared application state.
@@ -39,6 +46,10 @@ struct Config {
 pub struct AppState {
     pub rooms: RoomStore,
     pub signal_hub: SignalHub,
+    pub bridge: p2pcd::bridge_client::BridgeClient,
+    pub notifier: VoiceNotifier,
+    #[allow(dead_code)]
+    pub daemon_port: u16,
 }
 
 #[tokio::main]
@@ -58,12 +69,19 @@ async fn main() -> anyhow::Result<()> {
         voice_config.invite_timeout_secs
     );
 
+    let bridge = p2pcd::bridge_client::BridgeClient::new(config.daemon_port);
+    let http_client = reqwest::Client::new();
+    let notifier = VoiceNotifier::new(http_client, &config.daemon_url);
+
     let state = AppState {
         rooms: RoomStore::new(voice_config),
         signal_hub: SignalHub::new(),
+        bridge,
+        notifier,
+        daemon_port: config.daemon_port,
     };
 
-    // Background: room cleanup loop
+    // Background: room + invite cleanup loop
     {
         let cleanup_state = state.clone();
         tokio::spawn(async move {
@@ -73,6 +91,10 @@ async fn main() -> anyhow::Result<()> {
                 let removed = cleanup_state.rooms.cleanup_stale_rooms();
                 if removed > 0 {
                     info!("Cleaned up {} stale room(s)", removed);
+                }
+                let expired = cleanup_state.rooms.cleanup_expired_invites();
+                if expired > 0 {
+                    info!("Expired {} stale invite(s)", expired);
                 }
             }
         });
@@ -89,8 +111,14 @@ async fn main() -> anyhow::Result<()> {
         .route("/rooms/{room_id}/leave", post(api::leave_room))
         .route("/rooms/{room_id}/invite", post(api::invite_peers))
         .route("/rooms/{room_id}/mute", post(api::mute))
+        // Quick call
+        .route("/quick-call", post(api::quick_call))
         // WebSocket signaling
         .route("/rooms/{room_id}/signal", get(signal::signal_ws))
+        // P2P-CD lifecycle hooks (called by daemon cap_notify)
+        .route("/p2pcd/peer-active", post(bridge::peer_active))
+        .route("/p2pcd/peer-inactive", post(bridge::peer_inactive))
+        .route("/p2pcd/inbound", post(bridge::inbound_message))
         // Embedded UI
         .route("/ui", get(serve_ui_index))
         .route("/ui/", get(serve_ui_index))

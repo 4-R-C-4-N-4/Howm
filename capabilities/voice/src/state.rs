@@ -252,12 +252,50 @@ impl RoomStore {
     }
 
     /// Remove expired invitations from all rooms.
-    /// TODO: per-invite timestamps for proper expiry tracking.
-    pub fn cleanup_expired_invites(&self) {
-        let _now = now_secs();
-        let _timeout = self.config.invite_timeout_secs;
-        // For now, invites expire when the room itself is cleaned up.
-        // Per-invite timestamps will be added when inter-node invites land.
+    ///
+    /// Uses room `created_at` + invite_timeout as the expiry threshold.
+    /// Returns the number of invites removed.
+    pub fn cleanup_expired_invites(&self) -> usize {
+        let now = now_secs();
+        let timeout = self.config.invite_timeout_secs;
+        let mut rooms = self.rooms.write();
+        let mut total_expired = 0;
+
+        for room in rooms.values_mut() {
+            if now.saturating_sub(room.created_at) > timeout && !room.invited.is_empty() {
+                total_expired += room.invited.len();
+                room.invited.clear();
+            }
+        }
+
+        total_expired
+    }
+
+    /// Remove a peer from all rooms they're in (e.g. peer went offline).
+    /// Returns a list of (room_id, was_destroyed) for affected rooms.
+    pub fn remove_peer_from_all(&self, peer_id: &str) -> Vec<(String, bool)> {
+        let mut rooms = self.rooms.write();
+        let mut affected = Vec::new();
+        let mut to_remove = Vec::new();
+
+        for (room_id, room) in rooms.iter_mut() {
+            let was_member = room.members.iter().any(|m| m.peer_id == peer_id);
+            if was_member {
+                room.members.retain(|m| m.peer_id != peer_id);
+                if room.members.is_empty() {
+                    to_remove.push(room_id.clone());
+                    affected.push((room_id.clone(), true));
+                } else {
+                    affected.push((room_id.clone(), false));
+                }
+            }
+        }
+
+        for room_id in to_remove {
+            rooms.remove(&room_id);
+        }
+
+        affected
     }
 }
 

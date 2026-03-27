@@ -112,9 +112,32 @@ pub async fn join_room(
 ) -> impl IntoResponse {
     let peer_id = require_peer_id!(&headers);
 
+    // Tunnel validation: check that the joining peer has tunnels to all room members
+    if let Some(room) = state.rooms.get_room(&room_id) {
+        let member_ids: Vec<String> = room.members.iter().map(|m| m.peer_id.clone()).collect();
+        if let Err(missing) = crate::bridge::validate_tunnels(&state, &peer_id, &member_ids).await
+        {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": "missing_tunnels",
+                    "missing_peers": missing,
+                })),
+            )
+                .into_response();
+        }
+    }
+
     match state.rooms.join_room(&room_id, &peer_id) {
         Ok(room) => {
             info!("{} joined room {}", peer_id, room_id);
+
+            // Resolve invite badge
+            state.notifier.invite_resolved();
+
+            // Set presence to "In a call"
+            let room_name = room.name.as_deref().unwrap_or("Voice Room");
+            state.notifier.set_in_call(room_name);
 
             // Broadcast peer-joined via signaling
             let msg = serde_json::to_string(&crate::signal::SignalMessage {
@@ -131,6 +154,27 @@ pub async fn join_room(
             .unwrap_or_default();
             state.signal_hub.broadcast_all(&room_id, &msg);
 
+            // Notify remote peers about the join (fire-and-forget)
+            let state_clone = state.clone();
+            let room_id_clone = room_id.clone();
+            let peer_id_clone = peer_id.clone();
+            let member_ids: Vec<String> =
+                room.members.iter().map(|m| m.peer_id.clone()).collect();
+            tokio::spawn(async move {
+                for member_id in &member_ids {
+                    if member_id == &peer_id_clone {
+                        continue;
+                    }
+                    let _ = crate::bridge::send_join_notify(
+                        &state_clone,
+                        member_id,
+                        &room_id_clone,
+                        &peer_id_clone,
+                    )
+                    .await;
+                }
+            });
+
             Json(json!(room)).into_response()
         }
         Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"error": e}))).into_response(),
@@ -145,12 +189,22 @@ pub async fn leave_room(
 ) -> impl IntoResponse {
     let peer_id = require_peer_id!(&headers);
 
+    // Capture remaining members before leaving (for bridge notification)
+    let remaining_members: Vec<String> = state
+        .rooms
+        .get_room(&room_id)
+        .map(|r| r.members.iter().map(|m| m.peer_id.clone()).collect())
+        .unwrap_or_default();
+
     match state.rooms.leave_room(&room_id, &peer_id) {
         Ok(destroyed) => {
             info!(
                 "{} left room {} (destroyed={})",
                 peer_id, room_id, destroyed
             );
+
+            // Clear "In a call" presence
+            state.notifier.clear_in_call();
 
             // Broadcast peer-left via signaling
             let msg = serde_json::to_string(&crate::signal::SignalMessage {
@@ -160,6 +214,27 @@ pub async fn leave_room(
             })
             .unwrap_or_default();
             state.signal_hub.broadcast_all(&room_id, &msg);
+
+            // Notify remote peers about the leave (fire-and-forget)
+            if !destroyed {
+                let state_clone = state.clone();
+                let room_id_clone = room_id.clone();
+                let peer_id_clone = peer_id.clone();
+                tokio::spawn(async move {
+                    for member_id in &remaining_members {
+                        if member_id == &peer_id_clone {
+                            continue;
+                        }
+                        let _ = crate::bridge::send_leave_notify(
+                            &state_clone,
+                            member_id,
+                            &room_id_clone,
+                            &peer_id_clone,
+                        )
+                        .await;
+                    }
+                });
+            }
 
             Json(json!({
                 "status": if destroyed { "room_destroyed" } else { "left" },
@@ -179,11 +254,16 @@ pub async fn close_room(
     let peer_id = require_peer_id!(&headers);
 
     match state.rooms.close_room(&room_id, &peer_id) {
-        Ok(_room) => {
+        Ok(room) => {
             info!("{} closed room {}", peer_id, room_id);
 
             // Signal all connected clients that the room is closed
             state.signal_hub.close_room(&room_id);
+
+            // Notify via daemon
+            let room_name = room.name.as_deref().unwrap_or("Voice Room");
+            state.notifier.notify_room_closed(room_name);
+            state.notifier.clear_badge();
 
             Json(json!({"status": "closed"})).into_response()
         }
@@ -195,10 +275,33 @@ pub async fn close_room(
 pub async fn invite_peers(
     State(state): State<AppState>,
     Path(room_id): Path<String>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<InviteRequest>,
 ) -> impl IntoResponse {
-    match state.rooms.invite_peers(&room_id, req.peer_ids) {
-        Ok(room) => Json(json!(room)).into_response(),
+    let peer_id = require_peer_id!(&headers);
+
+    match state.rooms.invite_peers(&room_id, req.peer_ids.clone()) {
+        Ok(room) => {
+            // Send voice.invite bridge RPC to each invited peer (fire-and-forget)
+            let room_name = room.name.clone().unwrap_or_else(|| "Voice Room".into());
+            let state_clone = state.clone();
+            let inviter = peer_id.clone();
+            let rid = room_id.clone();
+            tokio::spawn(async move {
+                for target_peer_id in &req.peer_ids {
+                    let _ = crate::bridge::send_invite(
+                        &state_clone,
+                        target_peer_id,
+                        &rid,
+                        &room_name,
+                        &inviter,
+                    )
+                    .await;
+                }
+            });
+
+            Json(json!(room)).into_response()
+        }
         Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"error": e}))).into_response(),
     }
 }
@@ -228,6 +331,53 @@ pub async fn mute(
         }
         Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"error": e}))).into_response(),
     }
+}
+
+// ── Quick-call shortcut ──────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct QuickCallRequest {
+    pub peer_id: String,
+    pub name: Option<String>,
+}
+
+/// POST /quick-call — create a 1:1 room and auto-invite a specific peer.
+pub async fn quick_call(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Json(req): Json<QuickCallRequest>,
+) -> impl IntoResponse {
+    let caller_id = require_peer_id!(&headers);
+
+    let room_name = req
+        .name
+        .unwrap_or_else(|| format!("Call with {}", &req.peer_id[..8.min(req.peer_id.len())]));
+    let room = state.rooms.create_room(
+        &caller_id,
+        Some(room_name.clone()),
+        vec![req.peer_id.clone()],
+        Some(2),
+    );
+
+    info!(
+        "Quick call: {} -> {} (room {})",
+        caller_id, req.peer_id, room.room_id
+    );
+
+    // Set presence
+    state.notifier.set_in_call(&room_name);
+
+    // Send invite via bridge RPC (fire-and-forget)
+    let state_clone = state.clone();
+    let target = req.peer_id.clone();
+    let rid = room.room_id.clone();
+    let rname = room_name.clone();
+    let inviter = caller_id.clone();
+    tokio::spawn(async move {
+        let _ = crate::bridge::send_invite(&state_clone, &target, &rid, &rname, &inviter).await;
+    });
+
+    (StatusCode::CREATED, Json(json!(room))).into_response()
 }
 
 /// GET /health — health check.

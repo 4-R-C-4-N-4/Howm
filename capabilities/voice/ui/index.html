@@ -14,7 +14,10 @@
       <!-- Room list -->
       <div id="rooms-section">
         <div id="rooms-list"></div>
-        <button id="btn-create" onclick="createRoom()">New Room</button>
+        <div id="room-actions">
+          <button id="btn-create" onclick="createRoom()">New Room</button>
+          <button id="btn-quick-call" onclick="quickCall()">📞 Quick Call</button>
+        </div>
       </div>
 
       <!-- In-call view (hidden by default) -->
@@ -26,6 +29,7 @@
         <div id="members-list"></div>
         <div id="call-controls">
           <button id="btn-mute" onclick="toggleMute()">🎤 Mute</button>
+          <button id="btn-invite" onclick="inviteMore()">➕ Invite</button>
           <button id="btn-leave" onclick="leaveRoom()">📴 Leave</button>
         </div>
       </div>

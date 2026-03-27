@@ -2,11 +2,16 @@
 'use strict';
 
 const API = '';  // relative to capability base path
+// Presence API is accessed via daemon proxy — relative to document origin
+const PRESENCE_API = '/cap/presence';
 let currentRoom = null;
 let isMuted = false;
 let ws = null;
 let peerConnections = {};  // peer_id -> RTCPeerConnection
 let localStream = null;
+let audioAnalysers = {};   // peer_id -> { analyser, dataArray }
+let levelAnimFrame = null; // requestAnimationFrame id
+let availablePeers = [];   // cached from presence
 
 // ── Peer ID ──────────────────────────────────────────────────────────────────
 
@@ -25,6 +30,95 @@ const PEER_ID = getPeerId();
 
 function apiHeaders() {
   return { 'Content-Type': 'application/json', 'X-Peer-Id': PEER_ID };
+}
+
+function shortId(id) {
+  return id && id.length > 12 ? id.slice(0, 8) + '…' : id;
+}
+
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+// ── Presence peer list ───────────────────────────────────────────────────────
+
+async function loadPresencePeers() {
+  try {
+    const resp = await fetch(`${PRESENCE_API}/peers`);
+    if (!resp.ok) return;
+    const data = await resp.json();
+    availablePeers = (data.peers || []).filter(p => p.peer_id !== PEER_ID);
+  } catch (_) {
+    // Presence capability may not be running
+    availablePeers = [];
+  }
+}
+
+function buildPeerOptions(excludeIds) {
+  const exclude = new Set(excludeIds || []);
+  return availablePeers
+    .filter(p => !exclude.has(p.peer_id))
+    .map(p => {
+      const busy = p.status && p.status.startsWith('In a call');
+      const label = `${shortId(p.peer_id)} ${p.emoji || ''} ${busy ? '(in call)' : p.activity === 'Away' ? '(away)' : ''}`.trim();
+      return { peer_id: p.peer_id, label, busy, away: p.activity === 'Away' };
+    });
+}
+
+function showPeerPicker(title, excludeIds) {
+  return new Promise((resolve) => {
+    const options = buildPeerOptions(excludeIds);
+    if (!options.length) {
+      // Fallback to manual input
+      const input = prompt(`${title}\nNo peers from presence. Enter peer ID(s) manually (comma-separated):`);
+      if (!input) return resolve([]);
+      return resolve(input.split(',').map(s => s.trim()).filter(Boolean));
+    }
+
+    // Build a simple modal
+    const overlay = document.createElement('div');
+    overlay.className = 'picker-overlay';
+    const modal = document.createElement('div');
+    modal.className = 'picker-modal';
+    modal.innerHTML = `<div class="picker-title">${esc(title)}</div>`;
+
+    const selected = new Set();
+    options.sort((a, b) => (a.busy || a.away ? 1 : 0) - (b.busy || b.away ? 1 : 0));
+
+    for (const opt of options) {
+      const row = document.createElement('div');
+      row.className = 'picker-row' + (opt.busy ? ' picker-busy' : '');
+      row.textContent = opt.label;
+      row.onclick = () => {
+        if (selected.has(opt.peer_id)) {
+          selected.delete(opt.peer_id);
+          row.classList.remove('picker-selected');
+        } else {
+          selected.add(opt.peer_id);
+          row.classList.add('picker-selected');
+        }
+      };
+      modal.appendChild(row);
+    }
+
+    const btnRow = document.createElement('div');
+    btnRow.className = 'picker-btns';
+    const okBtn = document.createElement('button');
+    okBtn.textContent = 'OK';
+    okBtn.onclick = () => { overlay.remove(); resolve([...selected]); };
+    const cancelBtn = document.createElement('button');
+    cancelBtn.textContent = 'Cancel';
+    cancelBtn.onclick = () => { overlay.remove(); resolve([]); };
+    btnRow.appendChild(cancelBtn);
+    btnRow.appendChild(okBtn);
+    modal.appendChild(btnRow);
+
+    overlay.appendChild(modal);
+    overlay.onclick = (e) => { if (e.target === overlay) { overlay.remove(); resolve([]); } };
+    document.body.appendChild(overlay);
+  });
 }
 
 // ── Room list ────────────────────────────────────────────────────────────────
@@ -47,14 +141,14 @@ function renderRooms(rooms) {
   }
 
   list.innerHTML = rooms.map(r => {
-    const isMember = r.members.some(m => m.peer_id === PEER_ID);
     const isInvited = r.invited.includes(PEER_ID);
+    const capacityStr = `${r.members.length}/${r.max_members}`;
 
     if (isInvited) {
       return `
         <div class="invite-card">
-          <div class="room-name">📞 ${r.name || 'Voice Room'}</div>
-          <div class="room-members">${r.members.length} member(s) — you're invited</div>
+          <div class="room-name">📞 ${esc(r.name || 'Voice Room')}</div>
+          <div class="room-meta">${capacityStr} members — you're invited</div>
           <div class="invite-actions">
             <button onclick="joinRoom('${r.room_id}')">Join</button>
             <button onclick="declineRoom('${r.room_id}')">Decline</button>
@@ -64,8 +158,8 @@ function renderRooms(rooms) {
 
     return `
       <div class="room-card" onclick="enterRoom('${r.room_id}')">
-        <div class="room-name">${r.name || 'Voice Room'}</div>
-        <div class="room-members">${r.members.length} member(s)</div>
+        <div class="room-name">${esc(r.name || 'Voice Room')}</div>
+        <div class="room-meta">${capacityStr} members</div>
       </div>`;
   }).join('');
 }
@@ -73,12 +167,17 @@ function renderRooms(rooms) {
 // ── Room actions ─────────────────────────────────────────────────────────────
 
 async function createRoom() {
+  await loadPresencePeers();
   const name = prompt('Room name (optional):') || undefined;
+
+  // Pick peers to invite
+  const invitees = await showPeerPicker('Invite peers to room');
+
   try {
     const resp = await fetch(`${API}/rooms`, {
       method: 'POST',
       headers: apiHeaders(),
-      body: JSON.stringify({ name, invite: [], max_members: 10 }),
+      body: JSON.stringify({ name, invite: invitees, max_members: 10 }),
     });
     const room = await resp.json();
     enterRoom(room.room_id);
@@ -87,12 +186,48 @@ async function createRoom() {
   }
 }
 
+async function quickCall() {
+  await loadPresencePeers();
+  const peers = await showPeerPicker('Quick call — select a peer');
+  if (!peers.length) return;
+
+  try {
+    const resp = await fetch(`${API}/quick-call`, {
+      method: 'POST',
+      headers: apiHeaders(),
+      body: JSON.stringify({ peer_id: peers[0] }),
+    });
+    if (!resp.ok) {
+      const err = await resp.json();
+      alert(err.error || 'Quick call failed');
+      return;
+    }
+    const room = await resp.json();
+    enterRoom(room.room_id);
+  } catch (e) {
+    console.error('Quick call failed:', e);
+  }
+}
+
 async function joinRoom(roomId) {
   try {
-    await fetch(`${API}/rooms/${roomId}/join`, {
+    const resp = await fetch(`${API}/rooms/${roomId}/join`, {
       method: 'POST',
       headers: apiHeaders(),
     });
+    if (!resp.ok) {
+      const err = await resp.json();
+      if (err.error === 'missing_tunnels') {
+        alert(`Cannot join: missing tunnels to ${err.missing_peers.length} peer(s)`);
+        return;
+      }
+      if (err.error === 'room is full') {
+        alert('Room is full');
+        return;
+      }
+      alert(err.error || 'Failed to join');
+      return;
+    }
     enterRoom(roomId);
   } catch (e) {
     console.error('Failed to join room:', e);
@@ -110,6 +245,7 @@ async function enterRoom(roomId) {
 
     await startAudio();
     connectSignaling(roomId);
+    startLevelMonitor();
   } catch (e) {
     console.error('Failed to enter room:', e);
   }
@@ -151,6 +287,34 @@ async function toggleMute() {
   document.getElementById('btn-mute').textContent = isMuted ? '🔇 Unmute' : '🎤 Mute';
 }
 
+async function inviteMore() {
+  if (!currentRoom) return;
+  await loadPresencePeers();
+
+  const currentMembers = currentRoom.members.map(m => m.peer_id);
+  const currentInvited = currentRoom.invited || [];
+  const exclude = [...currentMembers, ...currentInvited];
+
+  const peerIds = await showPeerPicker('Invite more peers', exclude);
+  if (!peerIds.length) return;
+
+  try {
+    const resp = await fetch(`${API}/rooms/${currentRoom.room_id}/invite`, {
+      method: 'POST',
+      headers: apiHeaders(),
+      body: JSON.stringify({ peer_ids: peerIds }),
+    });
+    if (resp.ok) {
+      refreshRoom();
+    } else {
+      const err = await resp.json();
+      alert(err.error || 'Invite failed');
+    }
+  } catch (e) {
+    console.error('Invite failed:', e);
+  }
+}
+
 function declineRoom(roomId) {
   // Just remove from UI for now — no server-side decline yet
   loadRooms();
@@ -161,15 +325,29 @@ function declineRoom(roomId) {
 function renderCallView() {
   if (!currentRoom) return;
   document.getElementById('call-room-name').textContent = currentRoom.name || 'Voice Room';
-  document.getElementById('call-member-count').textContent = `${currentRoom.members.length} member(s)`;
+  document.getElementById('call-member-count').textContent =
+    `${currentRoom.members.length}/${currentRoom.max_members}`;
+
+  // Disable invite button if room is full
+  const inviteBtn = document.getElementById('btn-invite');
+  if (inviteBtn) {
+    inviteBtn.disabled = currentRoom.members.length >= currentRoom.max_members;
+  }
 
   const list = document.getElementById('members-list');
-  list.innerHTML = currentRoom.members.map(m => `
-    <div class="member">
-      <span class="member-name">${m.peer_id === PEER_ID ? '(You) ' : ''}${m.peer_id}</span>
-      ${m.muted ? '<span class="member-muted">muted</span>' : ''}
-    </div>
-  `).join('');
+  list.innerHTML = currentRoom.members.map(m => {
+    const isYou = m.peer_id === PEER_ID;
+    return `
+    <div class="member" id="member-${m.peer_id}">
+      <div class="member-info">
+        <span class="member-name">${isYou ? '(You) ' : ''}${esc(shortId(m.peer_id))}</span>
+        ${m.muted ? '<span class="member-muted">🔇</span>' : ''}
+      </div>
+      <div class="member-level">
+        <div class="level-bar" id="level-${m.peer_id}"></div>
+      </div>
+    </div>`;
+  }).join('');
 }
 
 // ── Audio ────────────────────────────────────────────────────────────────────
@@ -183,31 +361,94 @@ async function startAudio() {
         autoGainControl: true,
       }
     });
+
+    // Set up analyser for local audio
+    const audioCtx = getAudioContext();
+    const source = audioCtx.createMediaStreamSource(localStream);
+    const analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 256;
+    source.connect(analyser);
+    const dataArray = new Uint8Array(analyser.frequencyBinCount);
+    audioAnalysers[PEER_ID] = { analyser, dataArray };
   } catch (e) {
     console.error('Failed to get audio:', e);
+  }
+}
+
+let _audioCtx = null;
+function getAudioContext() {
+  if (!_audioCtx) _audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  return _audioCtx;
+}
+
+// ── Audio level monitoring ──────────────────────────────────────────────────
+
+function startLevelMonitor() {
+  if (levelAnimFrame) cancelAnimationFrame(levelAnimFrame);
+
+  function tick() {
+    for (const [peerId, { analyser, dataArray }] of Object.entries(audioAnalysers)) {
+      analyser.getByteFrequencyData(dataArray);
+      let sum = 0;
+      for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
+      const avg = sum / dataArray.length;
+      const pct = Math.min(100, (avg / 128) * 100);
+
+      const bar = document.getElementById(`level-${peerId}`);
+      if (bar) {
+        bar.style.width = pct + '%';
+        bar.classList.toggle('speaking', pct > 15);
+      }
+    }
+    levelAnimFrame = requestAnimationFrame(tick);
+  }
+  tick();
+}
+
+function stopLevelMonitor() {
+  if (levelAnimFrame) {
+    cancelAnimationFrame(levelAnimFrame);
+    levelAnimFrame = null;
   }
 }
 
 // ── WebRTC ───────────────────────────────────────────────────────────────────
 
 function createPeerConnection(remotePeerId) {
+  if (peerConnections[remotePeerId]) {
+    peerConnections[remotePeerId].close();
+    delete peerConnections[remotePeerId];
+  }
+
   const pc = new RTCPeerConnection({ iceServers: [] });
 
-  // Add local audio track
   if (localStream) {
     localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
   }
 
-  // Handle incoming audio
   pc.ontrack = (event) => {
+    const oldAudio = document.getElementById(`audio-${remotePeerId}`);
+    if (oldAudio) oldAudio.remove();
+
     const audio = document.createElement('audio');
     audio.srcObject = event.streams[0];
     audio.autoplay = true;
     audio.id = `audio-${remotePeerId}`;
     document.body.appendChild(audio);
+
+    try {
+      const audioCtx = getAudioContext();
+      const source = audioCtx.createMediaStreamSource(event.streams[0]);
+      const analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 256;
+      source.connect(analyser);
+      const dataArray = new Uint8Array(analyser.frequencyBinCount);
+      audioAnalysers[remotePeerId] = { analyser, dataArray };
+    } catch (e) {
+      console.warn('Could not create analyser for remote peer:', e);
+    }
   };
 
-  // ICE candidates
   pc.onicecandidate = (event) => {
     if (event.candidate && ws) {
       ws.send(JSON.stringify({
@@ -215,6 +456,12 @@ function createPeerConnection(remotePeerId) {
         to: remotePeerId,
         candidate: JSON.stringify(event.candidate),
       }));
+    }
+  };
+
+  pc.onconnectionstatechange = () => {
+    if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+      console.warn(`Connection to ${remotePeerId}: ${pc.connectionState}`);
     }
   };
 
@@ -247,6 +494,27 @@ async function handleIceCandidate(from, candidateStr) {
   }
 }
 
+// ── Audio cues ───────────────────────────────────────────────────────────────
+
+function playTone(freq, durationMs) {
+  try {
+    const ctx = getAudioContext();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.value = freq;
+    gain.gain.value = 0.08;
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + durationMs / 1000);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime + durationMs / 1000);
+  } catch (_) { /* audio context may not be available */ }
+}
+
+function playJoinCue() { playTone(880, 150); setTimeout(() => playTone(1100, 120), 160); }
+function playLeaveCue() { playTone(600, 150); setTimeout(() => playTone(440, 180), 160); }
+
 // ── Signaling WebSocket ──────────────────────────────────────────────────────
 
 function connectSignaling(roomId) {
@@ -255,7 +523,6 @@ function connectSignaling(roomId) {
   ws = new WebSocket(url);
 
   ws.onopen = () => {
-    // Identify ourselves
     ws.send(JSON.stringify({ peer_id: PEER_ID }));
   };
 
@@ -264,17 +531,17 @@ function connectSignaling(roomId) {
 
     switch (msg.type) {
       case 'peer-joined':
-        // New peer — we (existing member) send them an offer
         if (msg.peer_id !== PEER_ID) {
           sendOffer(msg.peer_id);
-          // Refresh room state
           refreshRoom();
+          playJoinCue();
         }
         break;
 
       case 'peer-left':
         removePeer(msg.peer_id);
         refreshRoom();
+        playLeaveCue();
         break;
 
       case 'sdp-offer':
@@ -326,6 +593,7 @@ function removePeer(peerId) {
     pc.close();
     delete peerConnections[peerId];
   }
+  delete audioAnalysers[peerId];
   const audio = document.getElementById(`audio-${peerId}`);
   if (audio) audio.remove();
 }
@@ -342,17 +610,17 @@ async function refreshRoom() {
 }
 
 function cleanup() {
-  // Close all peer connections
+  stopLevelMonitor();
+
   Object.keys(peerConnections).forEach(pid => removePeer(pid));
   peerConnections = {};
+  audioAnalysers = {};
 
-  // Close WebSocket
   if (ws) {
     ws.close();
     ws = null;
   }
 
-  // Stop local audio
   if (localStream) {
     localStream.getTracks().forEach(t => t.stop());
     localStream = null;
@@ -366,7 +634,9 @@ function cleanup() {
 // ── Init ─────────────────────────────────────────────────────────────────────
 
 loadRooms();
-// Poll room list every 10 seconds when not in a call
+loadPresencePeers();
+// Poll room list every 10s when not in a call, presence every 30s
 setInterval(() => {
   if (!currentRoom) loadRooms();
 }, 10000);
+setInterval(loadPresencePeers, 30000);

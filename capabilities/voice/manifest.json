@@ -16,6 +16,7 @@
       { "name": "invite",        "method": "POST",    "path": "/rooms/:room_id/invite" },
       { "name": "mute",          "method": "POST",    "path": "/rooms/:room_id/mute" },
       { "name": "signal",        "method": "GET",     "path": "/rooms/:room_id/signal" },
+      { "name": "quick_call",   "method": "POST",    "path": "/quick-call" },
       { "name": "health",        "method": "GET",     "path": "/health" }
     ]
   },
