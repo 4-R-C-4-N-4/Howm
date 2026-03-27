@@ -9,6 +9,7 @@ use howm::capabilities;
 use howm::config;
 use howm::executor;
 use howm::identity;
+use howm::lan_discovery;
 use howm::matchmake;
 use howm::net_detect;
 use howm::p2pcd;
@@ -220,6 +221,34 @@ async fn main() -> anyhow::Result<()> {
         *wg_active = wg_state.tunnel_handle.is_some();
     }
 
+    // Start LAN mDNS discovery if enabled
+    if config.lan_discoverable {
+        if let Some(ref pubkey) = identity.wg_pubkey {
+            if let Some(lan_ip) = net_detect::detect_lan_ip() {
+                let wg_port = identity.wg_listen_port.unwrap_or(config.wg_port);
+                match lan_discovery::LanDiscovery::start(
+                    &identity.name,
+                    pubkey,
+                    &lan_ip,
+                    config.port,
+                    wg_port,
+                ) {
+                    Ok(discovery) => {
+                        *state.lan_discovery.write().await = Some(discovery);
+                        info!("LAN discovery active on {}", lan_ip);
+                    }
+                    Err(e) => {
+                        tracing::warn!("LAN discovery failed to start: {}", e);
+                    }
+                }
+            } else {
+                info!("LAN discovery: no LAN IP detected — skipping mDNS registration");
+            }
+        }
+    } else {
+        info!("LAN discovery disabled (lan_discoverable=false)");
+    }
+
     // Build Axum router
     let router = api::build_router(state.clone(), config.ui_dir.clone());
 
@@ -388,6 +417,10 @@ async fn wait_for_shutdown_signal() {
 }
 
 async fn do_shutdown(state: &state::AppState) {
+    // Shut down LAN mDNS discovery
+    if let Some(discovery) = state.lan_discovery.write().await.take() {
+        discovery.shutdown();
+    }
     // Gracefully close all P2P-CD sessions
     if let Some(ref engine) = state.p2pcd_engine {
         engine.shutdown().await;

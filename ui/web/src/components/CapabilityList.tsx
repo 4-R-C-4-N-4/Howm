@@ -1,4 +1,3 @@
-import { Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { getCapabilities } from '../api/capabilities';
 import type { Capability } from '../api/capabilities';
@@ -37,15 +36,7 @@ export function CapabilityList() {
                 <strong className='whitespace-nowrap'>{cap.name}</strong>
                 <span className='text-howm-text-muted m-0 text-sm'>v{cap.version}</span>
                 <span className='text-howm-text-muted m-0 text-sm font-mono text-xs'>:{cap.port}</span>
-                {/* Task 4: link to capability UI page if available */}
-                {cap.ui && (
-                  <Link
-                    to={`/app/${cap.name}`}
-                    className='text-xs py-0.5 px-2 bg-howm-accent-dim text-howm-accent rounded no-underline whitespace-nowrap'
-                  >
-                    Open {cap.ui.label} →
-                  </Link>
-                )}
+
               </div>
               <span style={{
                 background: `${statusColor(cap.status)}1a`,

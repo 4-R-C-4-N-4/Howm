@@ -63,3 +63,41 @@ export const getPendingExchanges = () =>
 
 export const redeemAccept = (accept_token: string) =>
   api.post('/node/accept', { accept_token }).then(r => r.data);
+
+// ── LAN Discovery ─────────────────────────────────────────────────────────────
+
+export interface LanStatus {
+  lan_discoverable: boolean;
+  mdns_active: boolean;
+  lan_ip: string | null;
+}
+
+export interface LanPeer {
+  name: string;
+  fingerprint: string;
+  wg_pubkey: string;
+  lan_ip: string;
+  daemon_port: number;
+  wg_port: number;
+  already_peered: boolean;
+}
+
+export interface LanScanResult {
+  peers: LanPeer[];
+  scan_duration_ms: number;
+}
+
+export interface LanInviteResult {
+  status: string;
+  target_ip: string;
+  target_port: number;
+}
+
+export const getLanStatus = () =>
+  api.get<LanStatus>('/network/lan/status').then(r => r.data);
+
+export const lanScan = () =>
+  api.post<LanScanResult>('/network/lan/scan').then(r => r.data);
+
+export const lanInvite = (lan_ip: string, daemon_port: number) =>
+  api.post<LanInviteResult>('/network/lan/invite', { lan_ip, daemon_port }).then(r => r.data);

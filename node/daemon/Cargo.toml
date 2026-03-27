@@ -41,6 +41,8 @@ ciborium = "0.2"
 include_dir = "0.7"
 hostname = "0.3"
 async-trait = "0.1"
+mdns-sd = "0.11"
+flume = "0.11"
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.29", features = ["signal", "process"] }

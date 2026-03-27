@@ -3,6 +3,7 @@ use crate::{
     capabilities::CapabilityEntry,
     config::Config,
     identity::NodeIdentity,
+    lan_discovery::LanDiscovery,
     notifications::{NotificationBuffer, PushRateLimiter},
     p2pcd::engine::ProtocolEngine,
     peers::Peer,
@@ -42,6 +43,8 @@ pub struct AppState {
     pub notifications: Arc<RwLock<NotificationBuffer>>,
     /// Per-capability rate limiter for notification pushes.
     pub push_rate_limiter: Arc<RwLock<PushRateLimiter>>,
+    /// LAN mDNS discovery handle (None if lan_discoverable=false).
+    pub lan_discovery: Arc<RwLock<Option<LanDiscovery>>>,
 }
 
 impl AppState {
@@ -73,6 +76,7 @@ impl AppState {
             badges: Arc::new(RwLock::new(HashMap::new())),
             notifications: Arc::new(RwLock::new(NotificationBuffer::new())),
             push_rate_limiter: Arc::new(RwLock::new(PushRateLimiter::new(10, 10_000))),
+            lan_discovery: Arc::new(RwLock::new(None)),
         }
     }
 }

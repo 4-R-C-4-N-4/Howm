@@ -17,6 +17,7 @@ pub mod access_routes;
 pub mod auth_layer;
 pub mod capability_routes;
 pub mod connection_routes;
+pub mod lan_routes;
 pub mod network_routes;
 pub mod node_routes;
 pub mod notification_routes;
@@ -104,6 +105,8 @@ pub fn build_router(state: AppState, ui_dir: Option<PathBuf>) -> Router {
             "/network/relay",
             put(connection_routes::network_relay_update),
         )
+        .route("/network/lan/scan", post(lan_routes::lan_scan))
+        .route("/network/lan/invite", post(lan_routes::lan_invite))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             bearer_auth_middleware,
@@ -150,6 +153,7 @@ pub fn build_router(state: AppState, ui_dir: Option<PathBuf>) -> Router {
             "/network/matchmake/status",
             get(connection_routes::matchmake_status),
         )
+        .route("/network/lan/status", get(lan_routes::lan_status))
         .layer(middleware::from_fn(local_or_wg_middleware));
 
     // ── 2b. Bridge routes — localhost-only, for out-of-process capabilities ──
@@ -169,7 +173,8 @@ pub fn build_router(state: AppState, ui_dir: Option<PathBuf>) -> Router {
         .route("/node/complete-invite", post(node_routes::complete_invite))
         .route("/node/open-join", post(node_routes::open_join))
         .route("/node/generate-accept", post(node_routes::generate_accept))
-        .route("/node/redeem-accept", post(node_routes::redeem_accept));
+        .route("/node/redeem-accept", post(node_routes::redeem_accept))
+        .route("/node/lan-accept", post(lan_routes::lan_accept));
 
     // ── 4. Notification routes ─────────────────────────────────────────────
     // Write (badge set, push): localhost-only (capability processes only).
