@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Voice — Howm</title>
+  <link rel="stylesheet" href="voice.css">
+</head>
+<body>
+  <div id="app">
+    <div id="panel">
+      <h2>🎙️ Voice</h2>
+
+      <!-- Room list -->
+      <div id="rooms-section">
+        <div id="rooms-list"></div>
+        <button id="btn-create" onclick="createRoom()">New Room</button>
+      </div>
+
+      <!-- In-call view (hidden by default) -->
+      <div id="call-section" style="display:none">
+        <div id="call-header">
+          <span id="call-room-name"></span>
+          <span id="call-member-count"></span>
+        </div>
+        <div id="members-list"></div>
+        <div id="call-controls">
+          <button id="btn-mute" onclick="toggleMute()">🎤 Mute</button>
+          <button id="btn-leave" onclick="leaveRoom()">📴 Leave</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script src="voice.js"></script>
+</body>
+</html>

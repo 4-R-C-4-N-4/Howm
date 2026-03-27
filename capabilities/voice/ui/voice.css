@@ -1,0 +1,51 @@
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: system-ui, sans-serif; background: #111; color: #eee; }
+#app { max-width: 400px; margin: 0 auto; padding: 1rem; }
+#panel { background: #1a1a1a; border-radius: 12px; padding: 1rem; }
+h2 { margin-bottom: 1rem; font-size: 1.2rem; }
+
+.room-card {
+  background: #222; border-radius: 8px; padding: 0.75rem;
+  margin-bottom: 0.5rem; cursor: pointer; transition: background 0.15s;
+}
+.room-card:hover { background: #2a2a2a; }
+.room-name { font-weight: 600; }
+.room-members { font-size: 0.85rem; color: #888; margin-top: 0.25rem; }
+
+button {
+  background: #333; color: #eee; border: none; border-radius: 8px;
+  padding: 0.6rem 1rem; cursor: pointer; font-size: 0.9rem;
+  transition: background 0.15s;
+}
+button:hover { background: #444; }
+
+#btn-create { width: 100%; margin-top: 0.5rem; background: #1a6b3a; }
+#btn-create:hover { background: #228b22; }
+#btn-leave { background: #8b2222; }
+#btn-leave:hover { background: #a02020; }
+
+#call-header {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: 0.75rem;
+}
+#call-room-name { font-weight: 600; font-size: 1.1rem; }
+#call-member-count { color: #888; font-size: 0.85rem; }
+
+.member {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 0.5rem 0; border-bottom: 1px solid #222;
+}
+.member-name { font-weight: 500; }
+.member-muted { color: #ff4444; font-size: 0.8rem; }
+
+#call-controls {
+  display: flex; gap: 0.5rem; margin-top: 1rem;
+}
+#call-controls button { flex: 1; }
+
+.invite-card {
+  background: #1a2a1a; border-radius: 8px; padding: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+.invite-actions { display: flex; gap: 0.5rem; margin-top: 0.5rem; }
+.invite-actions button { flex: 1; font-size: 0.8rem; padding: 0.4rem; }

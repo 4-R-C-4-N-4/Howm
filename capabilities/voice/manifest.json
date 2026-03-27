@@ -1,0 +1,36 @@
+{
+  "name": "social.voice",
+  "version": "0.1.0",
+  "description": "Voice chat rooms over WireGuard — WebRTC audio with peer-to-peer mesh",
+  "binary": "./voice",
+  "port": 7005,
+  "api": {
+    "base_path": "/cap/voice",
+    "endpoints": [
+      { "name": "create_room",   "method": "POST",   "path": "/rooms" },
+      { "name": "list_rooms",    "method": "GET",     "path": "/rooms" },
+      { "name": "get_room",      "method": "GET",     "path": "/rooms/:room_id" },
+      { "name": "join_room",     "method": "POST",    "path": "/rooms/:room_id/join" },
+      { "name": "leave_room",    "method": "POST",    "path": "/rooms/:room_id/leave" },
+      { "name": "close_room",    "method": "DELETE",  "path": "/rooms/:room_id" },
+      { "name": "invite",        "method": "POST",    "path": "/rooms/:room_id/invite" },
+      { "name": "mute",          "method": "POST",    "path": "/rooms/:room_id/mute" },
+      { "name": "signal",        "method": "GET",     "path": "/rooms/:room_id/signal" },
+      { "name": "health",        "method": "GET",     "path": "/health" }
+    ]
+  },
+  "permissions": {
+    "visibility": "friends"
+  },
+  "ui": {
+    "label": "Voice",
+    "icon": "voice",
+    "entry": "/ui/",
+    "style": "fab",
+    "position": "left"
+  },
+  "resources": {
+    "cpu": "low",
+    "memory": "32MB"
+  }
+}
