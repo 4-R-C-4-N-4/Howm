@@ -52,6 +52,14 @@ export function GlobeIcon({ className }: { className?: string }) {
   );
 }
 
+export function CircleIcon({ className }: { className?: string }) {
+  return (
+    <svg {...iconProps} className={className}>
+      <circle cx="12" cy="12" r="6" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
 /** Resolve a capability's ui.icon string to a React component */
 export function CapIcon({ icon, className }: { icon?: string; className?: string }) {
   switch (icon) {
@@ -60,6 +68,7 @@ export function CapIcon({ icon, className }: { icon?: string; className?: string
     case 'feed':        return <FeedIcon className={className} />;
     case 'grid':        return <GridIcon className={className} />;
     case 'globe':       return <GlobeIcon className={className} />;
+    case 'circle':      return <CircleIcon className={className} />;
     default:            return <GridIcon className={className} />;
   }
 }

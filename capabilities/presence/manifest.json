@@ -1,0 +1,32 @@
+{
+  "name": "social.presence",
+  "version": "0.1.0",
+  "description": "Peer presence — active/away status and custom status messages",
+  "binary": "./presence",
+  "port": 7004,
+  "api": {
+    "base_path": "/cap/presence",
+    "endpoints": [
+      { "name": "heartbeat", "method": "POST", "path": "/heartbeat" },
+      { "name": "get_status", "method": "GET", "path": "/status" },
+      { "name": "set_status", "method": "PUT", "path": "/status" },
+      { "name": "list_peers", "method": "GET", "path": "/peers" },
+      { "name": "get_peer", "method": "GET", "path": "/peers/:peer_id" },
+      { "name": "health", "method": "GET", "path": "/health" }
+    ]
+  },
+  "permissions": {
+    "visibility": "friends"
+  },
+  "ui": {
+    "label": "Presence",
+    "icon": "circle",
+    "entry": "/ui/",
+    "style": "fab",
+    "position": "left"
+  },
+  "resources": {
+    "cpu": "minimal",
+    "memory": "16MB"
+  }
+}

@@ -9,6 +9,7 @@ var pollTimer = null;
 var convPollTimer = null;
 var _started = false;
 var optimisticMessages = []; // messages inserted before server confirms
+var presenceMap = {};  // peer_id → { activity, status, emoji }
 
 // ── Base path detection ────────────────────────────────────────────────────────
 // When served through daemon proxy: /cap/messaging/ui/ → base = /cap/messaging
@@ -119,6 +120,7 @@ function showChatView(peerId) {
 
 function startup() {
   fetchPeers();
+  fetchPresence();
   route();
 
   // Poll conversations list every 5s (for badge updates and list refresh)
@@ -129,6 +131,22 @@ function startup() {
 
   // Refresh peers every 30s
   setInterval(fetchPeers, 30000);
+
+  // Refresh presence every 5s
+  setInterval(fetchPresence, 5000);
+}
+
+function fetchPresence() {
+  daemonFetch('/cap/presence/peers').then(function (data) {
+    if (!data || !data.peers) return;
+    presenceMap = {};
+    for (var i = 0; i < data.peers.length; i++) {
+      var p = data.peers[i];
+      presenceMap[p.peer_id] = p;
+    }
+  }).catch(function () {
+    // Presence capability may not be running — ignore
+  });
 }
 
 // ── API helpers ────────────────────────────────────────────────────────────────
@@ -220,8 +238,12 @@ function loadConversations() {
         : '';
       var name = peerName(c.peer_id);
       var encodedPeer = encodeURIComponent(c.peer_id);
+      var pres = presenceMap[c.peer_id];
+      var dotColor = pres ? (pres.activity === 'active' ? '#22c55e' : '#eab308') : '#555';
+      var dot = '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + dotColor + ';margin-right:6px;flex-shrink:0;"></span>';
+      var presEmoji = pres && pres.emoji ? ' <span style="font-size:12px">' + escapeHtml(pres.emoji) + '</span>' : '';
       return '<li onclick="window.location.hash=\'#/chat/' + encodedPeer + '\'">' +
-        '<div><span class="conv-peer">' + escapeHtml(name) + '</span>' + unread +
+        '<div style="display:flex;align-items:center">' + dot + '<span class="conv-peer">' + escapeHtml(name) + '</span>' + presEmoji + unread +
         '<span class="conv-time">' + time + '</span></div>' +
         '<div class="conv-preview">' + escapeHtml(prefix + preview) + '</div>' +
         '</li>';

@@ -5,6 +5,7 @@ export interface CapabilityUi {
   icon?: string;
   entry: string;
   style: string;
+  position?: 'left' | 'right';
 }
 
 export interface Capability {

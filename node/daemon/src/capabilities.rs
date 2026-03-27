@@ -8,6 +8,9 @@ pub struct UiManifest {
     pub entry: String,
     #[serde(default = "default_ui_style")]
     pub style: String,
+    /// FAB placement: "right" (default) or "left".
+    #[serde(default)]
+    pub position: Option<String>,
 }
 
 fn default_ui_style() -> String {

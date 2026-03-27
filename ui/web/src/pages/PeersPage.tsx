@@ -10,6 +10,14 @@ import {
   effectiveTier, peerIdToHex, isOnline,
 } from '../lib/access';
 import { Link } from 'react-router-dom';
+import api from '../api/client';
+
+export interface PeerPresenceInfo {
+  peer_id: string;
+  activity: 'active' | 'away';
+  status: string | null;
+  emoji: string | null;
+}
 
 type FilterOption = 'All' | 'Trusted' | 'Friends' | 'Default' | 'Custom' | 'Denied' | 'Online';
 
@@ -27,6 +35,17 @@ export function PeersPage() {
 
   // Per-peer group memberships
   const peerGroupsQueries = useQueries(peers);
+
+  // Presence data
+  const { data: presenceData } = useQuery({
+    queryKey: ['presence-peers'],
+    queryFn: () => api.get<{ peers: PeerPresenceInfo[] }>('/cap/presence/peers').then(r => r.data.peers).catch(() => []),
+    refetchInterval: 5_000,
+  });
+  const presenceMap: Record<string, PeerPresenceInfo> = {};
+  for (const p of presenceData ?? []) {
+    presenceMap[p.peer_id] = p;
+  }
 
   // Detect new peers
   useEffect(() => {
@@ -115,6 +134,7 @@ export function PeersPage() {
                 groups={peerGroupsQueries[hexId] || []}
                 now={now}
                 onToast={showToast}
+                presence={presenceMap[peer.wg_pubkey]}
               />
             );
           })}
