@@ -1,0 +1,33 @@
+{
+  "name": "world.generation",
+  "version": "0.1.0",
+  "description": "Deterministic world generation — IP address space as navigable city",
+  "binary": "./world",
+  "port": 7010,
+  "api": {
+    "base_path": "/cap/world",
+    "endpoints": [
+      { "name": "district", "method": "GET", "path": "/district/:ip" },
+      { "name": "district_geometry", "method": "GET", "path": "/district/:ip/geometry" },
+      { "name": "district_objects", "method": "GET", "path": "/district/:ip/objects" },
+      { "name": "district_atmosphere", "method": "GET", "path": "/district/:ip/atmosphere" },
+      { "name": "district_prefetch", "method": "GET", "path": "/district/:ip/prefetch" },
+      { "name": "district_live", "method": "GET", "path": "/district/:ip/live" },
+      { "name": "health", "method": "GET", "path": "/health" }
+    ]
+  },
+  "permissions": {
+    "visibility": "public"
+  },
+  "ui": {
+    "label": "World",
+    "icon": "globe",
+    "entry": "/ui/",
+    "style": "fullscreen",
+    "position": "center"
+  },
+  "resources": {
+    "cpu": "moderate",
+    "memory": "128MB"
+  }
+}
