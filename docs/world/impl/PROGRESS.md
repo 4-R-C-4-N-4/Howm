@@ -93,8 +93,63 @@ Block
 - **Road-edge fixtures:** Illumination placed along road segments at 35–50 wu spacing, offset ±3.5 wu from centreline (§6.5).
 - **Spec test vectors pass:** Appendix B.2 fixture pos_seed derivation (zone_seed 0x86eaf091 for 93.184.216.0).
 
+---
+
+## Phase 3: Living World — COMPLETE
+
+**Date:** 2026-03-29
+**Branch:** `world`
+**Tests:** 100 passing (27 new)
+
+### What was built
+
+Four new systems covering the dynamic/organic layer of the world:
+
+```
+Block + Zones
+  → Flora (block-level, road-edge, surface growth)
+    7 growth forms: tree, shrub, ground_cover, vine, fungal, aquatic, crystalline
+    Density modes: sparse/moderate/dense/canopy (popcount-driven)
+    Surface growth on ancient buildings (inverted_age gated)
+  → Creatures (6 ecological roles)
+    Base record: size_class, anatomy, locomotion, materiality
+    Character record: activity pattern, social structure, player response, pace
+    Zone assignment with time-slot migration
+  → Conveyances (parked + route-following)
+    Parked: placed along road segments with road-edge offset
+    Route: road loop selection, loop_period interpolation
+    Position-at-time helper for animation
+  → Atmosphere (per /16 subnet)
+    4-phase day/night: night → dawn → day → dusk
+    Sun altitude + intensity curves
+    Weather: rain probability per domain, wind direction/intensity
+    Creature opacity modifier (diurnal/nocturnal/crepuscular/continuous)
+```
+
+### New files
+
+| File | Lines | Purpose |
+|------|------:|---------|
+| `gen/flora.rs` | ~310 | 7 growth forms, density modes, block/road/surface placement, zone-based seeding |
+| `gen/creatures.rs` | ~300 | 6 ecological roles, base+character records, zone assignment, position helpers |
+| `gen/conveyances.rs` | ~220 | Parked + route-following conveyances, road loop selection, time interpolation |
+| `gen/atmosphere.rs` | ~190 | Day/night phases, sun curves, weather by /16, wind, creature opacity |
+
+### API changes
+
+- `GET /cap/world/district/:ip/objects` now includes `flora`, `creatures`, `conveyances`, `atmosphere` in response
+
+### Key implementation details
+
+- **Flora density:** Driven by popcount_ratio with jitter — low-popcount cells are sparse wastelands, high-popcount are dense canopy neighborhoods
+- **Surface growth:** Only appears on buildings with high inverted_age (ancient), creating overgrown ruin aesthetics
+- **Creature zone migration:** Zone assignment changes every time_slot (config-driven interval), so creatures drift between zones over time
+- **Weather groups:** /16 subnet prefix groups cells into shared weather zones — all cells in 93.184.x.x see the same rain/wind
+- **Rain probability:** Domain-specific base rates + group_density modifier — loopback is arid, multicast is stormy
+- **Conveyance routes:** Select random closed loops from road network, then interpolate position along the loop at game time
+
 ### Next
 
-Phase 3: Living World — flora, creatures, conveyances, atmosphere (day/night, weather).
+Phase 4: Transport + rendering pipeline, HDL wiring, full integration.
 
 ---
