@@ -70,9 +70,27 @@ export function PeerRow({ peer, groups, now, onToast, presence }: PeerRowProps) 
       onClick={() => navigate(`/peers/${hexId}`)}
     >
       <div className='flex items-center gap-2.5 flex-1 min-w-0'>
-        <span style={{ color: isDenied ? '#ef4444' : online ? (presence?.activity === 'away' ? '#eab308' : '#22c55e') : '#666666' }} className='text-sm'>
-          {isDenied ? '✕' : online ? '●' : '○'}
-        </span>
+        {/* Avatar with online indicator */}
+        <div className='relative shrink-0'>
+          <div className='w-8 h-8 rounded-full bg-howm-bg-elevated border border-howm-border overflow-hidden flex items-center justify-center'>
+            <img
+              src={`http://${peer.wg_address}:${peer.port}/profile/avatar`}
+              alt=""
+              className='w-full h-full object-cover'
+              onError={(e) => {
+                const img = e.target as HTMLImageElement;
+                img.style.display = 'none';
+                const fallback = img.nextElementSibling as HTMLElement | null;
+                if (fallback) fallback.style.display = '';
+              }}
+            />
+            <span className='text-sm text-howm-text-muted' style={{ display: 'none' }}>👤</span>
+          </div>
+          <span
+            className='absolute -bottom-px -right-px w-2.5 h-2.5 rounded-full border-2 border-howm-bg-secondary'
+            style={{ background: isDenied ? '#ef4444' : online ? (presence?.activity === 'away' ? '#eab308' : '#22c55e') : '#666666' }}
+          />
+        </div>
         <span className='font-medium overflow-hidden text-ellipsis whitespace-nowrap max-w-[180px]'>
           {peer.name}
         </span>

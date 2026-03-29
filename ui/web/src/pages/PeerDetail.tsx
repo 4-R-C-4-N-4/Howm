@@ -6,6 +6,7 @@ import {
   getPeerGroups, getPeerPermissions, getAccessGroups,
   movePeerToTier, denyPeer, assignPeerToGroup, removePeerFromGroup,
 } from '../api/access';
+import { getCachedProfile } from '../api/profile';
 import { TierSelector } from '../components/TierSelector';
 import { GroupChips } from '../components/GroupChips';
 import { PermissionGrid } from '../components/PermissionGrid';
@@ -58,6 +59,14 @@ export function PeerDetail() {
     queryKey: ['access-groups'],
     queryFn: getAccessGroups,
     refetchInterval: 60_000,
+  });
+
+  // Cached profile data
+  const { data: cachedProfile } = useQuery({
+    queryKey: ['peer-profile-cache', peer?.node_id],
+    queryFn: () => getCachedProfile(peer!.node_id),
+    enabled: !!peer,
+    staleTime: 60_000,
   });
 
   const badge = effectiveTier(peerGroups);
@@ -164,6 +173,50 @@ export function PeerDetail() {
           </Link>
         </div>
       </div>
+
+      {/* Profile Card */}
+      <section className='bg-howm-bg-surface border border-howm-border rounded-xl p-5 mb-4'>
+        <div className='flex items-center gap-4'>
+          <div className='w-16 h-16 rounded-full bg-howm-bg-elevated border border-howm-border overflow-hidden flex items-center justify-center shrink-0'>
+            <img
+              src={`http://${peer.wg_address}:${peer.port}/profile/avatar`}
+              alt=""
+              className='w-full h-full object-cover'
+              onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+            />
+            <span className='text-2xl text-howm-text-muted'>👤</span>
+          </div>
+          <div>
+            <h2 className='m-0 text-lg font-semibold'>{peer.name}</h2>
+            {cachedProfile?.found && cachedProfile.bio && (
+              <p className='text-howm-text-secondary text-sm mt-1 mb-0'>{cachedProfile.bio}</p>
+            )}
+          </div>
+        </div>
+      </section>
+
+      {/* Homepage */}
+      {cachedProfile?.found && cachedProfile.has_homepage && (
+        <section className='bg-howm-bg-surface border border-howm-border rounded-xl p-5 mb-4'>
+          <h3 className='text-base font-semibold m-0 mb-3 text-howm-text-secondary'>Homepage</h3>
+          <div className='border border-howm-border rounded overflow-hidden bg-white' style={{ height: 400 }}>
+            <iframe
+              src={`http://${peer.wg_address}:${peer.port}/profile/home`}
+              title={`${peer.name}'s homepage`}
+              sandbox="allow-scripts"
+              className='w-full h-full border-none'
+            />
+          </div>
+          <a
+            href={`http://${peer.wg_address}:${peer.port}/profile/home`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className='inline-block mt-2 text-howm-accent text-sm no-underline'
+          >
+            Open in new tab ↗
+          </a>
+        </section>
+      )}
 
       {/* Identity */}
       <section className='bg-howm-bg-surface border border-howm-border rounded-xl p-5 mb-4'>
