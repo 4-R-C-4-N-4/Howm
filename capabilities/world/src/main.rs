@@ -105,6 +105,8 @@ async fn district_objects_handler(AxumPath(ip): AxumPath<String>) -> Response {
     let mut buildings_json = Vec::new();
     let mut fixtures_json = Vec::new();
     let mut zones_json = Vec::new();
+    let mut flora_json = Vec::new();
+    let mut creatures_json = Vec::new();
 
     for block in &blocks {
         buildings_json.push(gen::buildings::generate_buildings(&cell, block));
@@ -114,7 +116,19 @@ async fn district_objects_handler(AxumPath(ip): AxumPath<String>) -> Response {
             "block_idx": block.idx,
             "zones": bz,
         }));
+        flora_json.push(gen::flora::generate_flora(&cell, block, Some(&road_network)));
+        creatures_json.push(gen::creatures::generate_creatures(&cell, block));
     }
+
+    // Conveyances (district-level, not per-block)
+    let conveyances = gen::conveyances::generate_conveyances(&cell, &road_network);
+
+    // Atmosphere at current time
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    let atmosphere = gen::atmosphere::compute_atmosphere(&cell, now_ms);
 
     let response = serde_json::json!({
         "cell": {
@@ -127,6 +141,10 @@ async fn district_objects_handler(AxumPath(ip): AxumPath<String>) -> Response {
         "buildings": buildings_json,
         "fixtures": fixtures_json,
         "zones": zones_json,
+        "flora": flora_json,
+        "creatures": creatures_json,
+        "conveyances": conveyances,
+        "atmosphere": atmosphere,
     });
 
     (StatusCode::OK, axum::Json(response)).into_response()

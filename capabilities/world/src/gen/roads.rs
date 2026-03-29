@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use super::config::config;
 use super::district::{DistrictGeometry, SharedEdge};
-use super::hash::{ha, hb, hash_to_f64};
+use super::hash::{ha, hb};
 use crate::types::{Point, Segment};
 
 /// A terminal: a road crossing point on the district boundary.

@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use super::hash::{ha, hb, hash_to_f64};
+use super::hash::{ha, hb};
 
 /// IP subnet domain classification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
