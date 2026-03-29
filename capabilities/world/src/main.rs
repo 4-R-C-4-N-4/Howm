@@ -1,7 +1,7 @@
 use axum::{
     extract::Path as AxumPath,
     http::StatusCode,
-    response::{Html, IntoResponse, Response},
+    response::{IntoResponse, Response},
     routing::get,
     Router,
 };
@@ -84,6 +84,54 @@ async fn district_geometry_handler(AxumPath(ip): AxumPath<String>) -> Response {
     (StatusCode::OK, axum::Json(response)).into_response()
 }
 
+async fn district_objects_handler(AxumPath(ip): AxumPath<String>) -> Response {
+    let cell = match gen::cell::Cell::from_ip_str(&ip) {
+        Some(c) => c,
+        None => {
+            return (StatusCode::BAD_REQUEST, "Invalid IPv4 address").into_response();
+        }
+    };
+
+    let district = gen::district::generate_district(&cell);
+    let road_network = gen::roads::generate_roads(&district);
+    let rivers = gen::rivers::generate_rivers(&cell, &district.polygon.vertices);
+    let blocks = gen::blocks::extract_blocks(
+        &cell,
+        &district.polygon,
+        &road_network,
+        &rivers,
+    );
+
+    let mut buildings_json = Vec::new();
+    let mut fixtures_json = Vec::new();
+    let mut zones_json = Vec::new();
+
+    for block in &blocks {
+        buildings_json.push(gen::buildings::generate_buildings(&cell, block));
+        fixtures_json.push(gen::fixtures::generate_fixtures(&cell, block, Some(&road_network)));
+        let bz = gen::zones::generate_zones(cell.key, block);
+        zones_json.push(serde_json::json!({
+            "block_idx": block.idx,
+            "zones": bz,
+        }));
+    }
+
+    let response = serde_json::json!({
+        "cell": {
+            "key": cell.key,
+            "ip_prefix": cell.ip_prefix(),
+            "popcount": cell.popcount,
+            "domain": cell.domain,
+        },
+        "blocks": blocks.len(),
+        "buildings": buildings_json,
+        "fixtures": fixtures_json,
+        "zones": zones_json,
+    });
+
+    (StatusCode::OK, axum::Json(response)).into_response()
+}
+
 fn serve_ui_file(path: &str) -> Response {
     let file_path = if path.is_empty() || path == "/" {
         "index.html"
@@ -124,6 +172,10 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/cap/world/district/{ip}/geometry",
             get(district_geometry_handler),
+        )
+        .route(
+            "/cap/world/district/{ip}/objects",
+            get(district_objects_handler),
         )
         .route("/ui/*path", get(|path: AxumPath<String>| async move {
             serve_ui_file(&path)

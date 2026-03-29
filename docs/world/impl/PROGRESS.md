@@ -45,8 +45,56 @@ IP address
 
 - **hb() second constant:** The spec text says `0x8da6b343 (×2, avalanche)` but the working JS prototypes use `0x8da6b343` then `0xcb9e2f75`. We follow the JS (matches all test vectors).
 
+---
+
+## Phase 2: Buildings & Zones — COMPLETE
+
+**Date:** 2026-03-29
+**Branch:** `world`
+**Tests:** 73 passing (23 new)
+
+### What was built
+
+Full building and fixture generation pipeline from blocks to renderable objects:
+
+```
+Block
+  → Alley system (VoronoiGaps / Bisecting / DeadEnd / None based on popcount)
+    → Plot subdivision (Voronoi within sub-polygons, seed-derived)
+      → Public/private classification (domain + block type modulated)
+        → Archetype selection (context-filtered pools per §12.5)
+          → Height derivation (popcount-scaled + archetype multiplier + jitter)
+            → Entry point detection (wall selection, outward normal, width)
+  → Zone subdivision (seeded Voronoi within blocks, affinity roles)
+    → Fixture spawn pipeline (8 roles × spawn count tables per §6.5)
+      → Road-edge fixtures (lamp spacing along road segments)
+  → Object model (ObjectSeeds, form_id, object_id, RenderPacket)
+```
+
+### New files
+
+| File | Lines | Purpose |
+|------|------:|---------|
+| `gen/buildings.rs` | ~700 | Alley system (bisecting cut, dead-end notch, polygon clipping), plot subdivision, archetype selection, height derivation, entry points |
+| `gen/zones.rs` | ~330 | Zone Voronoi subdivision, point-in-polygon seeded, spawn positions, affinity derivation, reseed jitter |
+| `gen/fixtures.rs` | ~350 | 8 fixture roles, spawn count tables, road-edge fixtures, form_class/attachment derivation |
+| `gen/objects.rs` | ~160 | ObjectSeeds, FormClass, Attachment, Hazard, Tier, RenderPacket, compute_form_id/object_id |
+
+### API endpoints added
+
+- `GET /cap/world/district/:ip/objects` — buildings, fixtures, zones for a district
+
+### Key implementation details
+
+- **Alley system:** Four modes based on popcount thresholds (§5.1–5.5). Bisecting uses Sutherland-Hodgman line clipping to split block into two sub-polygons. Dead-end uses convex polygon subtraction (binary search intersection) to cut a notch.
+- **Zone affinity:** Each zone derives 1–3 preferred fixture roles from its seed and block type (§6.4). Building blocks bias toward illumination/utility/display; parks toward seating/ornament/water.
+- **Reseed jitter:** Non-infinite reseed intervals get ±10% jitter per zone seed (§6.4), so park flora doesn't all shift simultaneously.
+- **Fixture spawn pipeline:** Complete per §6.6 — zones derive eligible roles, spawn counts from base+bonus tables, positions from seeded point-in-polygon, then full object model derivation.
+- **Road-edge fixtures:** Illumination placed along road segments at 35–50 wu spacing, offset ±3.5 wu from centreline (§6.5).
+- **Spec test vectors pass:** Appendix B.2 fixture pos_seed derivation (zone_seed 0x86eaf091 for 93.184.216.0).
+
 ### Next
 
-Phase 2: Buildings & Zones — alleys, plot subdivision, archetypes, height derivation, entry points, zone system, fixture spawn pipeline.
+Phase 3: Living World — flora, creatures, conveyances, atmosphere (day/night, weather).
 
 ---

@@ -1,9 +1,13 @@
 pub mod aesthetic;
 pub mod blocks;
+pub mod buildings;
 pub mod cell;
 pub mod config;
 pub mod district;
+pub mod fixtures;
 pub mod hash;
+pub mod objects;
 pub mod rivers;
 pub mod roads;
 pub mod voronoi;
+pub mod zones;
