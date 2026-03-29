@@ -1,6 +1,9 @@
 pub mod aesthetic;
+pub mod blocks;
 pub mod cell;
 pub mod config;
 pub mod district;
 pub mod hash;
+pub mod rivers;
+pub mod roads;
 pub mod voronoi;
