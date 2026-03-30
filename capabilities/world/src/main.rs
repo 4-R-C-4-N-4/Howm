@@ -372,6 +372,62 @@ async fn neighbors_handler(AxumPath(ip): AxumPath<String>) -> Response {
     (StatusCode::OK, axum::Json(response)).into_response()
 }
 
+// ─── District map (SVG) ────────────────────────────────────────────────────
+
+async fn district_map_handler(AxumPath(ip): AxumPath<String>) -> Response {
+    let cell = match parse_cell(&ip) {
+        Some(c) => c,
+        None => return bad_request(),
+    };
+
+    let palette = gen::aesthetic::AestheticPalette::from_cell(&cell);
+    let district = gen::district::generate_district(&cell);
+    let road_network = gen::roads::generate_roads(&district);
+    let rivers = gen::rivers::generate_rivers(&cell, &district.polygon.vertices);
+    let blocks = gen::blocks::extract_blocks(
+        &cell,
+        &district.polygon,
+        &road_network,
+        &rivers,
+    );
+
+    let mut buildings = Vec::new();
+    let mut fixtures = Vec::new();
+    let mut flora = Vec::new();
+    for block in &blocks {
+        let b = gen::buildings::generate_buildings(&cell, block);
+        buildings.push(b.plots);
+        let f = gen::fixtures::generate_fixtures(&cell, block, Some(&road_network));
+        let mut all_fix = f.zone_fixtures;
+        all_fix.extend(f.road_fixtures);
+        fixtures.push(all_fix);
+        let fl = gen::flora::generate_flora(&cell, block, Some(&road_network));
+        let mut all_flora = fl.block_flora;
+        all_flora.extend(fl.road_flora);
+        flora.push(all_flora);
+    }
+
+    let svg = scene::map::generate_district_map(
+        &cell,
+        &palette,
+        &district.polygon,
+        &blocks,
+        &road_network,
+        &rivers,
+        &buildings,
+        &fixtures,
+        &flora,
+        &scene::map::MapConfig::default(),
+    );
+
+    (
+        StatusCode::OK,
+        [(axum::http::header::CONTENT_TYPE, "image/svg+xml")],
+        svg,
+    )
+        .into_response()
+}
+
 // ─── Astral Scene (compiled) ───────────────────────────────────────────────
 
 async fn district_scene_handler(AxumPath(ip): AxumPath<String>) -> Response {
@@ -449,6 +505,10 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/cap/world/district/{ip}/scene",
             get(district_scene_handler),
+        )
+        .route(
+            "/cap/world/district/{ip}/map",
+            get(district_map_handler),
         )
         .route("/ui/{*path}", get(|path: AxumPath<String>| async move {
             serve_ui_file(&path)
