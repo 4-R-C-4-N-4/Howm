@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use super::blocks::{Block, BlockType};
 use super::cell::Cell;
 use super::config::config;
-use super::hash::{ha, hash_to_f64};
+use super::hash::{ha, hb, hash_to_f64};
 use super::objects::{compute_form_id, compute_object_id, ObjectSeeds, Tier};
 use super::zones::point_in_polygon_seeded;
 use crate::types::Point;
@@ -70,6 +70,28 @@ pub enum PlayerResponse { Flee, Ignore, Curious, Territorial, Mimicking }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Pace { Slow, Medium, Fast }
 
+/// Locomotion style (character record — §3.4 mapping).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LocomotionStyle {
+    Scurrying, Bounding, Slithering, Flapping, Soaring, Drifting, Blinking,
+}
+
+/// Movement smoothness (character record).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Smoothness { Fluid, Jerky, Erratic, Mechanical }
+
+/// Path preference (character record).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PathPreference { Open, Edges, Elevated, Surface, Low }
+
+/// Sound tendency (character record).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SoundTendency { Silent, Ambient, Reactive, Constant }
+
+/// Fixture interaction preference (character record).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FixtureInteraction { Perch, Hide, Nest, Ignore }
+
 /// A creature instance.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Creature {
@@ -84,6 +106,14 @@ pub struct Creature {
     pub social_structure: SocialStructure,
     pub player_response: PlayerResponse,
     pub pace: Pace,
+    pub locomotion_style: LocomotionStyle,
+    pub smoothness: Smoothness,
+    pub path_preference: PathPreference,
+    pub sound_tendency: SoundTendency,
+    pub sound_seed: u32,
+    pub fixture_interaction: FixtureInteraction,
+    pub emits_particles: bool,
+    pub leaves_trail: bool,
     pub rest_frequency: f64,
     pub idle_behaviours: Vec<u32>,
     pub form_id: u32,
@@ -187,6 +217,62 @@ fn derive_creature(cell: &Cell, creature_seed: u32, creature_idx: usize, role: E
 
     let rest_frequency = hash_to_f64(ha(seeds.behaviour_seed ^ 0x10));
 
+    // Character record fields (§3.4–3.11 of mapping spec)
+    let locomotion_style = match locomotion_mode {
+        LocomotionMode::Aerial => match (seeds.character_salt >> 0) & 0x1 {
+            0 => LocomotionStyle::Flapping,
+            _ => LocomotionStyle::Soaring,
+        },
+        LocomotionMode::Floating => LocomotionStyle::Drifting,
+        LocomotionMode::Aquatic => LocomotionStyle::Slithering,
+        LocomotionMode::Burrowing => LocomotionStyle::Scurrying,
+        LocomotionMode::Phasing => LocomotionStyle::Blinking,
+        LocomotionMode::Surface => match (seeds.character_salt >> 1) & 0x3 {
+            0 => LocomotionStyle::Scurrying,
+            1 => LocomotionStyle::Bounding,
+            2 => LocomotionStyle::Slithering,
+            _ => LocomotionStyle::Bounding,
+        },
+    };
+
+    let smoothness = match (seeds.character_salt >> 3) & 0x3 {
+        0 => Smoothness::Fluid,
+        1 => Smoothness::Jerky,
+        2 => Smoothness::Erratic,
+        _ => Smoothness::Mechanical,
+    };
+
+    let path_preference = match locomotion_mode {
+        LocomotionMode::Aerial | LocomotionMode::Floating => PathPreference::Open,
+        LocomotionMode::Burrowing => PathPreference::Low,
+        _ => match (seeds.character_salt >> 5) & 0x3 {
+            0 => PathPreference::Open,
+            1 => PathPreference::Edges,
+            2 => PathPreference::Elevated,
+            _ => PathPreference::Surface,
+        },
+    };
+
+    let sound_tendency = match (seeds.character_salt >> 7) & 0x3 {
+        0 => SoundTendency::Silent,
+        1 => SoundTendency::Ambient,
+        2 => SoundTendency::Reactive,
+        _ => SoundTendency::Constant,
+    };
+
+    let sound_seed = ha(creature_seed ^ 0x50d1);
+
+    let fixture_interaction = match (seeds.character_salt >> 9) & 0x3 {
+        0 => FixtureInteraction::Perch,
+        1 => FixtureInteraction::Hide,
+        2 => FixtureInteraction::Nest,
+        _ => FixtureInteraction::Ignore,
+    };
+
+    let emits_particles = (seeds.character_salt >> 11) & 0x1 == 1;
+    let leaves_trail = locomotion_style as u32 == LocomotionStyle::Blinking as u32
+        || (seeds.character_salt >> 12) & 0x3 == 0;
+
     // Idle behaviour selection per §8.7
     let cfg = config();
     let idle_count = 1 + (seeds.behaviour_seed & cfg.idle_count_mask) as usize;
@@ -211,6 +297,14 @@ fn derive_creature(cell: &Cell, creature_seed: u32, creature_idx: usize, role: E
         social_structure,
         player_response,
         pace,
+        locomotion_style,
+        smoothness,
+        path_preference,
+        sound_tendency,
+        sound_seed,
+        fixture_interaction,
+        emits_particles,
+        leaves_trail,
         rest_frequency,
         idle_behaviours,
         form_id,

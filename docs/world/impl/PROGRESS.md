@@ -26,7 +26,7 @@ IP address
 ### Files
 
 | File | Lines | Purpose |
-|------|------:|---------|
+|------|------:|---------| 
 | `gen/hash.rs` | 135 | ha(), hb() with spec test vectors (Appendix B, C, D) |
 | `gen/config.rs` | 260 | Full CONFIG struct — all 60+ tunable parameters |
 | `gen/cell.rs` | 270 | Cell model: key, grid coords, popcount, age, domain, hue |
@@ -74,7 +74,7 @@ Block
 ### New files
 
 | File | Lines | Purpose |
-|------|------:|---------|
+|------|------:|---------| 
 | `gen/buildings.rs` | ~700 | Alley system (bisecting cut, dead-end notch, polygon clipping), plot subdivision, archetype selection, height derivation, entry points |
 | `gen/zones.rs` | ~330 | Zone Voronoi subdivision, point-in-polygon seeded, spawn positions, affinity derivation, reseed jitter |
 | `gen/fixtures.rs` | ~350 | 8 fixture roles, spawn count tables, road-edge fixtures, form_class/attachment derivation |
@@ -129,7 +129,7 @@ Block + Zones
 ### New files
 
 | File | Lines | Purpose |
-|------|------:|---------|
+|------|------:|---------| 
 | `gen/flora.rs` | ~310 | 7 growth forms, density modes, block/road/surface placement, zone-based seeding |
 | `gen/creatures.rs` | ~300 | 6 ecological roles, base+character records, zone assignment, position helpers |
 | `gen/conveyances.rs` | ~220 | Parked + route-following conveyances, road loop selection, time interpolation |
@@ -148,8 +148,120 @@ Block + Zones
 - **Rain probability:** Domain-specific base rates + group_density modifier — loopback is arid, multicast is stormy
 - **Conveyance routes:** Select random closed loops from road network, then interpolate position along the loop at game time
 
-### Next
+---
 
-Phase 4: Transport + rendering pipeline, HDL wiring, full integration.
+## Phase 4: Description Graphs & API — COMPLETE
+
+**Date:** 2026-03-29
+**Branch:** `world`
+**Tests:** 121 passing (21 new)
+
+### What was built
+
+Complete HDL (Howm Description Language) implementation — translates all base records into semantic description graphs per `howm-description-language.md` and `howm-description-graph-mapping.md`:
+
+```
+Base Records (from Phases 1–3)
+  → HDL Core Types
+    DescriptionGraph { traits: Trait[], sequences: Sequence[] }
+    Trait { path: "root.branch.leaf", term: string, params: {string: number} }
+    Sequence { trigger, effect, timing }
+    DescriptionPacket, SurfaceGrowthOverlay, BuildingExtension
+  → Creature Mapping (§3, 35+ traits per creature)
+    being.form: silhouette, composition, symmetry, scale, detail
+    being.surface: texture, opacity, age
+    being.material: substance, density, temperature
+    behavior.motion: method, pace, regularity, path
+    behavior.rest: frequency, posture, transition
+    behavior.cycle: period, response
+    effect.emission: type, intensity, rhythm, channel (materiality-driven)
+    effect.voice: type, intensity, spatial (size-modulated)
+    effect.trail: type, duration (blinking → echo)
+    relation.regard: disposition, response, awareness (player interaction)
+    relation.affinity: fixture, flora, creature
+    relation.context: belonging, narrative
+    Sequences: motion→emission, motion→trail, regard→motion, rest→voice, etc.
+  → Fixture Mapping (§4)
+    being.form from form_class, being.surface from district aesthetic
+    effect.emission for illumination/display/ornament
+    behavior.cycle for state-cycling fixtures + sequences
+  → Flora Mapping (§5)
+    being.form from growth_form + density_mode + maturity
+    behavior.motion: wind-response oscillation
+    effect.emission: shedding (leaves/petals/spores/embers/crystals)
+    Wind-shed sequence (burst on oscillation peak)
+  → Building Mapping (§6)
+    being.form from archetype, being.surface from district
+    effect.emission for public buildings (night glow)
+    BuildingExtension: explicit geometry (footprint, height, entry, interior)
+  → Conveyance Mapping (§9)
+    Parked: anchored, no effects
+    Moving: continuous + metronomic + trail
+  → District Environment Mapping (§7)
+    Sky colour: hue-derived, time-modulated, domain-shifted
+    Ambient light: popcount-scaled, phase-dimmed, rain-reduced
+    Sun/moon direction and colour
+    Weather pass-through
+  → Surface Growth Overlay (§8)
+    Texture blend toward fibrous, age shift toward ancient
+    Shedding emission at coverage × rate
+```
+
+### New files
+
+| File | Lines | Purpose |
+|------|------:|---------| 
+| `hdl/mod.rs` | 7 | Module declarations |
+| `hdl/traits.rs` | ~210 | Core HDL types: DescriptionGraph, Trait, Sequence, DescriptionPacket, BuildingExtension, SurfaceGrowthOverlay, HDLVersion |
+| `hdl/mapping.rs` | ~1200 | Complete mapping: creatures (§3), fixtures (§4), flora (§5), buildings (§6), conveyances (§9), district environment (§7), surface growth (§8) |
+
+### Creature character record extensions
+
+8 new fields added to `Creature` struct with seed-derived derivation:
+
+| Field | Type | Derivation |
+|-------|------|-----------|
+| `locomotion_style` | LocomotionStyle (7 variants) | From locomotion_mode + character_salt |
+| `smoothness` | Smoothness (4 variants) | character_salt bits 3–4 |
+| `path_preference` | PathPreference (5 variants) | locomotion_mode override + character_salt bits 5–6 |
+| `sound_tendency` | SoundTendency (4 variants) | character_salt bits 7–8 |
+| `sound_seed` | u32 | ha(creature_seed ^ 0x50d1) |
+| `fixture_interaction` | FixtureInteraction (4 variants) | character_salt bits 9–10 |
+| `emits_particles` | bool | character_salt bit 11 |
+| `leaves_trail` | bool | Blinking always true, else character_salt bit 12 |
+
+### API endpoints
+
+| Endpoint | Status | Description |
+|----------|--------|-------------|
+| `GET /cap/world/district/:ip` | **Updated** | Full district with description graphs for all entities |
+| `GET /cap/world/district/:ip/geometry` | **Updated** | Topology with roads, rivers, blocks |
+| `GET /cap/world/district/:ip/objects` | **Updated** | Objects with base records + description graphs |
+| `GET /cap/world/district/:ip/atmosphere` | **New** | Atmosphere state + district environment mapping |
+| `GET /cap/world/neighbors/:ip` | **New** | 8-neighbor summaries (key, popcount, domain, hue, age) |
+| `GET /cap/world/health` | Unchanged | Health check |
+
+### Key implementation details
+
+- **All traits use 3-segment paths:** `root.branch.leaf` from 4 roots: `being`, `behavior`, `effect`, `relation`
+- **Params are the contract, terms are convenience:** Every trait has continuous param axes (0–1). Terms are human-readable labels for regions of param space.
+- **Sequence generation:** Budget derived from popcount_ratio + materiality. Pool of 6 standard sequences filtered by creature traits, selected deterministically via behaviour_seed.
+- **District environment:** Sky colour derived from district hue, modulated by time-of-day (dawn/day/dusk/night) and domain (loopback inverts, reserved desaturates, multicast saturates).
+- **Surface growth overlay:** Modifies host entity description — texture blends toward fibrous, age shifts toward ancient, proportional to coverage ratio.
+- **Worked example verified:** The creature at 1.0.0.0/24 from mapping spec §10 produces a description graph matching the spec's expected output (wide, dispersed, asymmetric crystalline mineral with discontinuous motion, echo trail, periodic pulse emission, wary disposition).
+
+### Verification
+
+- 121 tests passing (21 new for Phase 4)
+- All trait paths validated: 3-segment, valid root
+- Creature graphs contain all 4 roots (being, behavior, effect, relation)
+- Crystalline creatures produce emission (pulse/periodic/background)
+- Blinking creatures produce echo trails
+- Illumination fixtures produce glow emission + state-cycling sequences
+- Shedding flora produces wind-shed burst sequences
+- Tower buildings produce "tall" silhouette
+- Public buildings produce background glow emission
+- Day environment brighter than night environment
+- Parked conveyances anchored, moving conveyances continuous with trail
 
 ---
