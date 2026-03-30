@@ -999,7 +999,7 @@
     get count() {
       return this.glyphs.length;
     }
-    query(params) {
+    queryBest(params) {
       if (this.glyphs.length === 0) return null;
       const { targetCoverage, targetRoundness, targetComplexity } = params;
       let best = null;

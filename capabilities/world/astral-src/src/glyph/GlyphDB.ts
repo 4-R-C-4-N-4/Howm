@@ -71,7 +71,7 @@ export class GlyphDB {
 
   get count(): number { return this.glyphs.length }
 
-  query(params: GlyphQueryParams): GlyphRecord | null {
+  queryBest(params: GlyphQueryParams): GlyphRecord | null {
     if (this.glyphs.length === 0) return null
 
     const { targetCoverage, targetRoundness, targetComplexity } = params
