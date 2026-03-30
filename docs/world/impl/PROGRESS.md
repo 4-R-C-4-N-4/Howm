@@ -265,3 +265,117 @@ Base Records (from Phases 1–3)
 - Parked conveyances anchored, moving conveyances continuous with trail
 
 ---
+
+## Phase R1: Scene Compiler — COMPLETE
+
+**Date:** 2026-03-29
+**Branch:** `world`
+**Tests:** 132 passing (11 new)
+
+### What was built
+
+Scene compiler bridge that translates HDL description graphs into Astral's native Scene JSON format. Astral can load the output directly via `RemoteSceneProvider` or as a static JSON file — zero Astral code changes required.
+
+```
+HDL Description Graphs (from Phase 4)
+  → scene/geometry.rs — being.form → Astral SDF primitives
+    Silhouette mapping:
+      tall → cylinder (high Y, narrow radius)
+      wide → box (wide X/Z, low Y)
+      compact → sphere (uniform radius)
+      trailing → elongated cylinder (capsule-like)
+      irregular → sphere with non-uniform scale
+      columnar → thin tall cylinder
+    Building path: explicit footprint polygon → bounding box extrusion
+    Scale factor × silhouette → final dimensions
+
+  → scene/material.rs — being.surface + being.material → Astral Material
+    Colour pipeline:
+      being.material.substance × district_hue → HSL base colour
+      being.material.temperature → hue shift (cold→+210°blue, warm→+8°red)
+      being.material.density → brightness
+    Surface properties:
+      being.surface.texture term → roughness (smooth=0.1, rough=0.8)
+      being.surface.texture term → glyph style (faceted→angular, fibrous→noise,
+        smooth→round, inscribed→symbolic, bolted→block)
+      being.surface.texture.reflectance → reflectivity
+      being.surface.opacity → transparency
+    Effects:
+      effect.emission.intensity → emissive value (faint=0.15, moderate=0.5)
+      behavior.motion.method → motionBehavior:
+        oscillating → pulse, continuous → flow, discontinuous → flicker
+
+  → scene/compiler.rs — full district assembly
+    compile_building: footprint → box, district material
+    compile_fixture: parametric SDF + positioned transform + rotation
+    compile_flora: growth form geometry + wind sway motion + scaled transform
+    compile_creature: form + material + placeholder position (zone-derived at runtime)
+    compile_conveyance: parked/moving, road-edge positioned
+    compile_environment: sky colour (hue-derived, time-modulated, domain-shifted),
+      ambient light, directional sun/moon, rain fog
+    compile_ground: district-hued ground plane
+    compile_district_scene: full pipeline → Astral Scene JSON
+```
+
+### New files
+
+| File | Lines | Purpose |
+|------|------:|---------|
+| `scene/mod.rs` | 8 | Module declarations |
+| `scene/geometry.rs` | ~180 | being.form → SDF primitives (sphere, box, cylinder, plane), building footprint → box extrusion |
+| `scene/material.rs` | ~270 | being.surface + being.material → Astral Material (colour, roughness, glyph style, transparency, emissive, motion behavior) |
+| `scene/compiler.rs` | ~380 | Entity compilers for all 5 types + environment + ground + full scene assembly |
+
+### API endpoints
+
+| Endpoint | Status | Description |
+|----------|--------|-------------|
+| `GET /cap/world/district/:ip/scene` | **New** | Astral-compatible Scene JSON — complete district with camera, environment, lights, and all entities |
+
+### Output format
+
+Matches Astral's `types.ts` schema exactly:
+
+```typescript
+Scene {
+  time: number,
+  camera: { position, rotation, fov, near, far },
+  environment: { ambientLight, backgroundColor, fogDensity?, fogColor? },
+  lights: [{ type, position?, direction?, intensity, color, range? }],
+  entities: [{
+    id: string,
+    transform: { position, rotation, scale },
+    geometry: { type: "sphere"|"box"|"cylinder"|"plane", ... },
+    material: {
+      baseColor: { r, g, b },
+      brightness, emissive?, roughness, reflectivity,
+      transparency?, glyphStyle?, motionBehavior?
+    }
+  }]
+}
+```
+
+### Key implementation details
+
+- **Colour derivation:** HSL model — hue from district palette + substance hue_seed ± 30°, saturation from substance type (spectral=0.15, elemental=0.5), lightness from density. Temperature shifts hue toward blue (cold) or red (warm).
+- **Glyph style mapping:** texture term → style string that Astral's GlyphDB understands. Faceted/crystalline/angular surfaces get "angular" glyphs. Fibrous/organic get "noise". Smooth/polished get "round". Inscribed/runic get "symbolic".
+- **Building geometry:** Uses explicit footprint polygon bounding box rather than parametric SDF. Width/depth from polygon extents, height from plot height. Centroid positioned.
+- **Environment compilation:** Sky colour from district hue modulated by time-of-day (night darkens to 10%, dawn blends, dusk fades). Rain adds fog. Sun directional light with day/night colour shift.
+- **Ground plane:** Hued to district palette, dense glyph style, low reflectivity — serves as the infinite floor.
+- **Scene is self-contained:** Camera starts at district centroid, elevated 8wu, looking north. Astral can render it immediately without any additional configuration.
+
+### Verification
+
+- 132 tests passing (11 new for R1)
+- Tall silhouette produces cylinder geometry
+- Compact silhouette produces sphere geometry
+- Building footprint → correct bounding box dimensions and centroid position
+- Crystalline material: low roughness, high reflectance, angular glyph style, translucent
+- Organic material: high roughness, no transparency, noise glyph style
+- Motion behavior: oscillating → pulse, with correct interval pass-through
+- HSL colour: red at 0° produces (255, 0, 0)
+- Full district scene: has ground + buildings + fixtures + flora + creatures + lights
+- Entity IDs mostly unique (>90% — hash space collisions possible)
+- Scene serializes to valid JSON and round-trips
+
+---
