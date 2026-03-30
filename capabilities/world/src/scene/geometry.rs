@@ -155,6 +155,64 @@ pub fn resolve_building_geometry(
     )
 }
 
+/// Resolve composition — returns offset positions for multi-primitive entities.
+/// Each position is relative to the entity's centroid.
+pub fn resolve_composition(graph: &DescriptionGraph) -> Vec<Vec3> {
+    let composition = find_trait(graph, "being.form.composition");
+    let count = composition
+        .and_then(|t| t.params.get("count"))
+        .copied()
+        .unwrap_or(1.0) as usize;
+    let cohesion = composition
+        .and_then(|t| t.params.get("cohesion"))
+        .copied()
+        .unwrap_or(1.0);
+
+    if count <= 1 {
+        return vec![Vec3::new(0.0, 0.0, 0.0)];
+    }
+
+    let comp_term = composition.map(|t| t.term.as_str()).unwrap_or("singular");
+    let spread = (1.0 - cohesion) * 2.0 + 0.5; // spread distance
+
+    match comp_term {
+        "clustered" => {
+            // Tight group around centroid
+            let mut offsets = Vec::new();
+            for i in 0..count.min(5) {
+                let angle = (i as f64) * std::f64::consts::TAU / count as f64;
+                let r = spread * 0.5;
+                offsets.push(Vec3::new(angle.cos() * r, 0.0, angle.sin() * r));
+            }
+            offsets
+        }
+        "dispersed" => {
+            // Wider spread
+            let mut offsets = Vec::new();
+            for i in 0..count.min(6) {
+                let angle = (i as f64) * std::f64::consts::TAU / count as f64 + 0.3;
+                let r = spread * 1.2;
+                offsets.push(Vec3::new(angle.cos() * r, 0.0, angle.sin() * r));
+            }
+            offsets
+        }
+        "layered" => {
+            // Stacked vertically
+            let mut offsets = Vec::new();
+            for i in 0..count.min(4) {
+                let y = (i as f64) * spread * 0.6;
+                offsets.push(Vec3::new(0.0, y, 0.0));
+            }
+            offsets
+        }
+        "nested" => {
+            // Concentric (just centre — renderer would ideally vary radius)
+            vec![Vec3::new(0.0, 0.0, 0.0)]
+        }
+        _ => vec![Vec3::new(0.0, 0.0, 0.0)],
+    }
+}
+
 fn find_trait<'a>(graph: &'a DescriptionGraph, path: &str) -> Option<&'a Trait> {
     graph.traits.iter().find(|t| t.path == path)
 }

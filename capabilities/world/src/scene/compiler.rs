@@ -131,22 +131,32 @@ pub fn compile_flora(f: &Flora, palette: &AestheticPalette) -> Entity {
     }
 }
 
-/// Compile a creature into an Astral Entity.
-pub fn compile_creature(c: &Creature, palette: &AestheticPalette) -> Entity {
+/// Compile a creature into one or more Astral Entities (composition).
+pub fn compile_creature(c: &Creature, palette: &AestheticPalette) -> Vec<Entity> {
     let graph = mapping::map_creature(c, palette);
     let (geo, scale) = geometry::resolve_geometry(&graph);
     let mat = material::resolve_material(&graph, palette.hue);
+    let offsets = geometry::resolve_composition(&graph);
 
-    // Creature position is zone-derived at runtime; use (0,0) as placeholder
-    // The renderer will update position from time-sync
-    Entity {
-        id: format!("creature_{}", c.object_id),
-        transform: Transform::at(0.0, 1.0, 0.0)
-            .with_scale(scale.x, scale.y, scale.z),
-        geometry: geo,
-        material: mat,
-        velocity: None,
-    }
+    offsets
+        .iter()
+        .enumerate()
+        .map(|(i, offset)| {
+            let suffix = if offsets.len() > 1 {
+                format!("creature_{}_{}", c.object_id, i)
+            } else {
+                format!("creature_{}", c.object_id)
+            };
+            Entity {
+                id: suffix,
+                transform: Transform::at(offset.x, 1.0 + offset.y, offset.z)
+                    .with_scale(scale.x, scale.y, scale.z),
+                geometry: geo.clone(),
+                material: mat.clone(),
+                velocity: None,
+            }
+        })
+        .collect()
 }
 
 /// Compile a conveyance into an Astral Entity.
@@ -330,10 +340,10 @@ pub fn compile_district_scene(
             entities.push(compile_flora(f, palette));
         }
 
-        // Creatures
+        // Creatures (may produce multiple entities for composed forms)
         let block_creatures = creatures::generate_creatures(cell, block);
         for c in &block_creatures.creatures {
-            entities.push(compile_creature(c, palette));
+            entities.extend(compile_creature(c, palette));
         }
     }
 
