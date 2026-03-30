@@ -135,9 +135,6 @@ pub fn generate_district_map(
         .unwrap();
     }
 
-    // District boundary
-    svg_polygon(&mut svg, &district_polygon.vertices, &vp, "none", "#444", 1.5, Some(0.3));
-
     // Blocks — coloured by type
     for block in blocks {
         let (fill, opacity) = match block.block_type {
@@ -230,6 +227,9 @@ pub fn generate_district_map(
             .unwrap();
         }
     }
+
+    // District boundary — drawn last so it's on top of everything
+    svg_polygon(&mut svg, &district_polygon.vertices, &vp, "none", "#ff4444", 3.0, Some(0.9));
 
     // Legend
     if config.show_labels {

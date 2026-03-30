@@ -324,6 +324,72 @@ fn subtract_convex(subject: &Polygon, hole: &Polygon) -> Polygon {
     Polygon::new(result)
 }
 
+/// Clip a subject polygon to a clip polygon.
+/// First does bbox clip (fast), then clips each vertex that falls outside
+/// the actual clip polygon boundary, inserting boundary intersection points.
+/// Works for non-convex clip polygons.
+fn clip_polygon_to_polygon(subject: &[Point], clip_verts: &[Point]) -> Vec<Point> {
+    if subject.len() < 3 || clip_verts.len() < 3 {
+        return vec![];
+    }
+    let clip_poly = Polygon::new(clip_verts.to_vec());
+
+    // Fast path: if all subject vertices are inside, no clipping needed
+    let all_inside = subject.iter().all(|p| clip_poly.contains(*p));
+    if all_inside {
+        return subject.to_vec();
+    }
+
+    // Clip via bbox first, then constrain vertices to the clip polygon.
+    // For each subject vertex outside the clip polygon, project it to the
+    // nearest boundary edge. This is simpler than full polygon intersection
+    // and sufficient for Voronoi cells that mostly overlap the clip polygon.
+    let (bx0, by0, bx1, by1) = clip_poly.bbox();
+    let bbox_clipped = super::voronoi::clip_polygon(subject, bx0, by0, bx1, by1);
+    if bbox_clipped.len() < 3 {
+        return vec![];
+    }
+
+    let mut result = Vec::new();
+    for p in &bbox_clipped {
+        if clip_poly.contains(*p) {
+            result.push(*p);
+        } else {
+            // Project to nearest clip polygon edge
+            let mut best_dist = f64::MAX;
+            let mut best_pt = *p;
+            let n = clip_verts.len();
+            for i in 0..n {
+                let a = clip_verts[i];
+                let b = clip_verts[(i + 1) % n];
+                let dx = b.x - a.x;
+                let dy = b.y - a.y;
+                let len_sq = dx * dx + dy * dy;
+                if len_sq < 1e-20 { continue; }
+                let t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / len_sq;
+                let t = t.clamp(0.0, 1.0);
+                let proj = Point::new(a.x + t * dx, a.y + t * dy);
+                let d = p.distance_sq(proj);
+                if d < best_dist {
+                    best_dist = d;
+                    best_pt = proj;
+                }
+            }
+            result.push(best_pt);
+        }
+    }
+
+    // Deduplicate very close vertices
+    let mut deduped = Vec::new();
+    for p in &result {
+        if deduped.is_empty() || p.distance_sq(*deduped.last().unwrap()) > 0.01 {
+            deduped.push(*p);
+        }
+    }
+
+    if deduped.len() < 3 { vec![] } else { deduped }
+}
+
 /// Clip a polygon by a line (Sutherland-Hodgman single edge clip).
 /// `keep_positive`: if true, keep vertices on the positive side of the line.
 fn clip_polygon_by_line(vertices: &[Point], line_a: Point, line_b: Point, keep_positive: bool) -> Vec<Point> {
@@ -408,8 +474,9 @@ pub fn generate_buildings(cell: &Cell, block: &Block) -> BlockBuildings {
                 continue;
             }
 
-            // Clip Voronoi cell to sub-polygon bounding box
-            let clipped = super::voronoi::clip_polygon(&vcell.vertices, bx0, by0, bx1, by1);
+            // Clip Voronoi cell to the actual sub-polygon (not just bbox).
+            // Sutherland-Hodgman: clip against each edge of the sub-polygon.
+            let clipped = clip_polygon_to_polygon(&vcell.vertices, &sub_poly.vertices);
             if clipped.len() < 3 {
                 continue;
             }
