@@ -13,6 +13,7 @@ use tracing_subscriber::EnvFilter;
 
 mod gen;
 mod hdl;
+mod scene;
 mod types;
 
 static UI_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/ui");
@@ -371,6 +372,23 @@ async fn neighbors_handler(AxumPath(ip): AxumPath<String>) -> Response {
     (StatusCode::OK, axum::Json(response)).into_response()
 }
 
+// ─── Astral Scene (compiled) ───────────────────────────────────────────────
+
+async fn district_scene_handler(AxumPath(ip): AxumPath<String>) -> Response {
+    let cell = match parse_cell(&ip) {
+        Some(c) => c,
+        None => return bad_request(),
+    };
+
+    let palette = gen::aesthetic::AestheticPalette::from_cell(&cell);
+    let now_ms = current_time_ms();
+    let atmo = gen::atmosphere::compute_atmosphere(&cell, now_ms);
+
+    let astral_scene = scene::compiler::compile_district_scene(&cell, &palette, &[], &atmo);
+
+    (StatusCode::OK, axum::Json(astral_scene)).into_response()
+}
+
 // ─── UI ────────────────────────────────────────────────────────────────────
 
 fn serve_ui_file(path: &str) -> Response {
@@ -427,6 +445,10 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/cap/world/neighbors/{ip}",
             get(neighbors_handler),
+        )
+        .route(
+            "/cap/world/district/{ip}/scene",
+            get(district_scene_handler),
         )
         .route("/ui/*path", get(|path: AxumPath<String>| async move {
             serve_ui_file(&path)
