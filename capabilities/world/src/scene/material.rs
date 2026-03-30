@@ -102,35 +102,39 @@ pub fn resolve_material(graph: &DescriptionGraph, district_hue: f64) -> Material
     let emission = find_trait(graph, "effect.emission.type");
     let motion = find_trait(graph, "behavior.motion.method");
 
-    // ── Base colour from substance + district hue ──
+    // ── Base colour from substance palette + temperature shift + hue rotation ──
+    // Per astral-projection.md §6.2.1
 
+    // Step 1: Substance palette — fixed RGB base per substance type
+    let (mut br, mut bg, mut bb): (f64, f64, f64) = match substance.map(|t| t.term.as_str()) {
+        Some("mineral") => (140.0, 160.0, 200.0),       // blue-grey
+        Some("organic") => (120.0, 160.0, 90.0),        // green-brown
+        Some("spectral") => (180.0, 180.0, 220.0),      // pale lavender
+        Some("constructed") => (170.0, 160.0, 140.0),   // warm grey
+        Some("elemental") => (200.0, 140.0, 80.0),      // amber
+        _ => (160.0, 155.0, 150.0),                      // neutral grey
+    };
+
+    // Step 2: Temperature shift — additive RGB offsets
+    let (tr, tg, tb) = match temperature.map(|t| t.term.as_str()) {
+        Some("cold") => (-30.0, -10.0, 40.0),
+        Some("cool") => (-15.0, 0.0, 20.0),
+        Some("warm") => (20.0, 5.0, -15.0),
+        Some("hot") => (40.0, -5.0, -30.0),
+        _ => (0.0, 0.0, 0.0), // neutral
+    };
+    br = (br + tr).clamp(0.0_f64, 255.0);
+    bg = (bg + tg).clamp(0.0_f64, 255.0);
+    bb = (bb + tb).clamp(0.0_f64, 255.0);
+
+    // Step 3: Hue rotation — rotate the base colour by the district hue,
+    // modulated by the per-entity hue_seed for variety within a district.
     let hue_seed = substance
         .and_then(|t| t.params.get("hue_seed"))
         .copied()
         .unwrap_or(0.5);
-
-    // Modulate district hue by hue_seed
-    let hue = (district_hue + hue_seed * 60.0 - 30.0).rem_euclid(360.0);
-
-    let (saturation, lightness) = match substance.map(|t| t.term.as_str()) {
-        Some("spectral") => (0.15, 0.7),
-        Some("mineral") => (0.25, 0.45),
-        Some("organic") => (0.35, 0.4),
-        Some("constructed") => (0.2, 0.5),
-        Some("elemental") => (0.5, 0.5),
-        _ => (0.25, 0.45),
-    };
-
-    // Temperature shifts hue
-    let hue = match temperature.map(|t| t.term.as_str()) {
-        Some("hot") => (hue + 15.0).rem_euclid(360.0),   // shift toward warm
-        Some("warm") => (hue + 8.0).rem_euclid(360.0),
-        Some("cold") => (hue + 210.0).rem_euclid(360.0),  // shift toward blue
-        Some("cool") => (hue + 190.0).rem_euclid(360.0),
-        _ => hue,
-    };
-
-    let base_color = Color::from_hsl(hue, saturation, lightness);
+    let rotation_deg = district_hue * 0.5 + hue_seed * 40.0 - 20.0;
+    let base_color = rotate_rgb(Color::new(br, bg, bb), rotation_deg);
 
     // ── Brightness from density ──
 
@@ -233,6 +237,41 @@ pub fn resolve_material(graph: &DescriptionGraph, district_hue: f64) -> Material
     }
 }
 
+/// Rotate an RGB colour by a hue angle (degrees).
+/// Converts to HSL, shifts hue, converts back.
+fn rotate_rgb(c: Color, degrees: f64) -> Color {
+    // RGB 0-255 → 0-1
+    let r = c.r / 255.0;
+    let g = c.g / 255.0;
+    let b = c.b / 255.0;
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let l = (max + min) / 2.0;
+
+    if (max - min).abs() < 1e-10 {
+        // Achromatic — just shift lightness slightly
+        return Color::from_hsl(degrees.rem_euclid(360.0), 0.05, l);
+    }
+
+    let d = max - min;
+    let s = if l > 0.5 {
+        d / (2.0 - max - min)
+    } else {
+        d / (max + min)
+    };
+
+    let h = if (max - r).abs() < 1e-10 {
+        ((g - b) / d + if g < b { 6.0 } else { 0.0 }) * 60.0
+    } else if (max - g).abs() < 1e-10 {
+        ((b - r) / d + 2.0) * 60.0
+    } else {
+        ((r - g) / d + 4.0) * 60.0
+    };
+
+    let new_h = (h + degrees).rem_euclid(360.0);
+    Color::from_hsl(new_h, s, l)
+}
+
 fn find_trait<'a>(graph: &'a DescriptionGraph, path: &str) -> Option<&'a Trait> {
     graph.traits.iter().find(|t| t.path == path)
 }
@@ -293,6 +332,32 @@ mod tests {
         let mb = mat.motion_behavior.unwrap();
         assert_eq!(mb.motion_type, "pulse");
         assert!((mb.speed - 3.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn substance_palettes_differentiate() {
+        // Different substance types should produce visibly different base colours
+        let substances = ["mineral", "organic", "spectral", "constructed", "elemental"];
+        let mut colors = Vec::new();
+        for sub in &substances {
+            let mut g = DescriptionGraph::new();
+            g.push_trait(Trait::new("being.material.substance", sub).with_param("hue_seed", 0.5));
+            g.push_trait(Trait::new("being.material.temperature", "neutral"));
+            let mat = resolve_material(&g, 180.0);
+            colors.push((mat.base_color.r, mat.base_color.g, mat.base_color.b));
+        }
+        // Each pair should differ by at least 15 in some channel
+        for i in 0..colors.len() {
+            for j in (i+1)..colors.len() {
+                let dr = (colors[i].0 - colors[j].0).abs();
+                let dg = (colors[i].1 - colors[j].1).abs();
+                let db = (colors[i].2 - colors[j].2).abs();
+                let max_diff = dr.max(dg).max(db);
+                assert!(max_diff > 15.0,
+                    "{} vs {} differ by only {:.0} max channel",
+                    substances[i], substances[j], max_diff);
+            }
+        }
     }
 
     #[test]

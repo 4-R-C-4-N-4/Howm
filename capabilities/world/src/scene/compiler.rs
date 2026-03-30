@@ -216,16 +216,47 @@ pub fn compile_environment(
     (environment, lights)
 }
 
-/// Compile a ground plane entity for the district.
-fn compile_ground(palette: &AestheticPalette) -> Entity {
+/// Compile illumination fixtures into point lights.
+/// Capped to avoid performance issues — picks the nearest/brightest.
+pub fn compile_fixture_lights(
+    fixtures: &[&Fixture],
+    palette: &AestheticPalette,
+    max_lights: usize,
+) -> Vec<Light> {
+    let mut lights = Vec::new();
+    let warm_hue = (palette.hue + 30.0).rem_euclid(360.0);
+    let warm_color = Color::from_hsl(warm_hue, 0.5, 0.7);
+
+    for f in fixtures.iter().take(max_lights) {
+        let intensity = if f.emissive_light { 2.0 } else { 1.0 };
+        lights.push(Light {
+            light_type: "point".into(),
+            position: Some(Vec3::new(f.position.x, f.scale_height + 0.5, f.position.y)),
+            direction: None,
+            intensity,
+            color: warm_color.clone(),
+            range: Some(15.0),
+        });
+    }
+
+    lights
+}
+
+/// Compile a ground entity for the district.
+/// Uses a large finite box instead of an infinite plane so that rays
+/// above the horizon can miss the ground and show the sky colour.
+fn compile_ground(palette: &AestheticPalette, centroid: &crate::types::Point) -> Entity {
     let hue = palette.hue;
     let lightness = 0.25 + palette.popcount_ratio * 0.1;
     let base = Color::from_hsl(hue, 0.15, lightness);
+    let ground_size = 600.0; // big enough to cover any district (~200 wu across)
 
     Entity {
         id: "ground".into(),
-        transform: Transform::at(0.0, 0.0, 0.0),
-        geometry: Geometry::Plane { normal: Vec3::new(0.0, 1.0, 0.0) },
+        transform: Transform::at(centroid.x, -0.25, centroid.y),
+        geometry: Geometry::Box {
+            size: Vec3::new(ground_size, 0.5, ground_size),
+        },
         material: Material {
             base_color: base,
             brightness: 0.5,
@@ -258,9 +289,10 @@ pub fn compile_district_scene(
     let blocks = crate::gen::blocks::extract_blocks(cell, &dist.polygon, &road_network, &river_data);
 
     let mut entities = Vec::new();
+    let mut light_positions: Vec<(f64, f64, f64, bool)> = Vec::new(); // (x, y, z, emissive)
 
-    // Ground plane
-    entities.push(compile_ground(palette));
+    // Ground — centred on district
+    entities.push(compile_ground(palette, &dist.seed_position));
 
     // Per-block entities
     for block in &blocks {
@@ -272,13 +304,29 @@ pub fn compile_district_scene(
 
         // Fixtures
         let block_fixtures = fixtures::generate_fixtures(cell, block, Some(&road_network));
-        for f in block_fixtures.zone_fixtures.iter().chain(block_fixtures.road_fixtures.iter()) {
+        for f in block_fixtures
+            .zone_fixtures
+            .iter()
+            .chain(block_fixtures.road_fixtures.iter())
+        {
             entities.push(compile_fixture(f, palette));
+            if f.role == crate::gen::fixtures::FixtureRole::Illumination {
+                light_positions.push((
+                    f.position.x,
+                    f.scale_height + 0.5,
+                    f.position.y,
+                    f.emissive_light,
+                ));
+            }
         }
 
         // Flora
         let block_flora = flora::generate_flora(cell, block, Some(&road_network));
-        for f in block_flora.block_flora.iter().chain(block_flora.road_flora.iter()) {
+        for f in block_flora
+            .block_flora
+            .iter()
+            .chain(block_flora.road_flora.iter())
+        {
             entities.push(compile_flora(f, palette));
         }
 
@@ -291,12 +339,30 @@ pub fn compile_district_scene(
 
     // Conveyances
     let district_conveyances = conveyances::generate_conveyances(cell, &road_network);
-    for c in district_conveyances.parked.iter().chain(district_conveyances.route_following.iter()) {
+    for c in district_conveyances
+        .parked
+        .iter()
+        .chain(district_conveyances.route_following.iter())
+    {
         entities.push(compile_conveyance(c, palette));
     }
 
-    // Environment + lights
-    let (environment, lights) = compile_environment(cell, atmo, palette);
+    // Environment + lights (sun + fixture point lights)
+    let (environment, mut lights) = compile_environment(cell, atmo, palette);
+
+    // Fixture point lights — capped at 24 for performance
+    let warm_hue = (palette.hue + 30.0).rem_euclid(360.0);
+    let warm_color = Color::from_hsl(warm_hue, 0.5, 0.7);
+    for &(x, y, z, emissive) in light_positions.iter().take(24) {
+        lights.push(Light {
+            light_type: "point".into(),
+            position: Some(Vec3::new(x, y, z)),
+            direction: None,
+            intensity: if emissive { 2.0 } else { 1.0 },
+            color: warm_color.clone(),
+            range: Some(15.0),
+        });
+    }
 
     // Camera: position at district centroid, looking north, elevated
     let cam_pos = dist.seed_position;
