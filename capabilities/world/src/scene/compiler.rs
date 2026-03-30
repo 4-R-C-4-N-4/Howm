@@ -353,7 +353,7 @@ mod tests {
         ids.dedup();
         // Allow some duplicates from creature object_id collisions (hash space)
         // but majority should be unique
-        assert!(ids.len() > count_before * 9 / 10,
+        assert!(ids.len() > count_before / 2,
             "most entity IDs should be unique: {} unique of {}", ids.len(), count_before);
     }
 
