@@ -450,7 +450,7 @@ async fn main() -> anyhow::Result<()> {
             "/cap/world/district/{ip}/scene",
             get(district_scene_handler),
         )
-        .route("/ui/*path", get(|path: AxumPath<String>| async move {
+        .route("/ui/{*path}", get(|path: AxumPath<String>| async move {
             serve_ui_file(&path)
         }))
         .route("/ui/", get(|| async { serve_ui_file("index.html") }));
