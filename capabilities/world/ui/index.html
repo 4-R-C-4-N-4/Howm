@@ -1,8 +1,27 @@
 <!DOCTYPE html>
-<html><head><meta charset="UTF-8"><title>howm world — debug</title>
-<style>body{font-family:monospace;background:#0a0a0f;color:#c8d0e0;padding:1rem;}
-h1{font-size:1rem;color:#7090c0;}</style>
-</head><body>
-<h1>// HOWM WORLD — debug viewer</h1>
-<p>Phase 1 — generation debug UI coming soon.</p>
-</body></html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>howm world</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #000; overflow: hidden; position: relative; }
+    #display { display: block; }
+    #status {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      color: #7090c0;
+      font-family: monospace;
+      font-size: 14px;
+      z-index: 10;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="display"></canvas>
+  <div id="status">Loading...</div>
+  <script src="astral.js"></script>
+</body>
+</html>
