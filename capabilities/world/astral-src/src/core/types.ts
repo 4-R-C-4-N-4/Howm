@@ -52,15 +52,24 @@ export interface MotionBehavior {
   speed: number
 }
 
+export interface DisplacementParams {
+  frequency: number
+  amplitude: number
+  octaves: number
+  seed: number
+}
+
 export interface Material {
   baseColor: Color
   brightness: number          // 0–1
   emissive?: number
+  emissionColor?: Color       // colour of emissive glow (for bleed)
   roughness: number
   reflectivity: number
   transparency?: number
   glyphStyle?: GlyphStyle
   motionBehavior?: MotionBehavior
+  displacement?: DisplacementParams   // SDF surface displacement
 }
 
 export interface Transform {

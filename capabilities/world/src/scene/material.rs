@@ -72,6 +72,15 @@ pub struct MotionBehavior {
     pub speed: f64,
 }
 
+/// Displacement params for SDF surface perturbation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DisplacementParams {
+    pub frequency: f64,
+    pub amplitude: f64,
+    pub octaves: u32,
+    pub seed: f64,
+}
+
 /// Astral Material — mirrors the TypeScript Material interface.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Material {
@@ -80,6 +89,8 @@ pub struct Material {
     pub brightness: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub emissive: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "emissionColor")]
+    pub emission_color: Option<Color>,
     pub roughness: f64,
     pub reflectivity: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -88,6 +99,8 @@ pub struct Material {
     pub glyph_style: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "motionBehavior")]
     pub motion_behavior: Option<MotionBehavior>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub displacement: Option<DisplacementParams>,
 }
 
 /// Resolve an HDL description graph into an Astral Material.
@@ -225,15 +238,48 @@ pub fn resolve_material(graph: &DescriptionGraph, district_hue: f64) -> Material
         }
     });
 
+    // ── Displacement from being.form.detail ──
+
+    let detail = find_trait(graph, "being.form.detail");
+    let displacement = detail.and_then(|d| {
+        let freq = d.params.get("frequency").copied().unwrap_or(0.0);
+        let amp = d.params.get("amplitude").copied().unwrap_or(0.0);
+        if freq > 0.0 && amp > 0.0 {
+            Some(DisplacementParams {
+                frequency: freq,
+                amplitude: amp,
+                octaves: d.params.get("octaves").copied().unwrap_or(1.0) as u32,
+                seed: d.params.get("seed").copied().unwrap_or(0.0),
+            })
+        } else {
+            None
+        }
+    });
+
+    // ── Emission colour (for bleed) ──
+
+    let emission_color = if emissive.is_some() {
+        // Tint emission toward the base colour
+        Some(Color::new(
+            (base_color.r * 0.5 + 128.0).min(255.0),
+            (base_color.g * 0.5 + 128.0).min(255.0),
+            (base_color.b * 0.5 + 128.0).min(255.0),
+        ))
+    } else {
+        None
+    };
+
     Material {
         base_color,
         brightness,
         emissive,
+        emission_color,
         roughness,
         reflectivity,
         transparency,
         glyph_style,
         motion_behavior,
+        displacement,
     }
 }
 

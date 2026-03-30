@@ -1,6 +1,6 @@
 import { Vec3, Transform, Material, Entity } from '../core/types'
 import { sub } from '../core/vec3'
-import { evaluateSDF } from './sdf'
+import { evaluateSDF, applyDisplacement } from './sdf'
 import { SpatialGrid } from './SpatialGrid'
 
 export interface SampleResult {
@@ -65,6 +65,11 @@ export class World {
       const entity = this.entities[i]
       const localPoint = worldToLocal(point, entity.transform)
       let dist = evaluateSDF(localPoint, entity.geometry)
+
+      // Apply displacement noise if material has it
+      if (entity.material.displacement) {
+        dist = applyDisplacement(localPoint, dist, entity.material.displacement)
+      }
 
       const scaleFactor = Math.min(
         entity.transform.scale.x,

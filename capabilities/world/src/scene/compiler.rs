@@ -276,6 +276,8 @@ fn compile_ground(palette: &AestheticPalette, centroid: &crate::types::Point) ->
             transparency: None,
             glyph_style: Some("dense".into()),
             motion_behavior: None,
+            displacement: None,
+            emission_color: None,
         },
         velocity: None,
     }
