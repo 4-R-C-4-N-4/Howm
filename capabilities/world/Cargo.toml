@@ -8,7 +8,7 @@ name = "world"
 path = "src/main.rs"
 
 [dependencies]
-axum = "0.8"
+axum = { version = "0.8", features = ["ws"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -18,6 +18,7 @@ clap = { version = "4", features = ["derive", "env"] }
 anyhow = "1"
 p2pcd = { path = "../../node/p2pcd", features = ["bridge-client"] }
 include_dir = "0.7"
+futures-util = "0.3"
 
 [dev-dependencies]
 tempfile = "3"

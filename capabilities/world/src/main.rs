@@ -14,6 +14,7 @@ use tracing_subscriber::EnvFilter;
 mod gen;
 mod hdl;
 mod scene;
+mod stream;
 mod types;
 
 static UI_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/ui");
@@ -518,6 +519,10 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/cap/world/district/{ip}/map",
             get(district_map_handler),
+        )
+        .route(
+            "/cap/world/district/{ip}/live",
+            get(stream::handler::ws_handler),
         )
         .route("/ui/{*path}", get(|path: AxumPath<String>| async move {
             serve_ui_file(&path)

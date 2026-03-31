@@ -6,6 +6,8 @@
  */
 
 import { HowmSceneProvider } from './scene/HowmSceneProvider'
+import { HowmStreamProvider } from './scene/HowmStreamProvider'
+import { SceneProvider } from './scene/SceneProvider'
 import { FrameBuffer } from './renderer/FrameBuffer'
 import { Presenter } from './renderer/Presenter'
 import { RenderLoop } from './renderer/RenderLoop'
@@ -57,21 +59,42 @@ async function main() {
   // Get IP from URL params
   const params = new URLSearchParams(window.location.search)
   const ip = params.get('ip') || '93.184.216.0'
+  const useLive = params.has('live')
 
   // Status overlay
   const status = document.getElementById('status')
   if (status) status.textContent = `Loading district ${ip}...`
 
-  // Fetch scene from world API
   const baseUrl = window.location.origin
-  const provider = new HowmSceneProvider(baseUrl)
-  try {
-    await provider.loadDistrict(ip)
-    if (status) status.textContent = ''
-  } catch (err) {
-    console.error('Failed to load district:', err)
-    if (status) status.textContent = `Error loading ${ip}: ${err}`
-    return
+  let provider: SceneProvider
+
+  if (useLive) {
+    // WebSocket streaming — view-dependent, incremental entities
+    if (status) status.textContent = `Connecting to ${ip}...`
+    const stream = new HowmStreamProvider(baseUrl)
+    try {
+      await stream.connect(ip)
+      if (status) status.textContent = ''
+    } catch (err) {
+      console.error('WebSocket failed, falling back to static:', err)
+      if (status) status.textContent = `WS failed, loading static...`
+      const fallback = new HowmSceneProvider(baseUrl)
+      await fallback.loadDistrict(ip)
+      provider = fallback
+    }
+    provider = stream
+  } else {
+    // Static HTTP fetch — full district scene
+    const staticProvider = new HowmSceneProvider(baseUrl)
+    try {
+      await staticProvider.loadDistrict(ip)
+      if (status) status.textContent = ''
+    } catch (err) {
+      console.error('Failed to load district:', err)
+      if (status) status.textContent = `Error loading ${ip}: ${err}`
+      return
+    }
+    provider = staticProvider
   }
 
   // Load glyph data and warmup cache

@@ -135,6 +135,167 @@
     }
   };
 
+  // astral-src/src/scene/HowmStreamProvider.ts
+  var HowmStreamProvider = class {
+    // send camera 4 Hz
+    constructor(baseUrl) {
+      this.baseUrl = baseUrl;
+      __publicField(this, "ws", null);
+      __publicField(this, "entities", /* @__PURE__ */ new Map());
+      __publicField(this, "entityList", []);
+      __publicField(this, "lights", []);
+      __publicField(this, "environment", {
+        ambientLight: 0.3,
+        backgroundColor: { r: 20, g: 20, b: 40 }
+      });
+      __publicField(this, "camera", {
+        position: { x: 0, y: 8, z: 20 },
+        rotation: { x: -0.3, y: 0, z: 0 },
+        fov: 60,
+        near: 0.1,
+        far: 200
+      });
+      __publicField(this, "time", 0);
+      __publicField(this, "dirty", true);
+      __publicField(this, "connected", false);
+      // Camera state to send to server
+      __publicField(this, "camX", 0);
+      __publicField(this, "camY", 8);
+      __publicField(this, "camZ", 0);
+      __publicField(this, "camDX", 0);
+      __publicField(this, "camDY", -0.3);
+      __publicField(this, "camDZ", -1);
+      __publicField(this, "sendTimer", 0);
+      __publicField(this, "sendInterval", 0.25);
+    }
+    async connect(ip) {
+      const wsUrl = this.baseUrl.replace("http", "ws") + `/cap/world/district/${ip}/live`;
+      console.log("Connecting to", wsUrl);
+      return new Promise((resolve, reject) => {
+        this.ws = new WebSocket(wsUrl);
+        this.ws.onopen = () => {
+          console.log("WebSocket connected");
+          this.connected = true;
+          resolve();
+        };
+        this.ws.onmessage = (ev) => {
+          this.handleMessage(ev.data);
+        };
+        this.ws.onerror = (ev) => {
+          console.error("WebSocket error:", ev);
+          reject(new Error("WebSocket connection failed"));
+        };
+        this.ws.onclose = () => {
+          console.log("WebSocket closed");
+          this.connected = false;
+        };
+      });
+    }
+    handleMessage(data) {
+      let msg;
+      try {
+        msg = JSON.parse(data);
+      } catch {
+        return;
+      }
+      switch (msg.type) {
+        case "init":
+          if (msg.environment) this.environment = msg.environment;
+          if (msg.camera) {
+            this.camera = msg.camera;
+            this.camX = this.camera.position.x;
+            this.camY = this.camera.position.y;
+            this.camZ = this.camera.position.z;
+          }
+          if (msg.ground) {
+            this.entities.set("ground", msg.ground);
+            this.rebuildEntityList();
+          }
+          break;
+        case "enter":
+          if (msg.entity?.id) {
+            this.entities.set(msg.entity.id, msg.entity);
+            this.rebuildEntityList();
+          }
+          break;
+        case "leave":
+          if (msg.id && this.entities.delete(msg.id)) {
+            this.rebuildEntityList();
+          }
+          break;
+        case "update":
+          if (msg.id) {
+            const e = this.entities.get(msg.id);
+            if (e) {
+              if (msg.position) {
+                e.transform.position.x = msg.position[0];
+                e.transform.position.y = msg.position[1];
+                e.transform.position.z = msg.position[2];
+              }
+              if (msg.emissive !== void 0) {
+                e.material.emissive = msg.emissive;
+              }
+            }
+          }
+          break;
+        case "lights":
+          if (msg.lights) {
+            this.lights = msg.lights;
+          }
+          break;
+      }
+    }
+    rebuildEntityList() {
+      this.entityList = Array.from(this.entities.values());
+      this.dirty = true;
+    }
+    /** Update camera position — called by CameraController. */
+    updateCamera(x, y, z, dx, dy, dz) {
+      this.camX = x;
+      this.camY = y;
+      this.camZ = z;
+      this.camDX = dx;
+      this.camDY = dy;
+      this.camDZ = dz;
+    }
+    // ── SceneProvider interface ──
+    getScene() {
+      return {
+        time: this.time,
+        camera: this.camera,
+        environment: this.environment,
+        lights: this.lights,
+        entities: this.entityList
+      };
+    }
+    update(dt) {
+      this.time += dt;
+      updateLightFlicker(this.lights, this.time);
+      this.sendTimer += dt;
+      if (this.sendTimer >= this.sendInterval && this.connected && this.ws) {
+        this.sendTimer = 0;
+        const msg = JSON.stringify({
+          type: "camera",
+          position: [this.camX, this.camY, this.camZ],
+          direction: [this.camDX, this.camDY, this.camDZ],
+          fov: this.camera.fov
+        });
+        this.ws.send(msg);
+      }
+    }
+    structurallyDirty() {
+      return this.dirty;
+    }
+    acknowledgeStructuralChange() {
+      this.dirty = false;
+    }
+    disconnect() {
+      this.ws?.close();
+      this.ws = null;
+      this.connected = false;
+    }
+  };
+
   // astral-src/src/renderer/FrameBuffer.ts
   var FrameBuffer = class {
     constructor(width, height) {
@@ -2582,17 +2743,36 @@
     const { cols, rows } = presenter;
     const params = new URLSearchParams(window.location.search);
     const ip = params.get("ip") || "93.184.216.0";
+    const useLive = params.has("live");
     const status = document.getElementById("status");
     if (status) status.textContent = `Loading district ${ip}...`;
     const baseUrl = window.location.origin;
-    const provider = new HowmSceneProvider(baseUrl);
-    try {
-      await provider.loadDistrict(ip);
-      if (status) status.textContent = "";
-    } catch (err) {
-      console.error("Failed to load district:", err);
-      if (status) status.textContent = `Error loading ${ip}: ${err}`;
-      return;
+    let provider;
+    if (useLive) {
+      if (status) status.textContent = `Connecting to ${ip}...`;
+      const stream = new HowmStreamProvider(baseUrl);
+      try {
+        await stream.connect(ip);
+        if (status) status.textContent = "";
+      } catch (err) {
+        console.error("WebSocket failed, falling back to static:", err);
+        if (status) status.textContent = `WS failed, loading static...`;
+        const fallback = new HowmSceneProvider(baseUrl);
+        await fallback.loadDistrict(ip);
+        provider = fallback;
+      }
+      provider = stream;
+    } else {
+      const staticProvider = new HowmSceneProvider(baseUrl);
+      try {
+        await staticProvider.loadDistrict(ip);
+        if (status) status.textContent = "";
+      } catch (err) {
+        console.error("Failed to load district:", err);
+        if (status) status.textContent = `Error loading ${ip}: ${err}`;
+        return;
+      }
+      provider = staticProvider;
     }
     if (status) status.textContent = "Loading glyphs...";
     const glyphCache = await loadGlyphCache("/ui/glyphs.json");
