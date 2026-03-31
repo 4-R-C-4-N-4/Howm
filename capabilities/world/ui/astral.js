@@ -914,7 +914,7 @@
   }
 
   // astral-src/src/renderer/Raymarch.ts
-  var DEFAULT_MAX_STEPS = 128;
+  var DEFAULT_MAX_STEPS = 80;
   var HIT_THRESHOLD = 0.01;
   var MAX_DISTANCE = 200;
   var NORMAL_EPSILON = 1e-3;
@@ -1765,7 +1765,7 @@
             if (performance.now() - frameStart > FRAME_DEADLINE_MS) break;
           }
           const idx = y * width + x;
-          if (this.useTemporalReuse && !cameraChanged && !anyAnimated && temporal.isValid(x, y)) {
+          if (this.useTemporalReuse && !cameraChanged && temporal.isValid(x, y)) {
             const eIdx = temporal.getEntityIndex(x, y);
             if (eIdx === -1) {
               if (!anyMoving) continue;
@@ -1776,7 +1776,7 @@
                 if (anyFlicker || anyAnimated) {
                   const hitPos = temporal.getHitPos(x, y);
                   const normal = temporal.getNormal(x, y);
-                  const material = scene.entities[eIdx].material;
+                  const material = entity.material;
                   const lit = computeLighting(hitPos, normal, material, scene);
                   const params = {
                     targetCoverage: lit.brightness,
@@ -1793,7 +1793,7 @@
             }
           }
           const ray = createRay(this.camera, x, y, width, height);
-          const maxSteps = this.useAdaptiveQuality ? getMaxSteps(x, y, width, height) : 64;
+          const maxSteps = this.useAdaptiveQuality ? getMaxSteps(x, y, width, height) : DEFAULT_MAX_STEPS;
           const result = raymarch(ray, world, maxSteps);
           if (result.hit) {
             const lit = computeLighting(result.position, result.normal, result.material, scene);

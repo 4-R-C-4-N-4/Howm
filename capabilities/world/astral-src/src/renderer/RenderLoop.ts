@@ -4,7 +4,7 @@ import { FrameBuffer } from './FrameBuffer'
 import { Presenter } from './Presenter'
 import { World } from './World'
 import { createRay } from './Camera'
-import { raymarch } from './Raymarch'
+import { raymarch, DEFAULT_MAX_STEPS } from './Raymarch'
 import { computeLighting } from './Lighting'
 import { GlyphCache } from '../glyph/GlyphCache'
 import { GlyphQueryParams } from '../glyph/GlyphDB'
@@ -166,23 +166,25 @@ export class RenderLoop {
         const idx = y * width + x
 
         // --- Temporal reuse decision ---
-        if (this.useTemporalReuse && !cameraChanged && !anyAnimated && temporal.isValid(x, y)) {
+        // Reuse GEOMETRY from cache (skip expensive raymarch) but
+        // always recompute LIGHTING when entities have animation controllers.
+        if (this.useTemporalReuse && !cameraChanged && temporal.isValid(x, y)) {
           const eIdx = temporal.getEntityIndex(x, y)
 
           if (eIdx === -1) {
-            // Previous frame was a miss — reuse if no moving entities
+            // Previous frame was a miss (sky)
             if (!anyMoving) continue
           } else {
             const entity = scene.entities[eIdx]
             const entityMoving = !!(entity?.velocity || entity?.angularVelocity)
 
-            // Geometry reuse: skip raymarch, recompute lighting if needed
             if (!entityMoving) {
               if (anyFlicker || anyAnimated) {
                 // Recompute lighting with current (controller-modified) material
+                // This is cheap — reuses cached hit position and normal
                 const hitPos = temporal.getHitPos(x, y)
                 const normal = temporal.getNormal(x, y)
-                const material = scene.entities[eIdx].material
+                const material = entity.material
                 const lit = computeLighting(hitPos, normal, material, scene)
                 const params: GlyphQueryParams = {
                   targetCoverage: lit.brightness,
@@ -204,7 +206,7 @@ export class RenderLoop {
 
         // --- Full raymarch ---
         const ray = createRay(this.camera, x, y, width, height)
-        const maxSteps = this.useAdaptiveQuality ? getMaxSteps(x, y, width, height) : 64
+        const maxSteps = this.useAdaptiveQuality ? getMaxSteps(x, y, width, height) : DEFAULT_MAX_STEPS
         const result = raymarch(ray, world, maxSteps)
 
         if (result.hit) {

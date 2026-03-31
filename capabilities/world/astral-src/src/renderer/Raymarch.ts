@@ -2,7 +2,7 @@ import { Ray, RaymarchResult } from '../core/types'
 import { add, mul, normalize } from '../core/vec3'
 import { World } from './World'
 
-export const DEFAULT_MAX_STEPS = 128
+export const DEFAULT_MAX_STEPS = 80
 const HIT_THRESHOLD = 0.01
 const MAX_DISTANCE = 200.0
 const NORMAL_EPSILON = 0.001
