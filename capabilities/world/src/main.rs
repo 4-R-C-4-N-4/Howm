@@ -394,6 +394,7 @@ async fn district_map_handler(AxumPath(ip): AxumPath<String>) -> Response {
     let mut buildings = Vec::new();
     let mut fixtures = Vec::new();
     let mut flora = Vec::new();
+    let mut creatures = Vec::new();
     for block in &blocks {
         let b = gen::buildings::generate_buildings(&cell, block);
         buildings.push(b.plots);
@@ -405,6 +406,13 @@ async fn district_map_handler(AxumPath(ip): AxumPath<String>) -> Response {
         let mut all_flora = fl.block_flora;
         all_flora.extend(fl.road_flora);
         flora.push(all_flora);
+        // Creatures with positions
+        let block_creatures = gen::creatures::generate_creatures(&cell, block);
+        for (ci, c) in block_creatures.creatures.iter().enumerate() {
+            let pos_seed = gen::hash::ha(c.creature_seed ^ block.idx as u32 ^ ci as u32 ^ 0x9f3a);
+            let pos = gen::zones::point_in_polygon_seeded(&block.polygon, pos_seed);
+            creatures.push((pos, c.ecological_role.archetype_str().to_string()));
+        }
     }
 
     let svg = scene::map::generate_district_map(
@@ -417,6 +425,7 @@ async fn district_map_handler(AxumPath(ip): AxumPath<String>) -> Response {
         &buildings,
         &fixtures,
         &flora,
+        &creatures,
         &scene::map::MapConfig::default(),
     );
 

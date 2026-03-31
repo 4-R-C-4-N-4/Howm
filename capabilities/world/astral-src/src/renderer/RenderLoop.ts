@@ -139,6 +139,11 @@ export class RenderLoop {
     return this.provider.getScene().entities.some(e => e.velocity || e.angularVelocity)
   }
 
+  /** True if any entity has active trait controllers that modify visuals per-frame. */
+  private hasAnyAnimatedEntities(): boolean {
+    return this.describedEntities.some(de => de.controllers.length > 0)
+  }
+
   private renderFrameSingleThread(frameBuffer: FrameBuffer): void {
     const { width, height } = frameBuffer
     const scene = this.provider.getScene()
@@ -148,6 +153,7 @@ export class RenderLoop {
     const cameraChanged = temporal.cameraChanged(this.camera.position, this.camera.rotation)
     const anyMoving = this.hasAnyMoving()
     const anyFlicker = this.hasAnyFlicker()
+    const anyAnimated = this.hasAnyAnimatedEntities()
     const frameStart = performance.now()
 
     for (let y = 0; y < height; y++) {
@@ -170,9 +176,10 @@ export class RenderLoop {
             const entity = scene.entities[eIdx]
             const entityMoving = !!(entity?.velocity || entity?.angularVelocity)
 
-            // Geometry reuse: skip raymarch, only recompute lighting if light changed
+            // Geometry reuse: skip raymarch, recompute lighting if needed
             if (!entityMoving) {
-              if (anyFlicker) {
+              if (anyFlicker || anyAnimated) {
+                // Recompute lighting with current (controller-modified) material
                 const hitPos = temporal.getHitPos(x, y)
                 const normal = temporal.getNormal(x, y)
                 const material = scene.entities[eIdx].material

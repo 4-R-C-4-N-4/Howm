@@ -8,10 +8,11 @@ use crate::gen::aesthetic::AestheticPalette;
 use crate::gen::blocks::{Block, BlockType};
 use crate::gen::buildings::BuildingPlot;
 use crate::gen::cell::Cell;
+use crate::gen::creatures::Creature;
 use crate::gen::fixtures::Fixture;
 use crate::gen::flora::Flora;
-use crate::gen::roads::RoadNetwork;
 use crate::gen::rivers::RiverSegment;
+use crate::gen::roads::RoadNetwork;
 use crate::types::{Point, Polygon};
 
 use std::fmt::Write;
@@ -98,6 +99,7 @@ pub fn generate_district_map(
     buildings_per_block: &[Vec<BuildingPlot>],
     fixtures_per_block: &[Vec<Fixture>],
     flora_per_block: &[Vec<Flora>],
+    creatures: &[(Point, String)],  // (position, ecological_role)
     config: &MapConfig,
 ) -> String {
     let vp = Viewport::from_polygon(district_polygon, config.width, config.height, config.padding);
@@ -228,6 +230,14 @@ pub fn generate_district_map(
         }
     }
 
+    // Creatures — magenta diamonds
+    for (pos, _role) in creatures {
+        let (cx, cy) = vp.transform(pos);
+        let r = 3.0;
+        let _ = write!(svg, "<polygon points=\"{:.1},{:.1} {:.1},{:.1} {:.1},{:.1} {:.1},{:.1}\" fill=\"hsl(300,70%,60%)\" stroke=\"hsl(300,90%,80%)\" stroke-width=\"0.5\" opacity=\"0.9\"/>\n",
+            cx, cy - r, cx + r, cy, cx, cy + r, cx - r, cy);
+    }
+
     // District boundary — drawn last so it's on top of everything
     svg_polygon(&mut svg, &district_polygon.vertices, &vp, "none", "#ff4444", 3.0, Some(0.9));
 
@@ -244,6 +254,7 @@ pub fn generate_district_map(
             ("hsl(210,40%,25%)", "Water"),
             ("hsl(45,80%,60%)", "Lights"),
             ("hsl(120,40%,35%)", "Flora"),
+            ("hsl(300,70%,60%)", "Creatures"),
         ];
         for (color, label) in items {
             let _ = write!(svg, "<rect x=\"{:.0}\" y=\"{:.0}\" width=\"10\" height=\"10\" fill=\"{}\" opacity=\"0.8\"/>\n", lx, ly, color);
@@ -379,6 +390,7 @@ mod tests {
             &cell, &palette, &dist.polygon,
             &blocks, &roads, &rivers,
             &buildings, &fixtures, &flora,
+            &vec![],  // no creatures in test
             &MapConfig::default(),
         );
 
