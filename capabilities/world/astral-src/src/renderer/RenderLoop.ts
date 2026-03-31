@@ -15,7 +15,8 @@ import { dot } from '../core/vec3'
 import { InputState } from '../input/InputState'
 import { CameraController } from '../input/CameraController'
 import { HUD } from '../ui/HUD'
-import { DescribedEntity, buildDescribedEntity, getEmissionController } from './DescribedEntity'
+import { DescribedEntity, buildDescribedEntity, getEmissionController, getMotionController, getRegardController } from './DescribedEntity'
+import { length, sub } from '../core/vec3'
 
 const RAMP = ' .,:;=+*#%@'
 
@@ -325,11 +326,24 @@ export class RenderLoop {
     if (this.provider.structurallyDirty()) {
       this.world = new World(scene.entities)
       // Build DescribedEntities from scene entities
-      this.describedEntities = scene.entities.map(e => buildDescribedEntity(e))
+      this.describedEntities = scene.entities.map(e => {
+        const de = buildDescribedEntity(e)
+        // Initialize motion controller with entity's starting position
+        const motionCtrl = getMotionController(de)
+        if (motionCtrl) {
+          motionCtrl.setBasePosition(
+            e.transform.position.x,
+            e.transform.position.y,
+            e.transform.position.z,
+          )
+        }
+        return de
+      })
       this.provider.acknowledgeStructuralChange()
     }
 
     // Tick trait controllers for all described entities
+    let worldDirty = false
     for (const de of this.describedEntities) {
       for (const ctrl of de.controllers) ctrl.tick(dt)
       de.sequenceEngine?.tick(dt)
@@ -339,6 +353,32 @@ export class RenderLoop {
       if (emCtrl) {
         de.entity.material.emissive = emCtrl.getIntensity()
       }
+
+      // Apply motion controller position to entity transform
+      const motionCtrl = getMotionController(de)
+      if (motionCtrl) {
+        const pos = motionCtrl.getPosition()
+        const e = de.entity
+        if (Math.abs(e.transform.position.x - pos.x) > 0.01 ||
+            Math.abs(e.transform.position.z - pos.z) > 0.01) {
+          e.transform.position.x = pos.x
+          e.transform.position.y = pos.y
+          e.transform.position.z = pos.z
+          worldDirty = true
+        }
+      }
+
+      // Update regard controller with player distance
+      const regardCtrl = getRegardController(de)
+      if (regardCtrl) {
+        const dist = length(sub(de.entity.transform.position, this.camera.position))
+        regardCtrl.updatePlayerDistance(dist)
+      }
+    }
+
+    // Rebuild spatial grid if any entities moved
+    if (worldDirty) {
+      this.world.updateEntities(scene.entities)
     }
 
     {

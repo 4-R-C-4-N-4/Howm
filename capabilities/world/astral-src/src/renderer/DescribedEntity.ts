@@ -11,7 +11,7 @@
 
 import { Entity } from '../core/types'
 import { DescriptionGraph } from '../core/description'
-import { TraitController, createControllers, EmissionController, CycleController, SurfaceController } from './TraitController'
+import { TraitController, createControllers, EmissionController, CycleController, SurfaceController, MotionController, RestController, RegardController } from './TraitController'
 import { SequenceEngine } from './SequenceEngine'
 
 export interface DescribedEntity {
@@ -72,4 +72,16 @@ export function getCycleController(de: DescribedEntity): CycleController | undef
 
 export function getSurfaceController(de: DescribedEntity): SurfaceController | undefined {
   return de.controllers.find(c => c instanceof SurfaceController) as SurfaceController | undefined
+}
+
+export function getMotionController(de: DescribedEntity): MotionController | undefined {
+  return de.controllers.find(c => c instanceof MotionController) as MotionController | undefined
+}
+
+export function getRestController(de: DescribedEntity): RestController | undefined {
+  return de.controllers.find(c => c instanceof RestController) as RestController | undefined
+}
+
+export function getRegardController(de: DescribedEntity): RegardController | undefined {
+  return de.controllers.find(c => c instanceof RegardController) as RegardController | undefined
 }

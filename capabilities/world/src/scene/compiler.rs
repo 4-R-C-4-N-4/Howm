@@ -139,7 +139,12 @@ pub fn compile_flora(f: &Flora, palette: &AestheticPalette) -> Entity {
 }
 
 /// Compile a creature into one or more Astral Entities (composition).
-pub fn compile_creature(c: &Creature, palette: &AestheticPalette) -> Vec<Entity> {
+/// `base_pos` is the zone-derived initial position.
+pub fn compile_creature(
+    c: &Creature,
+    palette: &AestheticPalette,
+    base_pos: crate::types::Point,
+) -> Vec<Entity> {
     let graph = mapping::map_creature(c, palette);
     let (geo, scale) = geometry::resolve_geometry(&graph);
     let mat = material::resolve_material(&graph, palette.hue);
@@ -156,7 +161,11 @@ pub fn compile_creature(c: &Creature, palette: &AestheticPalette) -> Vec<Entity>
             };
             Entity {
                 id: suffix,
-                transform: Transform::at(offset.x, 1.0 + offset.y, offset.z)
+                transform: Transform::at(
+                    base_pos.x + offset.x,
+                    1.0 + offset.y,
+                    base_pos.y + offset.z,
+                )
                     .with_scale(scale.x, scale.y, scale.z),
                 geometry: geo.clone(),
                 material: mat.clone(),
@@ -352,10 +361,15 @@ pub fn compile_district_scene(
             entities.push(compile_flora(f, palette));
         }
 
-        // Creatures (may produce multiple entities for composed forms)
+        // Creatures — positioned within the block using zone-seeded point_in_polygon
         let block_creatures = creatures::generate_creatures(cell, block);
-        for c in &block_creatures.creatures {
-            entities.extend(compile_creature(c, palette));
+        for (ci, c) in block_creatures.creatures.iter().enumerate() {
+            // Derive initial position within the block
+            let pos_seed = crate::gen::hash::ha(
+                c.creature_seed ^ block.idx as u32 ^ ci as u32 ^ 0x9f3a,
+            );
+            let pos = crate::gen::zones::point_in_polygon_seeded(&block.polygon, pos_seed);
+            entities.extend(compile_creature(c, palette, pos));
         }
     }
 

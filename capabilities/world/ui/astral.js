@@ -1332,13 +1332,209 @@
       return this.baseComplexity + Math.sin(this.phase * 0.5) * 0.05;
     }
   };
+  var MotionController = class {
+    constructor(desc) {
+      __publicField(this, "path", "behavior.motion");
+      __publicField(this, "method");
+      __publicField(this, "interval");
+      __publicField(this, "variance");
+      __publicField(this, "state", "resting");
+      __publicField(this, "timer", 0);
+      __publicField(this, "nextInterval");
+      __publicField(this, "amplitude");
+      // for oscillating
+      // Position tracking
+      __publicField(this, "baseX", 0);
+      __publicField(this, "baseY", 0);
+      __publicField(this, "baseZ", 0);
+      __publicField(this, "offsetX", 0);
+      __publicField(this, "offsetY", 0);
+      __publicField(this, "offsetZ", 0);
+      __publicField(this, "onStateChange");
+      this.method = findTrait(desc, "behavior.motion.method")?.term ?? "anchored";
+      this.interval = traitParamOr(desc, "behavior.motion.method", "interval", 2);
+      this.variance = traitParamOr(desc, "behavior.motion.method", "variance", 0.2);
+      this.amplitude = traitParamOr(desc, "behavior.motion.method", "amplitude", 0.3);
+      this.nextInterval = this.interval;
+    }
+    /** Set the base position (from entity transform). */
+    setBasePosition(x, y, z) {
+      this.baseX = x;
+      this.baseY = y;
+      this.baseZ = z;
+    }
+    tick(dt) {
+      this.timer += dt;
+      switch (this.method) {
+        case "anchored":
+          break;
+        case "oscillating":
+          this.offsetX = Math.sin(this.timer / this.interval * Math.PI * 2) * this.amplitude;
+          this.offsetZ = Math.cos(this.timer / this.interval * Math.PI * 2 + 1.3) * this.amplitude * 0.5;
+          break;
+        case "continuous":
+        case "drifting":
+          this.offsetX = Math.sin(this.timer / this.interval) * 2;
+          this.offsetZ = Math.cos(this.timer / this.interval * 0.7 + 0.5) * 2;
+          break;
+        case "discontinuous":
+          if (this.state === "resting" && this.timer > this.nextInterval) {
+            const oldState = this.state;
+            this.state = "departing";
+            this.onStateChange?.(oldState, "departing");
+          }
+          if (this.state === "departing") {
+            const angle = Math.random() * Math.PI * 2;
+            const dist = 1 + Math.random() * 3;
+            this.offsetX = Math.cos(angle) * dist;
+            this.offsetZ = Math.sin(angle) * dist;
+            this.state = "arriving";
+            this.onStateChange?.("departing", "arriving");
+          }
+          if (this.state === "arriving" && this.timer > this.nextInterval + 0.1) {
+            this.state = "resting";
+            this.onStateChange?.("arriving", "resting");
+            this.timer = 0;
+            this.nextInterval = this.interval + (Math.random() - 0.5) * 2 * this.variance * this.interval;
+          }
+          break;
+      }
+    }
+    fireEvent(event) {
+      if (event === "accelerate") {
+        this.interval *= 0.5;
+      }
+    }
+    getValue(key) {
+      switch (key) {
+        case "x":
+          return this.baseX + this.offsetX;
+        case "y":
+          return this.baseY + this.offsetY;
+        case "z":
+          return this.baseZ + this.offsetZ;
+        default:
+          return 0;
+      }
+    }
+    getState() {
+      return this.state;
+    }
+    getPosition() {
+      return {
+        x: this.baseX + this.offsetX,
+        y: this.baseY + this.offsetY,
+        z: this.baseZ + this.offsetZ
+      };
+    }
+    isAnchored() {
+      return this.method === "anchored";
+    }
+  };
+  var RestController = class {
+    constructor(desc) {
+      __publicField(this, "path", "behavior.rest");
+      __publicField(this, "frequency");
+      // 0–1, how often resting
+      __publicField(this, "posture");
+      __publicField(this, "transition");
+      __publicField(this, "resting", false);
+      __publicField(this, "timer", 0);
+      __publicField(this, "onStateChange");
+      this.frequency = traitParamOr(desc, "behavior.rest.frequency", "value", 0.5);
+      this.posture = findTrait(desc, "behavior.rest.posture")?.term ?? "settled";
+      this.transition = findTrait(desc, "behavior.rest.transition")?.term ?? "gradual";
+    }
+    tick(dt) {
+      this.timer += dt;
+      const cyclePeriod = 10 / Math.max(0.1, this.frequency);
+      const phase = this.timer % cyclePeriod / cyclePeriod;
+      const wasResting = this.resting;
+      this.resting = phase < this.frequency;
+      if (wasResting !== this.resting) {
+        this.onStateChange?.(wasResting ? "resting" : "active", this.resting ? "resting" : "active");
+      }
+    }
+    fireEvent(event) {
+    }
+    getValue(key) {
+      if (key === "resting") return this.resting ? 1 : 0;
+      return 0;
+    }
+    getState() {
+      return this.resting ? "resting" : "active";
+    }
+    isResting() {
+      return this.resting;
+    }
+  };
+  var RegardController = class {
+    constructor(desc) {
+      __publicField(this, "path", "relation.regard");
+      __publicField(this, "disposition");
+      __publicField(this, "radius");
+      __publicField(this, "threshold");
+      __publicField(this, "activated", false);
+      __publicField(this, "timer", 0);
+      __publicField(this, "playerDistance", Infinity);
+      __publicField(this, "onStateChange");
+      this.disposition = findTrait(desc, "relation.regard.disposition")?.term ?? "indifferent";
+      this.radius = traitParamOr(desc, "relation.regard.disposition", "radius", 8);
+      this.threshold = traitParamOr(desc, "relation.regard.disposition", "threshold", 2);
+    }
+    /** Call from the render loop with the camera position. */
+    updatePlayerDistance(dist) {
+      this.playerDistance = dist;
+    }
+    tick(dt) {
+      if (this.disposition === "indifferent") return;
+      const wasActivated = this.activated;
+      if (this.playerDistance < this.radius) {
+        this.timer += dt;
+        if (this.timer > this.threshold && !this.activated) {
+          this.activated = true;
+          this.onStateChange?.("idle", "activated");
+        }
+      } else {
+        if (this.activated) {
+          this.activated = false;
+          this.timer = 0;
+          this.onStateChange?.("activated", "idle");
+        }
+      }
+    }
+    fireEvent(_event) {
+    }
+    getValue(key) {
+      if (key === "activated") return this.activated ? 1 : 0;
+      if (key === "distance") return this.playerDistance;
+      return 0;
+    }
+    getState() {
+      return this.activated ? "activated" : "idle";
+    }
+    isActivated() {
+      return this.activated;
+    }
+  };
   function createControllers(desc) {
     const controllers = [];
+    const motionMethod = findTrait(desc, "behavior.motion.method");
+    if (motionMethod && motionMethod.term !== "anchored") {
+      controllers.push(new MotionController(desc));
+    }
     if (findTrait(desc, "effect.emission.type")) {
       controllers.push(new EmissionController(desc));
     }
     if (findTrait(desc, "behavior.cycle.period")) {
       controllers.push(new CycleController(desc));
+    }
+    if (findTrait(desc, "behavior.rest.frequency")) {
+      controllers.push(new RestController(desc));
+    }
+    const regard = findTrait(desc, "relation.regard.disposition");
+    if (regard && regard.term !== "indifferent") {
+      controllers.push(new RegardController(desc));
     }
     controllers.push(new SurfaceController(desc));
     return controllers;
@@ -1429,6 +1625,12 @@
   }
   function getEmissionController(de) {
     return de.controllers.find((c) => c instanceof EmissionController);
+  }
+  function getMotionController(de) {
+    return de.controllers.find((c) => c instanceof MotionController);
+  }
+  function getRegardController(de) {
+    return de.controllers.find((c) => c instanceof RegardController);
   }
 
   // astral-src/src/renderer/RenderLoop.ts
@@ -1667,9 +1869,21 @@
       updateLightFlicker(scene.lights, scene.time);
       if (this.provider.structurallyDirty()) {
         this.world = new World(scene.entities);
-        this.describedEntities = scene.entities.map((e) => buildDescribedEntity(e));
+        this.describedEntities = scene.entities.map((e) => {
+          const de = buildDescribedEntity(e);
+          const motionCtrl = getMotionController(de);
+          if (motionCtrl) {
+            motionCtrl.setBasePosition(
+              e.transform.position.x,
+              e.transform.position.y,
+              e.transform.position.z
+            );
+          }
+          return de;
+        });
         this.provider.acknowledgeStructuralChange();
       }
+      let worldDirty = false;
       for (const de of this.describedEntities) {
         for (const ctrl of de.controllers) ctrl.tick(dt);
         de.sequenceEngine?.tick(dt);
@@ -1677,6 +1891,25 @@
         if (emCtrl) {
           de.entity.material.emissive = emCtrl.getIntensity();
         }
+        const motionCtrl = getMotionController(de);
+        if (motionCtrl) {
+          const pos = motionCtrl.getPosition();
+          const e = de.entity;
+          if (Math.abs(e.transform.position.x - pos.x) > 0.01 || Math.abs(e.transform.position.z - pos.z) > 0.01) {
+            e.transform.position.x = pos.x;
+            e.transform.position.y = pos.y;
+            e.transform.position.z = pos.z;
+            worldDirty = true;
+          }
+        }
+        const regardCtrl = getRegardController(de);
+        if (regardCtrl) {
+          const dist = length(sub(de.entity.transform.position, this.camera.position));
+          regardCtrl.updatePlayerDistance(dist);
+        }
+      }
+      if (worldDirty) {
+        this.world.updateEntities(scene.entities);
       }
       {
         if (this.useAdaptiveQuality && this.adaptive.scale < 1) {
