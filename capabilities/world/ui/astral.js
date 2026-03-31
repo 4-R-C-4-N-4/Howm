@@ -224,10 +224,16 @@
         for (let x = 0; x < width; x++) {
           const idx = y * width + x;
           const cp = frameBuffer.chars[idx];
-          if (cp === 32) continue;
           const r = frameBuffer.colorR[idx];
           const g = frameBuffer.colorG[idx];
           const b = frameBuffer.colorB[idx];
+          if (cp === 32) {
+            if (r > 0 || g > 0 || b > 0) {
+              ctx.fillStyle = `rgb(${r},${g},${b})`;
+              ctx.fillRect(x * cellWidth, y * cellHeight, cellWidth, cellHeight);
+            }
+            continue;
+          }
           if (r === 0 && g === 0 && b === 0) continue;
           ctx.fillStyle = `rgb(${r},${g},${b})`;
           ctx.fillText(String.fromCodePoint(cp), x * cellWidth, y * cellHeight);

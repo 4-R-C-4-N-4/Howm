@@ -36,7 +36,7 @@ export class Presenter {
     const { ctx, cellWidth, cellHeight } = this
     const { width, height } = frameBuffer
 
-    // Black background pass
+    // Clear to black
     ctx.fillStyle = '#000000'
     ctx.fillRect(0, 0, this.canvas.width, this.canvas.height)
 
@@ -48,11 +48,19 @@ export class Presenter {
       for (let x = 0; x < width; x++) {
         const idx = y * width + x
         const cp = frameBuffer.chars[idx]
-        if (cp === 0x20) continue  // space — background already covers it
-
         const r = frameBuffer.colorR[idx]
         const g = frameBuffer.colorG[idx]
         const b = frameBuffer.colorB[idx]
+
+        if (cp === 0x20) {
+          // Sky/miss pixel — paint the background colour as a filled cell
+          if (r > 0 || g > 0 || b > 0) {
+            ctx.fillStyle = `rgb(${r},${g},${b})`
+            ctx.fillRect(x * cellWidth, y * cellHeight, cellWidth, cellHeight)
+          }
+          continue
+        }
+
         if (r === 0 && g === 0 && b === 0) continue  // black-on-black, invisible
 
         ctx.fillStyle = `rgb(${r},${g},${b})`
