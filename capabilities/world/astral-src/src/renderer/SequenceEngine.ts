@@ -64,7 +64,17 @@ export class SequenceEngine {
   }
 
   private fireEffect(rule: SequenceRule): void {
-    const target = this.controllers.get(rule.effectPath)
+    // Look up by exact match first, then by prefix match
+    let target = this.controllers.get(rule.effectPath)
+    if (!target) {
+      // Try prefix match — e.g. rule says "effect.emission", controller path is "effect.emission"
+      for (const [path, ctrl] of this.controllers) {
+        if (path.startsWith(rule.effectPath) || rule.effectPath.startsWith(path)) {
+          target = ctrl
+          break
+        }
+      }
+    }
     target?.fireEvent(rule.effectAction)
   }
 

@@ -1368,10 +1368,16 @@
       switch (this.method) {
         case "anchored":
           break;
-        case "oscillating":
-          this.offsetX = Math.sin(this.timer / this.interval * Math.PI * 2) * this.amplitude;
-          this.offsetZ = Math.cos(this.timer / this.interval * Math.PI * 2 + 1.3) * this.amplitude * 0.5;
+        case "oscillating": {
+          const prevPhase = (this.timer - dt) / this.interval * Math.PI * 2 % (Math.PI * 2);
+          const curPhase = this.timer / this.interval * Math.PI * 2 % (Math.PI * 2);
+          this.offsetX = Math.sin(curPhase) * this.amplitude;
+          this.offsetZ = Math.cos(curPhase + 1.3) * this.amplitude * 0.5;
+          if (prevPhase < Math.PI / 2 && curPhase >= Math.PI / 2) {
+            this.onStateChange?.("moving", "peak");
+          }
           break;
+        }
         case "continuous":
         case "drifting":
           this.offsetX = Math.sin(this.timer / this.interval) * 2;
@@ -1379,9 +1385,8 @@
           break;
         case "discontinuous":
           if (this.state === "resting" && this.timer > this.nextInterval) {
-            const oldState = this.state;
             this.state = "departing";
-            this.onStateChange?.(oldState, "departing");
+            this.onStateChange?.("resting", "departure");
           }
           if (this.state === "departing") {
             const angle = Math.random() * Math.PI * 2;
@@ -1389,11 +1394,10 @@
             this.offsetX = Math.cos(angle) * dist;
             this.offsetZ = Math.sin(angle) * dist;
             this.state = "arriving";
-            this.onStateChange?.("departing", "arriving");
+            this.onStateChange?.("departing", "arrival");
           }
           if (this.state === "arriving" && this.timer > this.nextInterval + 0.1) {
             this.state = "resting";
-            this.onStateChange?.("arriving", "resting");
             this.timer = 0;
             this.nextInterval = this.interval + (Math.random() - 0.5) * 2 * this.variance * this.interval;
           }
@@ -1452,7 +1456,11 @@
       const wasResting = this.resting;
       this.resting = phase < this.frequency;
       if (wasResting !== this.resting) {
-        this.onStateChange?.(wasResting ? "resting" : "active", this.resting ? "resting" : "active");
+        if (this.resting) {
+          this.onStateChange?.("active", "begin");
+        } else {
+          this.onStateChange?.("resting", "end");
+        }
       }
     }
     fireEvent(event) {
@@ -1499,7 +1507,7 @@
         if (this.activated) {
           this.activated = false;
           this.timer = 0;
-          this.onStateChange?.("activated", "idle");
+          this.onStateChange?.("activated", "deactivated");
         }
       }
     }
@@ -1575,7 +1583,15 @@
       }
     }
     fireEffect(rule) {
-      const target = this.controllers.get(rule.effectPath);
+      let target = this.controllers.get(rule.effectPath);
+      if (!target) {
+        for (const [path, ctrl] of this.controllers) {
+          if (path.startsWith(rule.effectPath) || rule.effectPath.startsWith(path)) {
+            target = ctrl;
+            break;
+          }
+        }
+      }
       target?.fireEvent(rule.effectAction);
     }
     tick(dt) {
@@ -1890,6 +1906,13 @@
         const emCtrl = getEmissionController(de);
         if (emCtrl) {
           de.entity.material.emissive = emCtrl.getIntensity();
+        }
+        const surfCtrl = de.controllers.find((c) => c.path === "being.surface");
+        if (surfCtrl) {
+          const flash = surfCtrl.getValue("flash");
+          if (flash > 0) {
+            de.entity.material.emissive = (de.entity.material.emissive ?? 0) + flash * 0.5;
+          }
         }
         const motionCtrl = getMotionController(de);
         if (motionCtrl) {

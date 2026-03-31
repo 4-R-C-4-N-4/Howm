@@ -354,6 +354,15 @@ export class RenderLoop {
         de.entity.material.emissive = emCtrl.getIntensity()
       }
 
+      // Apply surface flash as emissive boost (from regard→surface sequence)
+      const surfCtrl = de.controllers.find(c => c.path === 'being.surface')
+      if (surfCtrl) {
+        const flash = surfCtrl.getValue('flash')
+        if (flash > 0) {
+          de.entity.material.emissive = (de.entity.material.emissive ?? 0) + flash * 0.5
+        }
+      }
+
       // Apply motion controller position to entity transform
       const motionCtrl = getMotionController(de)
       if (motionCtrl) {
