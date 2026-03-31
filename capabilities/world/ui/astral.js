@@ -1797,6 +1797,34 @@
               targetComplexity: result.material.roughness,
               glyphStyle: result.material.glyphStyle
             };
+            const de = this.describedEntities[result.entityIndex];
+            if (de?.description) {
+              const desc = de.description;
+              const sym = desc.traits.find((t) => t.path === "being.form.symmetry");
+              if (sym) {
+                if (sym.term === "bilateral") {
+                  params.targetSymmetryH = 0.8;
+                } else if (sym.term === "radial") {
+                  params.targetSymmetryH = 0.8;
+                  params.targetSymmetryV = 0.8;
+                } else if (sym.term === "asymmetric") {
+                  params.targetSymmetryH = 0.2;
+                  params.targetSymmetryV = 0.2;
+                }
+              }
+              const comp = desc.traits.find((t) => t.path === "being.form.composition");
+              if (comp) {
+                if (comp.term === "dispersed") {
+                  params.targetComponents = 0.8;
+                } else if (comp.term === "clustered") {
+                  params.targetComponents = 0.5;
+                }
+              }
+              const surfCtrl = de.controllers.find((c) => c.path === "being.surface");
+              if (surfCtrl) {
+                params.targetComplexity = surfCtrl.getValue("complexity");
+              }
+            }
             let glyph = this.glyphCache ? this.glyphCache.select(params) : null;
             if (glyph && result.material.motionBehavior && this.glyphCache) {
               const pixelOffset = Math.sin(result.position.x * 1.7 + result.position.y * 2.3 + result.position.z * 1.1);
@@ -1997,20 +2025,22 @@
       this.glyphs = [];
     }
     /** Load from pre-extracted JSON array.
-     *  Each entry: [codepoint_hex, char, coverage, roundness, complexity, connectedComponents]
+     *  Each entry: [codepoint_hex, char, coverage, roundness, complexity, connectedComponents, symmetryH, symmetryV]
      */
     static fromJSON(data) {
       const db = new _GlyphDB();
       const parsed = [];
       for (const row of data) {
-        const [cp, ch, cov, rnd, cplx, cc] = row;
+        const [cp, ch, cov, rnd, cplx, cc, symH, symV] = row;
         parsed.push({
           codePoint: typeof cp === "string" ? parseInt(cp, 16) : cp,
           char: ch,
           coverage: cov ?? 0,
           roundness: rnd ?? 0,
           complexity: cplx ?? 0,
-          connectedComponents: cc ?? 1
+          connectedComponents: cc ?? 1,
+          symmetryH: symH ?? 0,
+          symmetryV: symV ?? 0
         });
       }
       const coverages = normalize2(parsed.map((g) => g.coverage));
@@ -2027,6 +2057,12 @@
     get count() {
       return this.glyphs.length;
     }
+    /**
+     * Query the best-matching glyph.
+     * Primary axes (coverage, roundness, complexity) drive the main score.
+     * Secondary axes (symmetry, components) are tiebreakers with lower weights.
+     * Per astral-projection.md §7.4.
+     */
     queryBest(params) {
       if (this.glyphs.length === 0) return null;
       const { targetCoverage, targetRoundness, targetComplexity } = params;
@@ -2039,6 +2075,15 @@
         }
         if (targetComplexity !== void 0) {
           score += Math.abs(g.normalizedComplexity - targetComplexity);
+        }
+        if (params.targetSymmetryH !== void 0) {
+          score += 0.5 * Math.abs(g.symmetryH - params.targetSymmetryH);
+        }
+        if (params.targetSymmetryV !== void 0) {
+          score += 0.5 * Math.abs(g.symmetryV - params.targetSymmetryV);
+        }
+        if (params.targetComponents !== void 0) {
+          score += 0.4 * Math.abs(g.normalizedConnectedComponents - params.targetComponents);
         }
         if (score < bestScore) {
           bestScore = score;

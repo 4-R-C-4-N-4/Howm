@@ -210,6 +210,30 @@ export class RenderLoop {
             glyphStyle: result.material.glyphStyle,
           }
 
+          // Enrich query from HDL description if available
+          const de = this.describedEntities[result.entityIndex]
+          if (de?.description) {
+            const desc = de.description
+            // Symmetry from being.form.symmetry
+            const sym = desc.traits.find(t => t.path === 'being.form.symmetry')
+            if (sym) {
+              if (sym.term === 'bilateral') { params.targetSymmetryH = 0.8 }
+              else if (sym.term === 'radial') { params.targetSymmetryH = 0.8; params.targetSymmetryV = 0.8 }
+              else if (sym.term === 'asymmetric') { params.targetSymmetryH = 0.2; params.targetSymmetryV = 0.2 }
+            }
+            // Components from being.form.composition
+            const comp = desc.traits.find(t => t.path === 'being.form.composition')
+            if (comp) {
+              if (comp.term === 'dispersed') { params.targetComponents = 0.8 }
+              else if (comp.term === 'clustered') { params.targetComponents = 0.5 }
+            }
+            // Animated complexity from surface controller
+            const surfCtrl = de.controllers.find(c => c.path === 'being.surface')
+            if (surfCtrl) {
+              params.targetComplexity = surfCtrl.getValue('complexity')
+            }
+          }
+
           let glyph = this.glyphCache ? this.glyphCache.select(params) : null
 
           // Glyph animation
