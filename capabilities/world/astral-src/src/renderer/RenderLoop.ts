@@ -15,6 +15,7 @@ import { dot } from '../core/vec3'
 import { InputState } from '../input/InputState'
 import { CameraController } from '../input/CameraController'
 import { HUD } from '../ui/HUD'
+import { DescribedEntity, buildDescribedEntity, getEmissionController } from './DescribedEntity'
 
 const RAMP = ' .,:;=+*#%@'
 
@@ -42,6 +43,7 @@ export class RenderLoop {
   private world: World
   private temporal: TemporalCache
   private adaptive: AdaptiveQuality
+  private describedEntities: DescribedEntity[] = []
 
   private running = false
   private lastTime = 0
@@ -322,7 +324,21 @@ export class RenderLoop {
     updateLightFlicker(scene.lights, scene.time)
     if (this.provider.structurallyDirty()) {
       this.world = new World(scene.entities)
+      // Build DescribedEntities from scene entities
+      this.describedEntities = scene.entities.map(e => buildDescribedEntity(e))
       this.provider.acknowledgeStructuralChange()
+    }
+
+    // Tick trait controllers for all described entities
+    for (const de of this.describedEntities) {
+      for (const ctrl of de.controllers) ctrl.tick(dt)
+      de.sequenceEngine?.tick(dt)
+
+      // Apply emission controller output back to the entity material
+      const emCtrl = getEmissionController(de)
+      if (emCtrl) {
+        de.entity.material.emissive = emCtrl.getIntensity()
+      }
     }
 
     {

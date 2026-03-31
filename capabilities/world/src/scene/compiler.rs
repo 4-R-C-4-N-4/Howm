@@ -67,6 +67,10 @@ pub struct Entity {
     pub material: Material,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub velocity: Option<Vec3>,
+    /// HDL description graph — optional. When present, the renderer
+    /// creates trait controllers and sequence engine for this entity.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<crate::hdl::traits::DescriptionGraph>,
 }
 
 /// Astral Scene — the complete output that Astral consumes.
@@ -94,6 +98,7 @@ pub fn compile_building(plot: &BuildingPlot, palette: &AestheticPalette) -> Enti
         geometry: geo,
         material: mat,
         velocity: None,
+        description: Some(graph),
     }
 }
 
@@ -111,6 +116,7 @@ pub fn compile_fixture(f: &Fixture, palette: &AestheticPalette) -> Entity {
         geometry: geo,
         material: mat,
         velocity: None,
+        description: Some(graph),
     }
 }
 
@@ -128,6 +134,7 @@ pub fn compile_flora(f: &Flora, palette: &AestheticPalette) -> Entity {
         geometry: geo,
         material: mat,
         velocity: None,
+        description: Some(graph),
     }
 }
 
@@ -154,12 +161,13 @@ pub fn compile_creature(c: &Creature, palette: &AestheticPalette) -> Vec<Entity>
                 geometry: geo.clone(),
                 material: mat.clone(),
                 velocity: None,
+                description: if i == 0 { Some(graph.clone()) } else { None },
             }
         })
         .collect()
 }
 
-/// Compile a conveyance into an Astral Entity.
+/// Compile a conveyanceinto an Astral Entity.
 pub fn compile_conveyance(c: &Conveyance, palette: &AestheticPalette) -> Entity {
     let graph = mapping::map_conveyance(c, palette);
     let (geo, scale) = geometry::resolve_geometry(&graph);
@@ -173,6 +181,7 @@ pub fn compile_conveyance(c: &Conveyance, palette: &AestheticPalette) -> Entity 
         geometry: geo,
         material: mat,
         velocity: None,
+        description: Some(graph),
     }
 }
 
@@ -280,6 +289,7 @@ fn compile_ground(palette: &AestheticPalette, centroid: &crate::types::Point) ->
             emission_color: None,
         },
         velocity: None,
+        description: None,
     }
 }
 

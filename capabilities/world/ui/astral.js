@@ -1162,6 +1162,275 @@
     }
   };
 
+  // astral-src/src/core/description.ts
+  function findTrait(desc, path) {
+    return desc.traits.find((t) => t.path === path);
+  }
+  function traitParam(desc, path, key) {
+    return findTrait(desc, path)?.params[key];
+  }
+  function traitParamOr(desc, path, key, fallback) {
+    return traitParam(desc, path, key) ?? fallback;
+  }
+
+  // astral-src/src/renderer/TraitController.ts
+  var EmissionController = class {
+    constructor(desc) {
+      __publicField(this, "path", "effect.emission");
+      __publicField(this, "type");
+      __publicField(this, "baseIntensity");
+      __publicField(this, "rhythm");
+      __publicField(this, "channel");
+      __publicField(this, "currentIntensity");
+      __publicField(this, "burstIntensity", 0);
+      __publicField(this, "phase", 0);
+      __publicField(this, "onStateChange");
+      this.type = findTrait(desc, "effect.emission.type")?.term ?? "none";
+      this.rhythm = findTrait(desc, "effect.emission.rhythm")?.term ?? "constant";
+      this.channel = findTrait(desc, "effect.emission.channel")?.term ?? "both";
+      const intensityTerm = findTrait(desc, "effect.emission.intensity")?.term ?? "faint";
+      this.baseIntensity = {
+        "overwhelming": 1,
+        "strong": 0.8,
+        "moderate": 0.5,
+        "subtle": 0.3,
+        "faint": 0.15
+      }[intensityTerm] ?? 0.2;
+      this.currentIntensity = this.baseIntensity;
+    }
+    tick(dt) {
+      this.phase += dt;
+      switch (this.rhythm) {
+        case "constant":
+          this.currentIntensity = this.baseIntensity;
+          break;
+        case "periodic":
+          this.currentIntensity = this.baseIntensity * (0.5 + 0.5 * Math.sin(this.phase * 2));
+          break;
+        case "sporadic":
+          this.currentIntensity = this.baseIntensity * Math.max(0, Math.sin(this.phase * 7.3) * Math.sin(this.phase * 3.1));
+          break;
+        case "reactive":
+          this.currentIntensity = this.burstIntensity;
+          break;
+      }
+      if (this.burstIntensity > 0) {
+        this.burstIntensity = Math.max(0, this.burstIntensity - dt * 3);
+      }
+    }
+    fireEvent(event) {
+      if (event === "burst" || event === "intensify") {
+        this.burstIntensity = 1;
+      }
+      if (event === "diminish") {
+        this.currentIntensity *= 0.3;
+      }
+    }
+    getValue(key) {
+      switch (key) {
+        case "intensity":
+          return this.currentIntensity + this.burstIntensity;
+        default:
+          return 0;
+      }
+    }
+    getState() {
+      return this.currentIntensity > 0.01 ? "active" : "idle";
+    }
+    getIntensity() {
+      return this.currentIntensity + this.burstIntensity;
+    }
+    getChannel() {
+      return this.channel;
+    }
+    getType() {
+      return this.type;
+    }
+  };
+  var CycleController = class {
+    constructor(desc) {
+      __publicField(this, "path", "behavior.cycle");
+      __publicField(this, "period");
+      // diurnal, nocturnal, crepuscular, continuous
+      __publicField(this, "response");
+      // withdraw, emerge, intensify, transform
+      __publicField(this, "active", true);
+      __publicField(this, "onStateChange");
+      this.period = findTrait(desc, "behavior.cycle.period")?.term ?? "continuous";
+      this.response = findTrait(desc, "behavior.cycle.response")?.term ?? "none";
+    }
+    tick(dt) {
+      const now = Date.now();
+      const timeOfDay = now % 864e5 / 864e5;
+      const wasActive = this.active;
+      switch (this.period) {
+        case "diurnal":
+          this.active = timeOfDay > 0.25 && timeOfDay < 0.75;
+          break;
+        case "nocturnal":
+          this.active = timeOfDay < 0.25 || timeOfDay > 0.75;
+          break;
+        case "crepuscular":
+          this.active = timeOfDay > 0.22 && timeOfDay < 0.3 || timeOfDay > 0.72 && timeOfDay < 0.8;
+          break;
+        case "continuous":
+        default:
+          this.active = true;
+          break;
+      }
+      if (wasActive !== this.active) {
+        this.onStateChange?.(wasActive ? "active" : "idle", this.active ? "active" : "idle");
+      }
+    }
+    fireEvent(_event) {
+    }
+    getValue(key) {
+      if (key === "visibility") return this.active ? 1 : 0;
+      return 0;
+    }
+    getState() {
+      return this.active ? "active" : "idle";
+    }
+    isActive() {
+      return this.active;
+    }
+  };
+  var SurfaceController = class {
+    constructor(desc) {
+      __publicField(this, "path", "being.surface");
+      __publicField(this, "baseComplexity");
+      __publicField(this, "flashIntensity", 0);
+      __publicField(this, "phase", 0);
+      __publicField(this, "onStateChange");
+      this.baseComplexity = traitParamOr(desc, "being.surface.texture", "complexity", 0.5);
+    }
+    tick(dt) {
+      this.phase += dt;
+      if (this.flashIntensity > 0) {
+        this.flashIntensity = Math.max(0, this.flashIntensity - dt * 4);
+      }
+    }
+    fireEvent(event) {
+      if (event === "flash") {
+        this.flashIntensity = 1;
+      }
+    }
+    getValue(key) {
+      switch (key) {
+        case "complexity":
+          return this.baseComplexity + Math.sin(this.phase * 0.5) * 0.05;
+        case "flash":
+          return this.flashIntensity;
+        default:
+          return 0;
+      }
+    }
+    getState() {
+      return this.flashIntensity > 0 ? "flash" : "normal";
+    }
+    getComplexity() {
+      return this.baseComplexity + Math.sin(this.phase * 0.5) * 0.05;
+    }
+  };
+  function createControllers(desc) {
+    const controllers = [];
+    if (findTrait(desc, "effect.emission.type")) {
+      controllers.push(new EmissionController(desc));
+    }
+    if (findTrait(desc, "behavior.cycle.period")) {
+      controllers.push(new CycleController(desc));
+    }
+    controllers.push(new SurfaceController(desc));
+    return controllers;
+  }
+
+  // astral-src/src/renderer/SequenceEngine.ts
+  var SequenceEngine = class {
+    constructor(sequences, controllers) {
+      __publicField(this, "rules");
+      __publicField(this, "controllers");
+      __publicField(this, "pending", []);
+      this.controllers = new Map(controllers.map((c) => [c.path, c]));
+      this.rules = sequences.map((s) => ({
+        triggerPath: s.trigger.path,
+        triggerEvent: s.trigger.event,
+        effectPath: s.effect.path,
+        effectAction: s.effect.action,
+        delay: s.timing.delay,
+        duration: s.timing.duration
+      }));
+      for (const ctrl of controllers) {
+        const originalOnChange = ctrl.onStateChange;
+        ctrl.onStateChange = (from, to) => {
+          originalOnChange?.(from, to);
+          this.handleEvent(ctrl.path, to);
+        };
+      }
+    }
+    handleEvent(sourcePath, event) {
+      for (const rule of this.rules) {
+        if (sourcePath.startsWith(rule.triggerPath) && event === rule.triggerEvent) {
+          if (rule.delay > 0) {
+            this.pending.push({ rule, countdown: rule.delay, remaining: rule.duration });
+          } else {
+            this.fireEffect(rule);
+          }
+        }
+      }
+    }
+    fireEffect(rule) {
+      const target = this.controllers.get(rule.effectPath);
+      target?.fireEvent(rule.effectAction);
+    }
+    tick(dt) {
+      for (let i = this.pending.length - 1; i >= 0; i--) {
+        const pe = this.pending[i];
+        pe.countdown -= dt;
+        if (pe.countdown <= 0) {
+          this.fireEffect(pe.rule);
+          if (pe.remaining !== null) {
+            pe.remaining -= dt;
+            if (pe.remaining <= 0) this.pending.splice(i, 1);
+          } else {
+            this.pending.splice(i, 1);
+          }
+        }
+      }
+    }
+    /** Inject an external event (e.g. from player interaction). */
+    injectEvent(event) {
+      const lastDot = event.lastIndexOf(".");
+      if (lastDot === -1) return;
+      const path = event.substring(0, lastDot);
+      const eventName = event.substring(lastDot + 1);
+      this.handleEvent(path, eventName);
+    }
+  };
+
+  // astral-src/src/renderer/DescribedEntity.ts
+  function buildDescribedEntity(entity) {
+    const desc = entity.description;
+    if (!desc || !desc.traits || desc.traits.length === 0) {
+      return {
+        entity,
+        description: null,
+        controllers: [],
+        sequenceEngine: null
+      };
+    }
+    const controllers = createControllers(desc);
+    const sequenceEngine = desc.sequences && desc.sequences.length > 0 ? new SequenceEngine(desc.sequences, controllers) : null;
+    return {
+      entity,
+      description: desc,
+      controllers,
+      sequenceEngine
+    };
+  }
+  function getEmissionController(de) {
+    return de.controllers.find((c) => c instanceof EmissionController);
+  }
+
   // astral-src/src/renderer/RenderLoop.ts
   var RAMP = " .,:;=+*#%@";
   function clamp3(v, lo, hi) {
@@ -1178,6 +1447,7 @@
       __publicField(this, "world");
       __publicField(this, "temporal");
       __publicField(this, "adaptive");
+      __publicField(this, "describedEntities", []);
       __publicField(this, "running", false);
       __publicField(this, "lastTime", 0);
       __publicField(this, "lastFrameTime", 0);
@@ -1397,7 +1667,16 @@
       updateLightFlicker(scene.lights, scene.time);
       if (this.provider.structurallyDirty()) {
         this.world = new World(scene.entities);
+        this.describedEntities = scene.entities.map((e) => buildDescribedEntity(e));
         this.provider.acknowledgeStructuralChange();
+      }
+      for (const de of this.describedEntities) {
+        for (const ctrl of de.controllers) ctrl.tick(dt);
+        de.sequenceEngine?.tick(dt);
+        const emCtrl = getEmissionController(de);
+        if (emCtrl) {
+          de.entity.material.emissive = emCtrl.getIntensity();
+        }
       }
       {
         if (this.useAdaptiveQuality && this.adaptive.scale < 1) {
