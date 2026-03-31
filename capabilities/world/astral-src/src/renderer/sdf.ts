@@ -54,7 +54,7 @@ export function evaluateSDF(p: Vec3, geometry: Geometry): number {
 export function applyDisplacement(p: Vec3, baseDist: number, disp: DisplacementParams): number {
   if (disp.octaves <= 0 || disp.amplitude <= 0) return baseDist
   // Early out — only compute noise near the surface
-  if (baseDist > disp.amplitude * 3) return baseDist
+  if (baseDist > disp.amplitude * 2) return baseDist
 
   let noiseVal = 0
   let freq = disp.frequency

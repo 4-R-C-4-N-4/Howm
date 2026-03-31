@@ -347,7 +347,7 @@
   }
   function applyDisplacement(p, baseDist, disp) {
     if (disp.octaves <= 0 || disp.amplitude <= 0) return baseDist;
-    if (baseDist > disp.amplitude * 3) return baseDist;
+    if (baseDist > disp.amplitude * 2) return baseDist;
     let noiseVal = 0;
     let freq = disp.frequency;
     let amp = disp.amplitude;
@@ -760,7 +760,7 @@
   }
   var INFINITE_TYPES = /* @__PURE__ */ new Set(["plane", "sdf"]);
   var SpatialGrid = class {
-    constructor(entities, cellSize = 2) {
+    constructor(entities, cellSize = 10) {
       __publicField(this, "cellSize");
       __publicField(this, "cells");
       /** Entities that are infinite (planes, custom SDFs) — always evaluated */
@@ -914,9 +914,9 @@
   }
 
   // astral-src/src/renderer/Raymarch.ts
-  var DEFAULT_MAX_STEPS = 64;
+  var DEFAULT_MAX_STEPS = 128;
   var HIT_THRESHOLD = 0.01;
-  var MAX_DISTANCE = 100;
+  var MAX_DISTANCE = 200;
   var NORMAL_EPSILON = 1e-3;
   function computeNormal(pos, world) {
     const eps = NORMAL_EPSILON;

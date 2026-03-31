@@ -48,7 +48,7 @@ export class SpatialGrid {
   private globalIndices: number[]
   private entities: Entity[]
 
-  constructor(entities: Entity[], cellSize = 2.0) {
+  constructor(entities: Entity[], cellSize = 10.0) {
     this.cellSize = cellSize
     this.cells = new Map()
     this.globalIndices = []
