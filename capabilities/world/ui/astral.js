@@ -1167,7 +1167,8 @@
     return desc.traits.find((t) => t.path === path);
   }
   function traitParam(desc, path, key) {
-    return findTrait(desc, path)?.params[key];
+    const t = findTrait(desc, path);
+    return t?.params ? t.params[key] : void 0;
   }
   function traitParamOr(desc, path, key, fallback) {
     return traitParam(desc, path, key) ?? fallback;

@@ -50,7 +50,8 @@ export function traitTerm(desc: DescriptionGraph, path: string): string | undefi
 }
 
 export function traitParam(desc: DescriptionGraph, path: string, key: string): number | undefined {
-  return findTrait(desc, path)?.params[key]
+  const t = findTrait(desc, path)
+  return t?.params ? t.params[key] : undefined
 }
 
 export function traitParamOr(desc: DescriptionGraph, path: string, key: string, fallback: number): number {
