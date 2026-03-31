@@ -1252,8 +1252,8 @@
                     glyphStyle: material.glyphStyle
                   };
                   const glyph = this.glyphCache ? this.glyphCache.select(params) : null;
-                  const char = glyph ? glyph.char : RAMP[Math.floor(lit.brightness * (RAMP.length - 1))];
-                  frameBuffer.set(x, y, char.codePointAt(0), lit.r, lit.g, lit.b, lit.brightness);
+                  const char = glyph ? glyph.char : RAMP[clamp3(Math.floor((lit.brightness || 0) * (RAMP.length - 1)), 0, RAMP.length - 1)] || " ";
+                  frameBuffer.set(x, y, char.codePointAt(0) ?? 32, lit.r || 0, lit.g || 0, lit.b || 0, lit.brightness || 0);
                 }
                 continue;
               }
@@ -1275,8 +1275,8 @@
               const pixelOffset = Math.sin(result.position.x * 1.7 + result.position.y * 2.3 + result.position.z * 1.1);
               glyph = animateGlyph(glyph, result.material, scene.time + pixelOffset * 0.5, params, this.glyphCache);
             }
-            const char = glyph ? glyph.char : RAMP[clamp3(Math.floor(lit.brightness * (RAMP.length - 1)), 0, RAMP.length - 1)];
-            frameBuffer.set(x, y, char.codePointAt(0), lit.r, lit.g, lit.b, lit.brightness);
+            const char = glyph ? glyph.char : RAMP[clamp3(Math.floor((lit.brightness || 0) * (RAMP.length - 1)), 0, RAMP.length - 1)] || " ";
+            frameBuffer.set(x, y, char.codePointAt(0) ?? 32, lit.r || 0, lit.g || 0, lit.b || 0, lit.brightness || 0);
             temporal.store(x, y, result.distance, result.entityIndex, result.position, result.normal);
           } else {
             frameBuffer.set(x, y, 32, bg.r, bg.g, bg.b, 0);

@@ -183,8 +183,8 @@ export class RenderLoop {
                 const glyph = this.glyphCache
                   ? this.glyphCache.select(params)
                   : null
-                const char = glyph ? glyph.char : RAMP[Math.floor(lit.brightness * (RAMP.length - 1))]
-                frameBuffer.set(x, y, char.codePointAt(0)!, lit.r, lit.g, lit.b, lit.brightness)
+                const char = glyph ? glyph.char : RAMP[clamp(Math.floor((lit.brightness || 0) * (RAMP.length - 1)), 0, RAMP.length - 1)] || ' '
+                frameBuffer.set(x, y, char.codePointAt(0) ?? 0x20, lit.r || 0, lit.g || 0, lit.b || 0, lit.brightness || 0)
               }
               // else: fully static — leave framebuffer as-is
               continue
@@ -217,9 +217,9 @@ export class RenderLoop {
 
           const char = glyph
             ? glyph.char
-            : RAMP[clamp(Math.floor(lit.brightness * (RAMP.length - 1)), 0, RAMP.length - 1)]
+            : RAMP[clamp(Math.floor((lit.brightness || 0) * (RAMP.length - 1)), 0, RAMP.length - 1)] || ' '
 
-          frameBuffer.set(x, y, char.codePointAt(0)!, lit.r, lit.g, lit.b, lit.brightness)
+          frameBuffer.set(x, y, char.codePointAt(0) ?? 0x20, lit.r || 0, lit.g || 0, lit.b || 0, lit.brightness || 0)
 
           // Store in temporal cache
           temporal.store(x, y, result.distance, result.entityIndex, result.position, result.normal)
