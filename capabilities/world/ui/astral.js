@@ -1871,6 +1871,28 @@
       temporal.updateCamera(this.camera.position, this.camera.rotation);
     }
     /**
+     * Reset background colours to their base atmosphere values.
+     * Must be called before emission bleed to prevent accumulation.
+     */
+    resetBgToAtmosphere(fb, scene) {
+      const bg = scene.environment.backgroundColor;
+      const { width, height } = fb;
+      for (let i = 0; i < width * height; i++) {
+        const eIdx = fb.entityIndex[i];
+        if (eIdx === -1) {
+          fb.bgR[i] = bg.r;
+          fb.bgG[i] = bg.g;
+          fb.bgB[i] = bg.b;
+        } else {
+          const depthRatio = Math.min(fb.depth[i] / 100, 1);
+          const atmos = depthRatio * depthRatio;
+          fb.bgR[i] = Math.floor(bg.r * atmos);
+          fb.bgG[i] = Math.floor(bg.g * atmos);
+          fb.bgB[i] = Math.floor(bg.b * atmos);
+        }
+      }
+    }
+    /**
      * Emission bleed: emissive entities spill colour into the background
      * of nearby cells. Per astral-projection.md §6.3.2.
      */
@@ -1986,6 +2008,7 @@
         } else {
           this.renderFrameSingleThread(this.frameBuffer);
         }
+        this.resetBgToAtmosphere(this.frameBuffer, this.provider.getScene());
         this.applyEmissionBleed(this.frameBuffer, this.provider.getScene());
         this.presenter.present(this.frameBuffer);
         this.frameBuffer.clearDirtyFlags();
