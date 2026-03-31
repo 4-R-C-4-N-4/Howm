@@ -48,19 +48,22 @@ export class Presenter {
       for (let x = 0; x < width; x++) {
         const idx = y * width + x
         const cp = frameBuffer.chars[idx]
+
+        // Background colour — paint if non-black
+        const bgr = frameBuffer.bgR[idx]
+        const bgg = frameBuffer.bgG[idx]
+        const bgb = frameBuffer.bgB[idx]
+        if (bgr > 0 || bgg > 0 || bgb > 0) {
+          ctx.fillStyle = `rgb(${bgr},${bgg},${bgb})`
+          ctx.fillRect(x * cellWidth, y * cellHeight, cellWidth, cellHeight)
+        }
+
+        // Foreground glyph
+        if (cp === 0x20) continue  // space — background already painted
+
         const r = frameBuffer.colorR[idx]
         const g = frameBuffer.colorG[idx]
         const b = frameBuffer.colorB[idx]
-
-        if (cp === 0x20) {
-          // Sky/miss pixel — paint the background colour as a filled cell
-          if (r > 0 || g > 0 || b > 0) {
-            ctx.fillStyle = `rgb(${r},${g},${b})`
-            ctx.fillRect(x * cellWidth, y * cellHeight, cellWidth, cellHeight)
-          }
-          continue
-        }
-
         if (r === 0 && g === 0 && b === 0) continue  // black-on-black, invisible
 
         ctx.fillStyle = `rgb(${r},${g},${b})`

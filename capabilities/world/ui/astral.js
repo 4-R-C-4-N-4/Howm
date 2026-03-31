@@ -111,10 +111,19 @@
       __publicField(this, "width");
       __publicField(this, "height");
       __publicField(this, "chars");
+      // Foreground colour (glyph colour)
       __publicField(this, "colorR");
       __publicField(this, "colorG");
       __publicField(this, "colorB");
+      // Background colour (behind/around glyph)
+      __publicField(this, "bgR");
+      __publicField(this, "bgG");
+      __publicField(this, "bgB");
       __publicField(this, "brightness");
+      __publicField(this, "depth");
+      // hit distance (for atmosphere computation)
+      __publicField(this, "entityIndex");
+      // which entity (-1 = miss)
       __publicField(this, "dirty");
       this.width = width;
       this.height = height;
@@ -123,7 +132,12 @@
       this.colorR = new Uint8Array(size);
       this.colorG = new Uint8Array(size);
       this.colorB = new Uint8Array(size);
+      this.bgR = new Uint8Array(size);
+      this.bgG = new Uint8Array(size);
+      this.bgB = new Uint8Array(size);
       this.brightness = new Float32Array(size);
+      this.depth = new Float32Array(size);
+      this.entityIndex = new Int16Array(size);
       this.dirty = new Uint8Array(size);
       this.clear();
     }
@@ -132,7 +146,12 @@
       this.colorR.fill(0);
       this.colorG.fill(0);
       this.colorB.fill(0);
+      this.bgR.fill(0);
+      this.bgG.fill(0);
+      this.bgB.fill(0);
       this.brightness.fill(0);
+      this.depth.fill(0);
+      this.entityIndex.fill(-1);
       this.dirty.fill(1);
     }
     set(x, y, char, r, g, b, brightness) {
@@ -160,6 +179,20 @@
       }
       if (changed) this.dirty[idx] = 1;
     }
+    /** Set background colour for a cell (atmosphere, emission bleed). */
+    setBg(x, y, r, g, b) {
+      const idx = y * this.width + x;
+      this.bgR[idx] = r;
+      this.bgG[idx] = g;
+      this.bgB[idx] = b;
+      this.dirty[idx] = 1;
+    }
+    /** Set depth and entity index for a cell (used by post-processing). */
+    setMeta(x, y, dist, entIdx) {
+      const idx = y * this.width + x;
+      this.depth[idx] = dist;
+      this.entityIndex[idx] = entIdx;
+    }
     get(x, y) {
       const idx = y * this.width + x;
       return {
@@ -184,7 +217,12 @@
       this.colorR = new Uint8Array(size);
       this.colorG = new Uint8Array(size);
       this.colorB = new Uint8Array(size);
+      this.bgR = new Uint8Array(size);
+      this.bgG = new Uint8Array(size);
+      this.bgB = new Uint8Array(size);
       this.brightness = new Float32Array(size);
+      this.depth = new Float32Array(size);
+      this.entityIndex = new Int16Array(size);
       this.dirty = new Uint8Array(size);
       this.clear();
     }
@@ -224,16 +262,17 @@
         for (let x = 0; x < width; x++) {
           const idx = y * width + x;
           const cp = frameBuffer.chars[idx];
+          const bgr = frameBuffer.bgR[idx];
+          const bgg = frameBuffer.bgG[idx];
+          const bgb = frameBuffer.bgB[idx];
+          if (bgr > 0 || bgg > 0 || bgb > 0) {
+            ctx.fillStyle = `rgb(${bgr},${bgg},${bgb})`;
+            ctx.fillRect(x * cellWidth, y * cellHeight, cellWidth, cellHeight);
+          }
+          if (cp === 32) continue;
           const r = frameBuffer.colorR[idx];
           const g = frameBuffer.colorG[idx];
           const b = frameBuffer.colorB[idx];
-          if (cp === 32) {
-            if (r > 0 || g > 0 || b > 0) {
-              ctx.fillStyle = `rgb(${r},${g},${b})`;
-              ctx.fillRect(x * cellWidth, y * cellHeight, cellWidth, cellHeight);
-            }
-            continue;
-          }
           if (r === 0 && g === 0 && b === 0) continue;
           ctx.fillStyle = `rgb(${r},${g},${b})`;
           ctx.fillText(String.fromCodePoint(cp), x * cellWidth, y * cellHeight);
@@ -1277,14 +1316,74 @@
             }
             const char = glyph ? glyph.char : RAMP[clamp3(Math.floor((lit.brightness || 0) * (RAMP.length - 1)), 0, RAMP.length - 1)] || " ";
             frameBuffer.set(x, y, char.codePointAt(0) ?? 32, lit.r || 0, lit.g || 0, lit.b || 0, lit.brightness || 0);
+            const depthRatio = clamp3(result.distance / 100, 0, 1);
+            const atmos = depthRatio * depthRatio;
+            const abgR = Math.floor(bg.r * atmos);
+            const abgG = Math.floor(bg.g * atmos);
+            const abgB = Math.floor(bg.b * atmos);
+            const trans = result.material.transparency;
+            if (trans && trans > 0) {
+              const fgWeight = 1 - trans;
+              frameBuffer.set(
+                x,
+                y,
+                char.codePointAt(0) ?? 32,
+                Math.floor((lit.r || 0) * fgWeight + abgR * trans),
+                Math.floor((lit.g || 0) * fgWeight + abgG * trans),
+                Math.floor((lit.b || 0) * fgWeight + abgB * trans),
+                (lit.brightness || 0) * fgWeight
+              );
+            }
+            frameBuffer.setBg(x, y, abgR, abgG, abgB);
+            frameBuffer.setMeta(x, y, result.distance, result.entityIndex);
             temporal.store(x, y, result.distance, result.entityIndex, result.position, result.normal);
           } else {
-            frameBuffer.set(x, y, 32, bg.r, bg.g, bg.b, 0);
+            frameBuffer.set(x, y, 32, 0, 0, 0, 0);
+            frameBuffer.setBg(x, y, bg.r, bg.g, bg.b);
+            frameBuffer.setMeta(x, y, 999, -1);
             temporal.storeMiss(x, y);
           }
         }
       }
       temporal.updateCamera(this.camera.position, this.camera.rotation);
+    }
+    /**
+     * Emission bleed: emissive entities spill colour into the background
+     * of nearby cells. Per astral-projection.md §6.3.2.
+     */
+    applyEmissionBleed(fb, scene) {
+      const { width, height } = fb;
+      const entities = scene.entities;
+      for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+          const idx = y * width + x;
+          const eIdx = fb.entityIndex[idx];
+          if (eIdx < 0 || eIdx >= entities.length) continue;
+          const mat = entities[eIdx].material;
+          if (!mat.emissive || mat.emissive < 0.05) continue;
+          const emR = mat.emissionColor?.r ?? mat.baseColor.r;
+          const emG = mat.emissionColor?.g ?? mat.baseColor.g;
+          const emB = mat.emissionColor?.b ?? mat.baseColor.b;
+          const intensity = mat.emissive;
+          const radius = Math.ceil(intensity * 3);
+          for (let dy = -radius; dy <= radius; dy++) {
+            for (let dx = -radius; dx <= radius; dx++) {
+              if (dx === 0 && dy === 0) continue;
+              const nx = x + dx;
+              const ny = y + dy;
+              if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
+              const dist = Math.sqrt(dx * dx + dy * dy);
+              if (dist > radius) continue;
+              const falloff = 1 - dist / radius;
+              const blend = falloff * falloff * intensity * 0.25;
+              const ni = ny * width + nx;
+              fb.bgR[ni] = Math.min(255, fb.bgR[ni] + Math.floor(emR * blend));
+              fb.bgG[ni] = Math.min(255, fb.bgG[ni] + Math.floor(emG * blend));
+              fb.bgB[ni] = Math.min(255, fb.bgB[ni] + Math.floor(emB * blend));
+            }
+          }
+        }
+      }
     }
     tick() {
       if (!this.running) return;
@@ -1312,6 +1411,7 @@
         } else {
           this.renderFrameSingleThread(this.frameBuffer);
         }
+        this.applyEmissionBleed(this.frameBuffer, this.provider.getScene());
         this.presenter.present(this.frameBuffer);
         this.frameBuffer.clearDirtyFlags();
         const frameEnd = performance.now();

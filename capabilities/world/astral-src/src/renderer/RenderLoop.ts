@@ -219,18 +219,90 @@ export class RenderLoop {
             ? glyph.char
             : RAMP[clamp(Math.floor((lit.brightness || 0) * (RAMP.length - 1)), 0, RAMP.length - 1)] || ' '
 
+          // Foreground
           frameBuffer.set(x, y, char.codePointAt(0) ?? 0x20, lit.r || 0, lit.g || 0, lit.b || 0, lit.brightness || 0)
+
+          // Background: atmosphere depth blend toward sky colour
+          const depthRatio = clamp(result.distance / 100.0, 0, 1)
+          const atmos = depthRatio * depthRatio  // quadratic falloff
+          const abgR = Math.floor(bg.r * atmos)
+          const abgG = Math.floor(bg.g * atmos)
+          const abgB = Math.floor(bg.b * atmos)
+
+          // Translucency: if entity is transparent, blend bg through
+          const trans = result.material.transparency
+          if (trans && trans > 0) {
+            const fgWeight = 1.0 - trans
+            frameBuffer.set(x, y, char.codePointAt(0) ?? 0x20,
+              Math.floor((lit.r || 0) * fgWeight + abgR * trans),
+              Math.floor((lit.g || 0) * fgWeight + abgG * trans),
+              Math.floor((lit.b || 0) * fgWeight + abgB * trans),
+              (lit.brightness || 0) * fgWeight)
+          }
+
+          frameBuffer.setBg(x, y, abgR, abgG, abgB)
+          frameBuffer.setMeta(x, y, result.distance, result.entityIndex)
 
           // Store in temporal cache
           temporal.store(x, y, result.distance, result.entityIndex, result.position, result.normal)
         } else {
-          frameBuffer.set(x, y, 0x20, bg.r, bg.g, bg.b, 0)
+          // Sky — full background colour, no foreground
+          frameBuffer.set(x, y, 0x20, 0, 0, 0, 0)
+          frameBuffer.setBg(x, y, bg.r, bg.g, bg.b)
+          frameBuffer.setMeta(x, y, 999, -1)
           temporal.storeMiss(x, y)
         }
       }
     }
 
     temporal.updateCamera(this.camera.position, this.camera.rotation)
+  }
+
+  /**
+   * Emission bleed: emissive entities spill colour into the background
+   * of nearby cells. Per astral-projection.md §6.3.2.
+   */
+  private applyEmissionBleed(fb: FrameBuffer, scene: Scene): void {
+    const { width, height } = fb
+    const entities = scene.entities
+
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const idx = y * width + x
+        const eIdx = fb.entityIndex[idx]
+        if (eIdx < 0 || eIdx >= entities.length) continue
+
+        const mat = entities[eIdx].material
+        if (!mat.emissive || mat.emissive < 0.05) continue
+
+        // This cell has an emissive entity — bleed into surrounding bg cells
+        const emR = mat.emissionColor?.r ?? mat.baseColor.r
+        const emG = mat.emissionColor?.g ?? mat.baseColor.g
+        const emB = mat.emissionColor?.b ?? mat.baseColor.b
+        const intensity = mat.emissive
+        const radius = Math.ceil(intensity * 3)  // bleed radius in cells
+
+        for (let dy = -radius; dy <= radius; dy++) {
+          for (let dx = -radius; dx <= radius; dx++) {
+            if (dx === 0 && dy === 0) continue
+            const nx = x + dx
+            const ny = y + dy
+            if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue
+
+            const dist = Math.sqrt(dx * dx + dy * dy)
+            if (dist > radius) continue
+
+            const falloff = 1.0 - (dist / radius)
+            const blend = falloff * falloff * intensity * 0.25  // quadratic, subtle
+
+            const ni = ny * width + nx
+            fb.bgR[ni] = Math.min(255, fb.bgR[ni] + Math.floor(emR * blend))
+            fb.bgG[ni] = Math.min(255, fb.bgG[ni] + Math.floor(emG * blend))
+            fb.bgB[ni] = Math.min(255, fb.bgB[ni] + Math.floor(emB * blend))
+          }
+        }
+      }
+    }
   }
 
   private tick(): void {
@@ -266,6 +338,9 @@ export class RenderLoop {
       } else {
         this.renderFrameSingleThread(this.frameBuffer)
       }
+
+      // Emission bleed post-process — emissive entities spill colour into nearby bg cells
+      this.applyEmissionBleed(this.frameBuffer, this.provider.getScene())
 
       this.presenter.present(this.frameBuffer)
       this.frameBuffer.clearDirtyFlags()
