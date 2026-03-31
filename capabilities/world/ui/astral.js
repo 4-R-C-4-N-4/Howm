@@ -1744,6 +1744,10 @@
     hasAnyMoving() {
       return this.provider.getScene().entities.some((e) => e.velocity || e.angularVelocity);
     }
+    /** True if any entity has active trait controllers that modify visuals per-frame. */
+    hasAnyAnimatedEntities() {
+      return this.describedEntities.some((de) => de.controllers.length > 0);
+    }
     renderFrameSingleThread(frameBuffer) {
       const { width, height } = frameBuffer;
       const scene = this.provider.getScene();
@@ -1753,6 +1757,7 @@
       const cameraChanged = temporal.cameraChanged(this.camera.position, this.camera.rotation);
       const anyMoving = this.hasAnyMoving();
       const anyFlicker = this.hasAnyFlicker();
+      const anyAnimated = this.hasAnyAnimatedEntities();
       const frameStart = performance.now();
       for (let y = 0; y < height; y++) {
         for (let x = 0; x < width; x++) {
@@ -1760,7 +1765,7 @@
             if (performance.now() - frameStart > FRAME_DEADLINE_MS) break;
           }
           const idx = y * width + x;
-          if (this.useTemporalReuse && !cameraChanged && temporal.isValid(x, y)) {
+          if (this.useTemporalReuse && !cameraChanged && !anyAnimated && temporal.isValid(x, y)) {
             const eIdx = temporal.getEntityIndex(x, y);
             if (eIdx === -1) {
               if (!anyMoving) continue;
@@ -1768,7 +1773,7 @@
               const entity = scene.entities[eIdx];
               const entityMoving = !!(entity?.velocity || entity?.angularVelocity);
               if (!entityMoving) {
-                if (anyFlicker) {
+                if (anyFlicker || anyAnimated) {
                   const hitPos = temporal.getHitPos(x, y);
                   const normal = temporal.getNormal(x, y);
                   const material = scene.entities[eIdx].material;
@@ -1935,7 +1940,12 @@
         de.sequenceEngine?.tick(dt);
         const emCtrl = getEmissionController(de);
         if (emCtrl) {
-          de.entity.material.emissive = emCtrl.getIntensity();
+          const channel = emCtrl.getChannel();
+          if (channel === "foreground" || channel === "both") {
+            de.entity.material.emissive = emCtrl.getIntensity();
+          } else {
+            de.entity.material.emissive = emCtrl.getIntensity() * 0.1;
+          }
         }
         const surfCtrl = de.controllers.find((c) => c.path === "being.surface");
         if (surfCtrl) {
@@ -2276,10 +2286,6 @@
         case "ArrowRight":
           this.inputState.right = pressed;
           break;
-        case "ShiftLeft":
-        case "ShiftRight":
-          this.inputState.sprint = pressed;
-          break;
       }
     }
     destroy() {
@@ -2346,7 +2352,7 @@
   }
   var CameraController = class {
     constructor() {
-      __publicField(this, "moveSpeed", 7);
+      __publicField(this, "moveSpeed", 5);
       __publicField(this, "sprintMultiplier", 2.5);
       __publicField(this, "lookSensitivity", 2e-3);
       __publicField(this, "pitchLimit", Math.PI / 2 - 0.01);

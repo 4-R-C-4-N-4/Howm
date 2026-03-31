@@ -166,7 +166,7 @@ export class RenderLoop {
         const idx = y * width + x
 
         // --- Temporal reuse decision ---
-        if (this.useTemporalReuse && !cameraChanged && temporal.isValid(x, y)) {
+        if (this.useTemporalReuse && !cameraChanged && !anyAnimated && temporal.isValid(x, y)) {
           const eIdx = temporal.getEntityIndex(x, y)
 
           if (eIdx === -1) {
@@ -383,9 +383,17 @@ export class RenderLoop {
       de.sequenceEngine?.tick(dt)
 
       // Apply emission controller output back to the entity material
+      // Only foreground/both channel emission affects the material directly.
+      // Background-only emission drives emission bleed post-process only.
       const emCtrl = getEmissionController(de)
       if (emCtrl) {
-        de.entity.material.emissive = emCtrl.getIntensity()
+        const channel = emCtrl.getChannel()
+        if (channel === 'foreground' || channel === 'both') {
+          de.entity.material.emissive = emCtrl.getIntensity()
+        } else {
+          // Background-only: keep emissive for bleed but don't let it dominate foreground
+          de.entity.material.emissive = emCtrl.getIntensity() * 0.1
+        }
       }
 
       // Apply surface flash as emissive boost (from regard→surface sequence)
