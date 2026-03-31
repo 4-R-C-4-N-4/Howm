@@ -381,6 +381,20 @@ export class RenderLoop {
       this.cameraController.update(this.camera, this.inputState, dt)
     }
 
+    // Feed camera state to provider (for WebSocket streaming)
+    const prov = this.provider as any
+    if (typeof prov.updateCamera === 'function') {
+      // Compute forward direction from camera rotation
+      const cy = Math.cos(this.camera.rotation.y)
+      const sy = Math.sin(this.camera.rotation.y)
+      const cx = Math.cos(this.camera.rotation.x)
+      const sx = Math.sin(this.camera.rotation.x)
+      prov.updateCamera(
+        this.camera.position.x, this.camera.position.y, this.camera.position.z,
+        sy * cx, -sx, -cy * cx,
+      )
+    }
+
     this.provider.update(dt)
     const scene = this.provider.getScene()
     updateLightFlicker(scene.lights, scene.time)

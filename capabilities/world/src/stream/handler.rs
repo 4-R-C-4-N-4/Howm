@@ -43,6 +43,29 @@ async fn handle_socket(socket: WebSocket, ip: String) {
         let _ = sender.send(Message::Text(json.into())).await;
     }
 
+    // Send initial entity batch at the starting camera position
+    let initial_events = view.update_camera(
+        0.0, view.player_y, 0.0,  // start at origin (player-relative)
+        0.0, -0.3, -1.0,
+        60.0,
+    );
+    for event in initial_events {
+        let msg = match event {
+            ViewEvent::Enter(entity) => ServerMessage::Enter {
+                entity: serde_json::to_value(&entity).unwrap_or_default(),
+            },
+            ViewEvent::Leave(id) => ServerMessage::Leave { id },
+            ViewEvent::Lights(lights) => ServerMessage::Lights {
+                lights: lights.iter()
+                    .filter_map(|l| serde_json::to_value(l).ok())
+                    .collect(),
+            },
+        };
+        if let Ok(json) = serde_json::to_string(&msg) {
+            let _ = sender.send(Message::Text(json.into())).await;
+        }
+    }
+
     // Process client messages
     while let Some(Ok(msg)) = receiver.next().await {
         match msg {

@@ -2133,6 +2133,21 @@
       if (this.cameraController && this.inputState) {
         this.cameraController.update(this.camera, this.inputState, dt);
       }
+      const prov = this.provider;
+      if (typeof prov.updateCamera === "function") {
+        const cy = Math.cos(this.camera.rotation.y);
+        const sy = Math.sin(this.camera.rotation.y);
+        const cx = Math.cos(this.camera.rotation.x);
+        const sx = Math.sin(this.camera.rotation.x);
+        prov.updateCamera(
+          this.camera.position.x,
+          this.camera.position.y,
+          this.camera.position.z,
+          sy * cx,
+          -sx,
+          -cy * cx
+        );
+      }
       this.provider.update(dt);
       const scene = this.provider.getScene();
       updateLightFlicker(scene.lights, scene.time);

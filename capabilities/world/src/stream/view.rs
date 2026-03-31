@@ -50,6 +50,10 @@ pub struct ViewState {
     /// Entities currently in the client's view (keyed by entity id).
     visible: HashMap<String, TrackedEntity>,
 
+    /// World-space origin (initial camera position for coordinate translation).
+    origin_x: f64,
+    origin_z: f64,
+
     /// The district cell.
     cell: Cell,
     palette: AestheticPalette,
@@ -93,15 +97,20 @@ impl ViewState {
 
         let all_lights = scene.lights.clone();
 
+        let origin_x = scene.camera.position.x;
+        let origin_z = scene.camera.position.z;
+
         Self {
-            player_x: scene.camera.position.x,
+            player_x: origin_x,
             player_y: scene.camera.position.y,
-            player_z: scene.camera.position.z,
+            player_z: origin_z,
             player_dx: 0.0,
             player_dy: -0.3,
             player_dz: -1.0,
             fov: 60.0,
             visible: HashMap::new(),
+            origin_x,
+            origin_z,
             cell,
             palette,
             all_entities: scene.entities,
@@ -144,17 +153,19 @@ impl ViewState {
     }
 
     /// Update camera position and produce enter/leave events.
+    /// Client sends camera position in player-relative coords
+    /// (origin was the initial camera position from scene compile).
     pub fn update_camera(
         &mut self,
         px: f64, py: f64, pz: f64,
         dx: f64, dy: f64, dz: f64,
         fov: f64,
     ) -> Vec<ViewEvent> {
-        // Convert client-relative position back to world space
-        // Client sends relative coords; we add our origin offset
-        self.player_x += px;
+        // Convert client-relative position to world space
+        // origin_x/z was the initial camera world position
+        self.player_x = self.origin_x + px;
         self.player_y = py;
-        self.player_z += pz;
+        self.player_z = self.origin_z + pz;
         self.player_dx = dx;
         self.player_dy = dy;
         self.player_dz = dz;
