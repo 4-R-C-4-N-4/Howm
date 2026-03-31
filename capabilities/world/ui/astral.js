@@ -74,24 +74,34 @@
       this.recentreToOrigin();
       this.dirty = true;
     }
-    /** Subtract camera position from all entities and lights, zero the camera. */
+    /** Recentre scene to ground-level origin, preserving camera height and offset. */
     recentreToOrigin() {
       if (!this.scene) return;
-      const cam = this.scene.camera.position;
-      const ox = cam.x, oy = cam.y, oz = cam.z;
+      let ox = 0, oz = 0;
+      const ground = this.scene.entities.find((e) => e.id === "ground");
+      if (ground) {
+        ox = ground.transform.position.x;
+        oz = ground.transform.position.z;
+      } else if (this.scene.entities.length > 0) {
+        for (const e of this.scene.entities) {
+          ox += e.transform.position.x;
+          oz += e.transform.position.z;
+        }
+        ox /= this.scene.entities.length;
+        oz /= this.scene.entities.length;
+      }
       for (const e of this.scene.entities) {
         e.transform.position.x -= ox;
-        e.transform.position.y -= oy;
         e.transform.position.z -= oz;
       }
       for (const l of this.scene.lights) {
         if (l.position) {
           l.position.x -= ox;
-          l.position.y -= oy;
           l.position.z -= oz;
         }
       }
-      this.scene.camera.position = { x: 0, y: 0, z: 0 };
+      this.scene.camera.position.x -= ox;
+      this.scene.camera.position.z -= oz;
     }
     getScene() {
       if (!this.scene) {

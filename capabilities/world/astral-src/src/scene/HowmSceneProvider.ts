@@ -29,30 +29,42 @@ export class HowmSceneProvider implements SceneProvider {
     this.dirty = true
   }
 
-  /** Subtract camera position from all entities and lights, zero the camera. */
+  /** Recentre scene to ground-level origin, preserving camera height and offset. */
   private recentreToOrigin(): void {
     if (!this.scene) return
-    const cam = this.scene.camera.position
-    const ox = cam.x, oy = cam.y, oz = cam.z
 
-    // Recentre entities
+    // Find the ground entity or use centroid of entity positions
+    let ox = 0, oz = 0
+    const ground = this.scene.entities.find(e => e.id === 'ground')
+    if (ground) {
+      ox = ground.transform.position.x
+      oz = ground.transform.position.z
+    } else if (this.scene.entities.length > 0) {
+      // Average of all entity X/Z positions
+      for (const e of this.scene.entities) {
+        ox += e.transform.position.x
+        oz += e.transform.position.z
+      }
+      ox /= this.scene.entities.length
+      oz /= this.scene.entities.length
+    }
+
+    // Only shift X and Z — keep Y (height) as-is
     for (const e of this.scene.entities) {
       e.transform.position.x -= ox
-      e.transform.position.y -= oy
       e.transform.position.z -= oz
     }
 
-    // Recentre point/spot lights
     for (const l of this.scene.lights) {
       if (l.position) {
         l.position.x -= ox
-        l.position.y -= oy
         l.position.z -= oz
       }
     }
 
-    // Zero the camera
-    this.scene.camera.position = { x: 0, y: 0, z: 0 }
+    // Shift camera to match
+    this.scene.camera.position.x -= ox
+    this.scene.camera.position.z -= oz
   }
 
   getScene(): Scene {
