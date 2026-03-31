@@ -74,8 +74,15 @@ async function main() {
     return
   }
 
-  // Load glyph data
+  // Load glyph data and warmup cache
+  if (status) status.textContent = 'Loading glyphs...'
   const glyphCache = await loadGlyphCache('/ui/glyphs.json')
+  if (glyphCache) {
+    if (status) status.textContent = 'Warming glyph cache...'
+    console.time('Glyph warmup')
+    glyphCache.warmup()
+    console.timeEnd('Glyph warmup')
+  }
 
   const frameBuffer = new FrameBuffer(cols, rows)
 

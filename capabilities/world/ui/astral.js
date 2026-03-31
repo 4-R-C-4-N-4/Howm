@@ -71,7 +71,27 @@
         throw new Error(`Failed to load district ${ip}: ${resp.status} ${resp.statusText}`);
       }
       this.scene = await resp.json();
+      this.recentreToOrigin();
       this.dirty = true;
+    }
+    /** Subtract camera position from all entities and lights, zero the camera. */
+    recentreToOrigin() {
+      if (!this.scene) return;
+      const cam = this.scene.camera.position;
+      const ox = cam.x, oy = cam.y, oz = cam.z;
+      for (const e of this.scene.entities) {
+        e.transform.position.x -= ox;
+        e.transform.position.y -= oy;
+        e.transform.position.z -= oz;
+      }
+      for (const l of this.scene.lights) {
+        if (l.position) {
+          l.position.x -= ox;
+          l.position.y -= oy;
+          l.position.z -= oz;
+        }
+      }
+      this.scene.camera.position = { x: 0, y: 0, z: 0 };
     }
     getScene() {
       if (!this.scene) {
@@ -930,6 +950,7 @@
     for (let i = 0; i < maxSteps; i++) {
       const pos = add(ray.origin, mul(ray.direction, t));
       const sample = world.sample(pos);
+      const minStep = 2e-3 + t * 1e-3;
       if (sample.distance < HIT_THRESHOLD) {
         const normal = computeNormal(pos, world);
         return {
@@ -941,7 +962,7 @@
           entityIndex: sample.entityIndex
         };
       }
-      t += sample.distance;
+      t += Math.max(sample.distance, minStep);
       if (t > MAX_DISTANCE) break;
     }
     return { hit: false };
@@ -951,11 +972,14 @@
   function clamp2(v, lo, hi) {
     return Math.max(lo, Math.min(hi, v));
   }
+  var MAX_LIGHTS_PER_PIXEL = 8;
   function computeLighting(hitPos, normal, material, scene) {
     let totalR = 0;
     let totalG = 0;
     let totalB = 0;
+    let pointLightCount = 0;
     for (const light of scene.lights) {
+      if (light.type !== "directional" && pointLightCount >= MAX_LIGHTS_PER_PIXEL) continue;
       let contribution = 0;
       if (light.type === "point") {
         if (!light.position) continue;
@@ -1000,6 +1024,7 @@
           contribution = ndotl * light.intensity / (dist * dist);
         }
       }
+      if (light.type !== "directional") pointLightCount++;
       totalR += contribution * (light.color.r / 255);
       totalG += contribution * (light.color.g / 255);
       totalB += contribution * (light.color.b / 255);
@@ -2559,7 +2584,14 @@
       if (status) status.textContent = `Error loading ${ip}: ${err}`;
       return;
     }
+    if (status) status.textContent = "Loading glyphs...";
     const glyphCache = await loadGlyphCache("/ui/glyphs.json");
+    if (glyphCache) {
+      if (status) status.textContent = "Warming glyph cache...";
+      console.time("Glyph warmup");
+      glyphCache.warmup();
+      console.timeEnd("Glyph warmup");
+    }
     const frameBuffer = new FrameBuffer(cols, rows);
     const inputState = new InputState();
     new KeyboardListener(inputState, window);

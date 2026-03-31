@@ -12,6 +12,8 @@ function clamp(v: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, v))
 }
 
+const MAX_LIGHTS_PER_PIXEL = 8
+
 export function computeLighting(
   hitPos: Vec3,
   normal: Vec3,
@@ -22,7 +24,12 @@ export function computeLighting(
   let totalG = 0
   let totalB = 0
 
+  // Evaluate at most MAX_LIGHTS_PER_PIXEL lights.
+  // Directional lights are always included. Point/spot lights
+  // are skipped if we've already evaluated enough.
+  let pointLightCount = 0
   for (const light of scene.lights) {
+    if (light.type !== 'directional' && pointLightCount >= MAX_LIGHTS_PER_PIXEL) continue
     let contribution = 0
 
     if (light.type === 'point') {
@@ -74,6 +81,7 @@ export function computeLighting(
     }
     // 'area' type not yet implemented
 
+    if (light.type !== 'directional') pointLightCount++
     totalR += contribution * (light.color.r / 255)
     totalG += contribution * (light.color.g / 255)
     totalB += contribution * (light.color.b / 255)

@@ -28,6 +28,9 @@ export function raymarch(ray: Ray, world: World, maxSteps = DEFAULT_MAX_STEPS): 
     const pos = add(ray.origin, mul(ray.direction, t))
     const sample = world.sample(pos)
 
+    // Adaptive step size: minimum step grows with distance from camera.
+    // Prevents tiny steps near distant displaced surfaces from eating the step budget.
+    const minStep = 0.002 + t * 0.001
     if (sample.distance < HIT_THRESHOLD) {
       const normal = computeNormal(pos, world)
       return {
@@ -40,7 +43,7 @@ export function raymarch(ray: Ray, world: World, maxSteps = DEFAULT_MAX_STEPS): 
       }
     }
 
-    t += sample.distance
+    t += Math.max(sample.distance, minStep)
 
     if (t > MAX_DISTANCE) break
   }
