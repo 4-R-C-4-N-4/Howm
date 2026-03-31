@@ -211,7 +211,9 @@ export class RenderLoop {
           }
 
           // Enrich query from HDL description if available
-          const de = this.describedEntities[result.entityIndex]
+          const de = result.entityIndex >= 0 && result.entityIndex < this.describedEntities.length
+            ? this.describedEntities[result.entityIndex]
+            : undefined
           if (de?.description) {
             const desc = de.description
             // Symmetry from being.form.symmetry
@@ -230,7 +232,8 @@ export class RenderLoop {
             // Animated complexity from surface controller
             const surfCtrl = de.controllers.find(c => c.path === 'being.surface')
             if (surfCtrl) {
-              params.targetComplexity = surfCtrl.getValue('complexity')
+              const cplx = surfCtrl.getValue('complexity')
+              if (isFinite(cplx)) params.targetComplexity = cplx
             }
           }
 

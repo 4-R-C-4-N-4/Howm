@@ -1797,7 +1797,7 @@
               targetComplexity: result.material.roughness,
               glyphStyle: result.material.glyphStyle
             };
-            const de = this.describedEntities[result.entityIndex];
+            const de = result.entityIndex >= 0 && result.entityIndex < this.describedEntities.length ? this.describedEntities[result.entityIndex] : void 0;
             if (de?.description) {
               const desc = de.description;
               const sym = desc.traits.find((t) => t.path === "being.form.symmetry");
@@ -1822,7 +1822,8 @@
               }
               const surfCtrl = de.controllers.find((c) => c.path === "being.surface");
               if (surfCtrl) {
-                params.targetComplexity = surfCtrl.getValue("complexity");
+                const cplx = surfCtrl.getValue("complexity");
+                if (isFinite(cplx)) params.targetComplexity = cplx;
               }
             }
             let glyph = this.glyphCache ? this.glyphCache.select(params) : null;
