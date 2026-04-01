@@ -71,6 +71,10 @@ pub struct LanInviteRequest {
     pub lan_ip: String,
     /// Daemon port of the target peer (from scan results).
     pub daemon_port: u16,
+    /// WG public key of the target peer (from scan results, base64).
+    /// Used to register P2P-CD LAN transport hints on the inviter side.
+    #[serde(default)]
+    pub wg_pubkey: Option<String>,
 }
 
 /// Generate a LAN invite and send it directly to a discovered peer.
@@ -151,6 +155,30 @@ pub async fn lan_invite(
         )));
     }
 
+    // Register LAN transport hint on the inviter side so we can identify
+    // inbound P2P-CD connections from this peer's LAN IP, and also reach
+    // them outbound via LAN instead of the WG overlay.
+    if let Some(ref engine) = state.p2pcd_engine {
+        if let Some(ref pubkey_b64) = req.wg_pubkey {
+            use base64::{engine::general_purpose::STANDARD, Engine as _};
+            if let Ok(pubkey_bytes) = STANDARD.decode(pubkey_b64) {
+                if pubkey_bytes.len() == 32 {
+                    let mut peer_id = [0u8; 32];
+                    peer_id.copy_from_slice(&pubkey_bytes);
+                    let listen_port: u16 = 7654;
+                    if let Ok(ip) = req.lan_ip.parse::<std::net::IpAddr>() {
+                        let addr = std::net::SocketAddr::new(ip, listen_port);
+                        engine.set_lan_hint(peer_id, addr).await;
+                    }
+                    // By the time we get here, the remote's lan_accept has
+                    // already called our /node/complete-invite, so peering is
+                    // done. Clear the in-progress flag to let P2P-CD proceed.
+                    engine.clear_peering_in_progress(peer_id).await;
+                }
+            }
+        }
+    }
+
     info!(
         "LAN invite sent to {}:{} — awaiting acceptance",
         req.lan_ip, req.daemon_port
@@ -208,6 +236,45 @@ pub async fn lan_accept(
         .unwrap_or(0);
     if decoded.expires_at < now {
         return Err(AppError::Gone("invite expired".to_string()));
+    }
+
+    // Bug #1 fix: Double-invite race — deterministic tiebreaking by pubkey.
+    // If we already have this peer in WG config (from our own outbound invite)
+    // but NOT in peers list, there's a race. Lower pubkey wins.
+    {
+        let our_pubkey = state.identity.wg_pubkey.as_deref().unwrap_or("");
+        let their_pubkey = &decoded.their_pubkey;
+
+        // Check if peer already in WG (outbound invite in flight) but not yet in peers
+        let already_in_wg = match wireguard::get_status().await {
+            Ok(wg_peers) => wg_peers.iter().any(|p| p.pubkey == *their_pubkey),
+            Err(_) => false,
+        };
+        let already_in_peers = {
+            let peers = state.peers.read().await;
+            peers.iter().any(|p| p.wg_pubkey == *their_pubkey)
+        };
+
+        if already_in_wg && !already_in_peers {
+            // Race condition: both sides sent invites. Lower pubkey wins.
+            if our_pubkey < their_pubkey.as_str() {
+                info!(
+                    "LAN invite race detected with '{}' — our invite wins (lower pubkey)",
+                    req.from_name
+                );
+                return Ok(Json(json!({
+                    "status": "invite_superseded",
+                    "reason": "outbound invite takes priority (lower pubkey)",
+                })));
+            }
+            // Their pubkey is lower — their invite wins, continue processing.
+            // Remove our outbound WG peer entry so we can re-add with correct config.
+            info!(
+                "LAN invite race detected with '{}' — their invite wins (lower pubkey)",
+                req.from_name
+            );
+            let _ = wireguard::remove_peer(&state.config.data_dir, their_pubkey, "pending").await;
+        }
     }
 
     // Check if already peered with this pubkey
@@ -284,7 +351,7 @@ pub async fn lan_accept(
 
     let peer_info_url = format!(
         "http://{}:{}/node/info",
-        decoded.their_wg_address, decoded.their_daemon_port
+        req.from_lan_ip, decoded.their_daemon_port
     );
     let peer_info = client.get(&peer_info_url).send().await.ok();
 
@@ -311,6 +378,7 @@ pub async fn lan_accept(
         port: decoded.their_daemon_port,
         last_seen: now,
         trust: peers::TrustLevel::Friend,
+        lan_ip: Some(req.from_lan_ip.clone()),
     };
 
     {
@@ -332,6 +400,25 @@ pub async fn lan_accept(
             let _ = state
                 .access_db
                 .assign_peer_to_group(&peer_bytes, &howm_access::GROUP_FRIENDS);
+        }
+    }
+
+    // Register LAN transport hint with P2P-CD engine so it can reach this peer
+    // directly via LAN IP instead of relying on WG overlay routing.
+    if let Some(ref engine) = state.p2pcd_engine {
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
+        if let Ok(pubkey_bytes) = STANDARD.decode(&decoded.their_pubkey) {
+            if pubkey_bytes.len() == 32 {
+                let mut peer_id = [0u8; 32];
+                peer_id.copy_from_slice(&pubkey_bytes);
+                // P2P-CD listens on port 7654 (default from PeerConfig)
+                let listen_port: u16 = 7654;
+                if let Ok(ip) = req.from_lan_ip.parse::<std::net::IpAddr>() {
+                    let addr = std::net::SocketAddr::new(ip, listen_port);
+                    engine.set_lan_hint(peer_id, addr).await;
+                }
+                engine.clear_peering_in_progress(peer_id).await;
+            }
         }
     }
 

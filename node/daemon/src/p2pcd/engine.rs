@@ -99,6 +99,12 @@ pub struct ProtocolEngine {
     peer_senders: Arc<Mutex<HashMap<PeerId, SharedSender>>>,
     /// Mux task handles per peer — aborted on session teardown.
     mux_handles: Arc<Mutex<HashMap<PeerId, tokio::task::JoinHandle<()>>>>,
+    /// LAN transport hints: peer_id → LAN SocketAddr for direct TCP (bypasses WG overlay).
+    /// Set by LAN invite flow so P2P-CD can reach peers before WG routing is stable.
+    lan_transport_hints: Arc<RwLock<HashMap<PeerId, SocketAddr>>>,
+    /// Peers currently in the middle of an invite/peering flow.
+    /// P2P-CD initiator sessions are suppressed for these peers to avoid races.
+    peering_in_progress: Arc<Mutex<std::collections::HashSet<PeerId>>>,
 }
 
 impl ProtocolEngine {
@@ -130,6 +136,8 @@ impl ProtocolEngine {
             cap_router: Arc::new(CapabilityRouter::with_core_handlers_at(data_dir)),
             peer_senders: Arc::new(Mutex::new(HashMap::new())),
             mux_handles: Arc::new(Mutex::new(HashMap::new())),
+            lan_transport_hints: Arc::new(RwLock::new(HashMap::new())),
+            peering_in_progress: Arc::new(Mutex::new(std::collections::HashSet::new())),
         }
     }
 
@@ -137,6 +145,28 @@ impl ProtocolEngine {
     #[cfg(test)]
     pub async fn set_peer_addr(&self, peer_id: PeerId, addr: SocketAddr) {
         self.peer_addr_overrides.write().await.insert(peer_id, addr);
+    }
+
+    /// Register a LAN transport hint for a peer (e.g. their LAN IP + P2P-CD port).
+    /// `resolve_peer_addr` will prefer this over WG overlay addresses.
+    pub async fn set_lan_hint(&self, peer_id: PeerId, addr: SocketAddr) {
+        tracing::info!(
+            "engine: LAN transport hint for {} → {}",
+            short(peer_id),
+            addr
+        );
+        self.lan_transport_hints.write().await.insert(peer_id, addr);
+    }
+
+    /// Mark a peer as currently going through the invite/peering flow.
+    /// Suppresses P2P-CD initiator sessions to avoid racing the invite.
+    pub async fn set_peering_in_progress(&self, peer_id: PeerId) {
+        self.peering_in_progress.lock().await.insert(peer_id);
+    }
+
+    /// Clear the peering-in-progress flag for a peer after invite completes.
+    pub async fn clear_peering_in_progress(&self, peer_id: PeerId) {
+        self.peering_in_progress.lock().await.remove(&peer_id);
     }
 
     /// Run the engine. Spawns WgPeerMonitor and binds TCP listener.
@@ -213,6 +243,17 @@ impl ProtocolEngine {
         hb_event_tx: Arc<mpsc::Sender<HeartbeatEvent>>,
     ) {
         tracing::info!("engine: PEER_VISIBLE {}", short(peer_id));
+
+        // Skip if this peer is currently going through invite/peering flow.
+        // The invite code will set up the LAN transport hint and clear this flag
+        // once the peering handshake completes.
+        if self.peering_in_progress.lock().await.contains(&peer_id) {
+            tracing::info!(
+                "engine: {} peering in progress, deferring P2P-CD",
+                short(peer_id)
+            );
+            return;
+        }
 
         // Already in an active/in-progress session?
         {
@@ -979,6 +1020,11 @@ impl ProtocolEngine {
         if let Some(addr) = self.peer_addr_overrides.read().await.get(&peer_id).copied() {
             return Some(addr);
         }
+        // Check LAN transport hints — preferred for LAN-discovered peers.
+        // These use the peer's LAN IP directly, bypassing potentially broken WG routing.
+        if let Some(addr) = self.lan_transport_hints.read().await.get(&peer_id).copied() {
+            return Some(addr);
+        }
         use base64::{engine::general_purpose::STANDARD, Engine as _};
         let listen_port = self.config.read().await.transport.listen_port;
         match crate::wireguard::get_status().await {
@@ -1005,6 +1051,12 @@ impl ProtocolEngine {
     async fn identify_peer_by_addr(&self, ip: IpAddr) -> Option<PeerId> {
         // Check test override map first (reverse lookup by IP).
         for (peer_id, addr) in self.peer_addr_overrides.read().await.iter() {
+            if addr.ip() == ip {
+                return Some(*peer_id);
+            }
+        }
+        // Check LAN transport hints (reverse lookup by IP).
+        for (peer_id, addr) in self.lan_transport_hints.read().await.iter() {
             if addr.ip() == ip {
                 return Some(*peer_id);
             }
@@ -1943,5 +1995,216 @@ mod tests {
         let (_, entry) = snapshot.iter().find(|(k, _)| *k == bob_id).unwrap();
         assert_eq!(entry.last_outcome, SessionOutcome::None);
         assert!(!entry.is_expired());
+    }
+
+    // ── LAN transport hint tests ───────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn lan_hint_enables_identify_peer_by_addr() {
+        // When a LAN transport hint is set for a peer, identify_peer_by_addr
+        // should resolve their LAN IP back to the correct peer ID.
+        let alice_id: PeerId = [0xE1u8; 32];
+        let bob_id: PeerId = [0xE2u8; 32];
+
+        let notifier = Arc::new(crate::p2pcd::cap_notify::CapabilityNotifier::new());
+        let engine = Arc::new(ProtocolEngine::new(
+            make_peer_config(0),
+            alice_id,
+            Arc::clone(&notifier),
+            std::env::temp_dir(),
+            test_access_db(),
+        ));
+
+        let bob_lan_ip: std::net::IpAddr = "192.168.1.169".parse().unwrap();
+        let bob_hint_addr = std::net::SocketAddr::new(bob_lan_ip, 7654);
+
+        // Before setting hint: unknown IP returns None
+        assert!(
+            engine.identify_peer_by_addr(bob_lan_ip).await.is_none(),
+            "Without LAN hint, LAN IP should not resolve"
+        );
+
+        // Set the LAN transport hint (as complete_invite now does)
+        engine.set_lan_hint(bob_id, bob_hint_addr).await;
+
+        // After setting hint: LAN IP resolves to Bob
+        let resolved = engine.identify_peer_by_addr(bob_lan_ip).await;
+        assert_eq!(
+            resolved,
+            Some(bob_id),
+            "With LAN hint, LAN IP should resolve to peer ID"
+        );
+    }
+
+    #[tokio::test]
+    async fn lan_hint_enables_resolve_peer_addr() {
+        // When a LAN transport hint is set, resolve_peer_addr should return
+        // the LAN address instead of relying on WG overlay (which may not be available).
+        let alice_id: PeerId = [0xF1u8; 32];
+        let bob_id: PeerId = [0xF2u8; 32];
+
+        let notifier = Arc::new(crate::p2pcd::cap_notify::CapabilityNotifier::new());
+        let engine = Arc::new(ProtocolEngine::new(
+            make_peer_config(0),
+            alice_id,
+            Arc::clone(&notifier),
+            std::env::temp_dir(),
+            test_access_db(),
+        ));
+
+        let bob_lan_addr: SocketAddr = "192.168.1.169:7654".parse().unwrap();
+
+        // Before: can't resolve Bob (no WG, no hint)
+        assert!(
+            engine.resolve_peer_addr(bob_id).await.is_none(),
+            "Without hint or WG, peer addr should not resolve"
+        );
+
+        // Set LAN hint
+        engine.set_lan_hint(bob_id, bob_lan_addr).await;
+
+        // After: resolves to LAN address
+        let resolved = engine.resolve_peer_addr(bob_id).await;
+        assert_eq!(
+            resolved,
+            Some(bob_lan_addr),
+            "With LAN hint, resolve should return LAN address"
+        );
+    }
+
+    #[tokio::test]
+    async fn lan_hint_inbound_session_accepted() {
+        // Full integration: Alice sets a LAN hint for Bob. Bob connects inbound.
+        // Alice should accept the connection (not drop it as "unknown addr").
+        use crate::p2pcd::cap_notify::CapabilityNotifier;
+        use std::sync::atomic::Ordering;
+        use tokio::time::{sleep, Duration};
+
+        let alice_id: PeerId = [0xAAu8; 32];
+        let bob_id: PeerId = [0xBBu8; 32];
+
+        // Alice's listener
+        let alice_listener = P2pcdListener::bind("127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
+        let alice_p2pcd_addr = alice_listener.local_addr;
+
+        // Bob's listener
+        let bob_listener = P2pcdListener::bind("127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
+        let bob_p2pcd_addr = bob_listener.local_addr;
+
+        // Mock notifiers
+        let (alice_notifier_url, alice_active_count, _) = spawn_mock_notifier().await;
+        let (bob_notifier_url, bob_active_count, _) = spawn_mock_notifier().await;
+
+        // Build Alice — use set_lan_hint instead of set_peer_addr to simulate
+        // what complete_invite now does (the LAN invite path).
+        let alice_notifier = Arc::new(CapabilityNotifier::new());
+        alice_notifier
+            .register_with_url("howm.feed.1".to_string(), alice_notifier_url.clone())
+            .await;
+
+        let alice_engine = Arc::new(ProtocolEngine::new(
+            make_peer_config(0),
+            alice_id,
+            Arc::clone(&alice_notifier),
+            std::env::temp_dir(),
+            test_access_db(),
+        ));
+        // KEY: Use set_lan_hint (not set_peer_addr) — this is the path
+        // that was broken before the fix. identify_peer_by_addr must
+        // resolve Bob's IP via the LAN hint for inbound sessions.
+        alice_engine.set_lan_hint(bob_id, bob_p2pcd_addr).await;
+
+        // Build Bob — needs peer_addr for Alice so Bob can also accept/initiate
+        let bob_notifier = Arc::new(CapabilityNotifier::new());
+        bob_notifier
+            .register_with_url("howm.feed.1".to_string(), bob_notifier_url.clone())
+            .await;
+
+        let bob_engine = Arc::new(ProtocolEngine::new(
+            make_peer_config(bob_p2pcd_addr.port()),
+            bob_id,
+            Arc::clone(&bob_notifier),
+            std::env::temp_dir(),
+            test_access_db(),
+        ));
+        bob_engine.set_peer_addr(alice_id, alice_p2pcd_addr).await;
+
+        // Run engines
+        let (alice_wg_tx, alice_wg_rx) = mpsc::channel::<WgPeerEvent>(8);
+        let (bob_wg_tx, bob_wg_rx) = mpsc::channel::<WgPeerEvent>(8);
+
+        let alice_handle = tokio::spawn({
+            let e = Arc::clone(&alice_engine);
+            async move { e.run_with(alice_wg_rx, alice_listener).await }
+        });
+        let bob_handle = tokio::spawn({
+            let e = Arc::clone(&bob_engine);
+            async move { e.run_with(bob_wg_rx, bob_listener).await }
+        });
+
+        sleep(Duration::from_millis(20)).await;
+
+        // Bob sees Alice via WG → initiates outbound to Alice.
+        // Alice must accept the inbound connection from Bob's IP,
+        // which she can only do if the LAN hint resolves Bob's IP.
+        bob_wg_tx
+            .send(WgPeerEvent::PeerVisible(alice_id))
+            .await
+            .unwrap();
+
+        // Also send PeerVisible from Alice's side for bidirectional
+        alice_wg_tx
+            .send(WgPeerEvent::PeerVisible(bob_id))
+            .await
+            .unwrap();
+
+        // Wait for both to reach Active
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            sleep(Duration::from_millis(50)).await;
+
+            let alice_sessions = alice_engine.active_sessions().await;
+            let bob_sessions = bob_engine.active_sessions().await;
+
+            let alice_ok = alice_sessions
+                .iter()
+                .any(|s| s.state == SessionState::Active && s.peer_id == bob_id);
+            let bob_ok = bob_sessions
+                .iter()
+                .any(|s| s.state == SessionState::Active && s.peer_id == alice_id);
+
+            if alice_ok && bob_ok {
+                break;
+            }
+
+            if tokio::time::Instant::now() > deadline {
+                panic!(
+                    "LAN hint inbound session test timed out.\n\
+                     Alice sessions: {:?}\n\
+                     Bob sessions: {:?}\n\
+                     This indicates identify_peer_by_addr failed to resolve \
+                     Bob's IP via the LAN transport hint.",
+                    alice_sessions, bob_sessions
+                );
+            }
+        }
+
+        // Verify capability callbacks fired
+        sleep(Duration::from_millis(100)).await;
+        assert!(
+            alice_active_count.load(Ordering::SeqCst) >= 1,
+            "Alice should have received peer-active callback"
+        );
+        assert!(
+            bob_active_count.load(Ordering::SeqCst) >= 1,
+            "Bob should have received peer-active callback"
+        );
+
+        alice_handle.abort();
+        bob_handle.abort();
     }
 }
