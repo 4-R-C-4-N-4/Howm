@@ -35,84 +35,66 @@ The pipeline from "two peers connected" to "capability works between them":
 10. Capability can now send/receive messages via p2pcd bridge
 ```
 
-### Default p2pcd-peer.toml Capabilities
+### ROOT CAUSE FOUND — Log Analysis (2026-04-01)
 
-The default config (`PeerConfig::generate_default`) advertises:
-- `core.session.heartbeat.1` (always passes trust gate)
-- `howm.feed.1` (Both/mutual, classification=Public)
-- `howm.social.messaging.1` (Both/mutual, no classification)
-- `howm.social.files.1` (Both/mutual, no classification)
+**Session goes `CapabilityExchange → None` — active_set is empty.**
 
-**Missing from default config:**
-- `howm.social.presence.1` — not in the default TOML at all
-- `howm.voice.1` — not in the default TOML
-- `howm.world.room.1` — not in the default TOML
-
-If these capabilities are installed but not in p2pcd-peer.toml, they won't be advertised in the manifest, won't appear in compute_intersection, and won't be in the active_set. **The peer won't know the other peer supports them.**
-
-### Potential Issue 1: p2pcd-peer.toml not synced with installed capabilities
-
-When a capability is installed via `POST /capabilities/install`, the daemon:
-1. Reads manifest.json
-2. Creates a CapabilityEntry with `p2pcd_name` (e.g. "howm.social.messaging.1")
-3. Saves to capabilities.json
-4. Starts the binary
-
-But it does **NOT** update p2pcd-peer.toml to add the capability to the advertised set. The p2pcd-peer.toml is a static file generated once at first boot. If the user installs new capabilities after first boot, they won't be advertised to peers.
-
-**This is likely the systemic issue.** The default TOML has 4 caps. If the user installs presence or voice, those won't be in the TOML, won't be advertised, won't negotiate.
-
-### Potential Issue 2: Trust gate for non-default group
-
-The trust gate calls `access_db.resolve_permission(peer_id, cap_name)`. For a "friends" group capability:
-- The peer must be in `howm.friends` group
-- The capability's p2pcd_name must be in that group's allowed capabilities
-
-The default access schema puts these in `howm.friends`:
-- `howm.social.feed.1`
-- `howm.social.messaging.1`
-- `howm.social.files.1`
-- `howm.world.room.1`
-
-So if the peer IS in `howm.friends`, feed/messaging/files should pass the trust gate. But if `promote to friend` only adds them to the access group without triggering a p2pcd rebroadcast, the active session's intersection won't update.
-
-### Potential Issue 3: Rebroadcast on group change
-
-When a peer is promoted to friend (`add_friend`), the daemon calls:
-1. `access_db.add_member(GROUP_FRIENDS, peer_id)`
-2. `engine.rebroadcast()` — re-runs OFFER/CONFIRM with new trust gate
-
-This SHOULD work — the rebroadcast re-evaluates compute_intersection with the updated access_db. But if rebroadcast fails silently (e.g. transport error during re-exchange), the session keeps its old active_set.
-
-### Potential Issue 4: Capability notification delivery
-
-When active_set is established, `cap_notify.notify_peer_active()` POSTs to each capability's local port. But:
-- The capability must be RUNNING on that port
-- The endpoint must be `/p2pcd/peer-active`
-- If the capability started after the session was established, it missed the notification
-
-The messaging cap handles this with `init_peers_from_daemon()` on startup — polls the bridge for active peers. But not all capabilities may do this.
-
-### Recommended Investigation Order
-
-1. **Check p2pcd-peer.toml on both machines.** Does it list messaging/feed/files? If it only has the defaults and was never regenerated after capability install, that's the root cause.
-
-2. **Check active_set.** Hit `GET /p2pcd/sessions` on both daemons. Look at each session's `active_set`. If it's empty or only has `core.session.heartbeat.1`, the capabilities aren't negotiating.
-
-3. **Check access_db.** Is the remote peer in `howm.friends`? Hit `GET /access/groups/howm.friends/members`.
-
-4. **Check capability status.** Hit `GET /capabilities`. Are messaging/feed/files running? What ports?
-
-5. **Test cap notification.** Manually POST to `http://127.0.0.1:<cap_port>/p2pcd/peer-active` with a test payload. Does the capability respond?
-
-### Fix Hypothesis
-
-The most likely fix: when a capability is installed, the daemon should automatically add it to the p2pcd config and trigger a rebroadcast. This ensures installed capabilities are advertised to all active peers.
-
-```rust
-// In install_capability handler, after saving to capabilities.json:
-// 1. Add cap to p2pcd config
-// 2. Trigger engine.rebroadcast()
+The logs show:
+```
+session CBy/Hg==: PeerVisible → Handshake
+session CBy/Hg==: Handshake → CapabilityExchange
+session CBy/Hg==: CapabilityExchange → None     ← FAILS HERE
 ```
 
-Alternatively: the daemon should build the manifest dynamically from installed capabilities + p2pcd-peer.toml, rather than relying solely on the static TOML file.
+In `finalize_session()` (session.rs:419): `if final_set.is_empty() → SessionState::None`. The intersection of the two peers' capabilities is EMPTY. No shared capabilities = no Active session = peers appear offline.
+
+**Why the intersection is empty — p2pcd-peer.toml has WRONG capability names:**
+
+The TOML on this node (`~/.local/share/howm/p2pcd-peer.toml`) contains:
+```toml
+[capabilities.heartbeat]
+name = "core.heartbeat.liveness.1"    ← WRONG (should be core.session.heartbeat.1)
+
+[capabilities.social_feed]
+name = "howm.social.feed.1"           ← WRONG (should be howm.feed.1)
+```
+
+Only 2 capabilities listed (heartbeat + feed). Missing: messaging, files, presence, voice.
+
+The current `PeerConfig::generate_default()` produces:
+```
+core.session.heartbeat.1    ← correct name
+howm.feed.1                 ← correct name
+howm.social.messaging.1
+howm.social.files.1
+```
+
+The TOML was generated by an older version of the code with different naming conventions. Since the names don't match between the two peers' manifests, `compute_intersection()` finds zero matches.
+
+Even heartbeat fails because `core.heartbeat.liveness.1` ≠ `core.session.heartbeat.1`. Without heartbeat, the session never reaches Active.
+
+### Fix
+
+**Option A (immediate):** Delete `~/.local/share/howm/p2pcd-peer.toml` on BOTH machines and restart the daemon. It will regenerate with the correct names from `generate_default()`.
+
+**Option B (robust):** The daemon should validate the TOML against the current code's expected capability names on startup and migrate/fix mismatches. Or better: build the manifest dynamically from installed capabilities instead of relying on a static TOML file.
+
+**Also needed on the OTHER peer:** The same TOML issue likely exists there. Both machines need matching capability names for intersection to succeed.
+
+### After fixing the TOML
+
+Once the TOML is correct:
+1. Both peers advertise `core.session.heartbeat.1` → heartbeat negotiates
+2. Session reaches Active
+3. `howm.feed.1` and other caps in the active_set
+4. `cap_notify.notify_peer_active()` fires
+5. Capabilities get the peer-active webhook
+6. Peers show as online
+7. Feed/messaging/files should work
+
+### Additional Issues (from earlier analysis)
+
+- **TOML not synced with installed capabilities:** Installing new caps doesn't update the TOML
+- **Presence and voice missing from default config:** Even regenerated TOML won't have these
+- **Rebroadcast may fail silently:** No retry on transport error during re-exchange
+- **Capability notification timing:** Late-starting caps miss peer-active
