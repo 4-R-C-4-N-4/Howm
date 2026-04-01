@@ -357,3 +357,152 @@ Updated todo list ✓
    All 111 tests pass ✓
 
    (See Round 2 fixes above for the 3 issues found in the 2026-04-01 session.)
+
+---
+
+## Round 3 findings (2026-04-01 evening session)
+
+Log analyzed: howm.log.2026-04-01 (19:05:22 session)
+Peer in peers.json: `pending` / pubkey `CBy/HugQWdioSmS/LBZhT380+YxN8Bd0f/9iPAQxOjs=` / LAN 192.168.1.169 / WG 100.222.0.7
+Symptom: peer registered but shows offline. P2P-CD connect timeout at 19:05:34.
+
+### Timeline
+
+```
+19:05:22  Daemon starts. Loaded 1 peer, 6 capabilities.
+19:05:22  WARN: skipping migration for peer 'pending': invalid WG pubkey
+19:05:22  WG restored 1 WG peer (CBy/Hg==)
+19:05:22  P2P-CD engine initialised, listening on 0.0.0.0:7654
+19:05:22  LAN discovery active on 192.168.1.163
+19:05:24  WgPeerMonitor: peer visible CBy/Hg== (WG handshake succeeded)
+19:05:24  engine: PEER_VISIBLE CBy/Hg==
+19:05:34  engine: initiator CBy/Hg== FAILED: connect timeout (deadline elapsed)
+19:08:22  WgPeerMonitor: peer unreachable CBy/Hg== (tunnel dead, no keepalive)
+```
+
+### What happened
+
+1. Daemon restarted after a previous LAN peering session. The peer from that
+   session is in peers.json with `node_id: "pending"`, `name: "pending"`, and
+   `wg_pubkey: "CBy/HugQWdioSmS/LBZhT380+YxN8Bd0f/9iPAQxOjs="` (base64, 32 bytes).
+
+2. `migrate_trust_levels()` tried to hex-decode the wg_pubkey. Base64 is NOT
+   valid hex — it fails, and the peer is skipped with "invalid WG pubkey".
+   This is a bug in the migration code (see Bug #9 below).
+
+3. WireGuard restored the peer's config (the tunnel had been saved) and the
+   WG handshake succeeded almost immediately (peer visible at 19:05:24).
+
+4. P2P-CD engine saw PEER_VISIBLE and immediately tried to TCP-connect to the
+   peer via `resolve_peer_addr`. But:
+   - The `lan_transport_hints` map is in-memory only. It is NOT persisted.
+   - On restart it is empty. No code in main.rs re-populates it from peers.json.
+   - `resolve_peer_addr` found no LAN hint, fell back to WG `allowed-ips`
+     (100.222.0.7/32), tried TCP to 100.222.0.7:7654 — timeout.
+   - The peer's howm0 is NOT bound to 100.222.0.7. Each node assigns its own
+     WG address independently. The peer's actual WG address is likely 100.222.0.1
+     from its own perspective. So the packet enters the WG tunnel, reaches the
+     peer, but the peer's IP stack drops it (no interface with 100.222.0.7).
+
+5. With no P2P-CD session established, no keepalive traffic flows through the
+   WG tunnel. WG times out and marks the peer unreachable (19:08:22).
+
+6. Peer is stuck as "pending" forever — no background task refreshes the
+   node_id/name, and no retry mechanism reconnects P2P-CD after the tunnel
+   goes down.
+
+### Bug #9: migrate_trust_levels decodes wg_pubkey as hex, not base64
+
+Location: node/daemon/src/main.rs `migrate_trust_levels()`
+
+```rust
+let peer_id = match hex::decode(&peer.wg_pubkey) {
+    Ok(id) if id.len() == 32 => id,
+    _ => {
+        tracing::warn!("skipping migration for peer '{}': invalid WG pubkey", peer.name);
+        continue;
+    }
+};
+```
+
+The `wg_pubkey` field in peers.json is base64 (WireGuard key format), not hex.
+`hex::decode("CBy/HugQ...")` fails silently. The peer is skipped with a
+misleading warning. The peer never gets assigned to an access.db group, so it
+may not get access grants that other code expects to be present.
+
+Fix: decode with `base64::engine::general_purpose::STANDARD.decode()` instead
+of `hex::decode`. The same pattern is used correctly in lan_routes.rs and
+node_routes.rs. This is a copy-paste error from an earlier non-WG peer scheme.
+
+### Bug #10: LAN transport hints not restored on daemon restart
+
+Location: node/daemon/src/main.rs (startup), node/daemon/src/p2pcd/engine.rs
+
+The `lan_transport_hints` HashMap lives only in memory. After a restart, the
+P2P-CD engine has no knowledge of which peers are reachable via LAN vs WG
+overlay. peers.json stores `lan_ip` for LAN-discovered peers, but startup
+code never re-populates the engine's hint table from it.
+
+Consequence: after restart, if WG handshake fires before the user does a new
+LAN scan (or before any new LAN invite), P2P-CD falls through to WG overlay
+routing and times out (exactly what happened in this session).
+
+Fix: after `build_p2pcd_engine()` in main.rs, iterate loaded peers and
+re-register any with `lan_ip: Some(...)`:
+
+```rust
+if let Some(ref engine) = p2pcd_engine {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    for peer in &peers {
+        if let Some(ref lan_ip) = peer.lan_ip {
+            if let Ok(bytes) = STANDARD.decode(&peer.wg_pubkey) {
+                if bytes.len() == 32 {
+                    let mut peer_id = [0u8; 32];
+                    peer_id.copy_from_slice(&bytes);
+                    if let Ok(ip) = lan_ip.parse::<std::net::IpAddr>() {
+                        let addr = std::net::SocketAddr::new(ip, 7654);
+                        engine.set_lan_hint(peer_id, addr).await;
+                    }
+                }
+            }
+        }
+    }
+}
+```
+
+### Bug #11: No P2P-CD retry after WG tunnel loss
+
+Location: node/daemon/src/p2pcd/engine.rs `on_peer_visible` / WgPeerMonitor
+
+When the WG tunnel drops (PEER_UNREACHABLE at 19:08:22), the engine logs it
+but takes no reconnection action. If the peer comes back online later and WG
+re-handshakes (PEER_VISIBLE fires again), the initiator will retry — but only
+if the peer is still in the WG config. For LAN peers, the WG keepalive interval
+may not be set, so the tunnel dies quickly with no traffic.
+
+The deeper issue: P2P-CD is the primary channel for application-level comms.
+If P2P-CD never connects, there's no keepalive → WG times out → peer goes
+offline → no automatic recovery.
+
+Fix options:
+  a. When `on_peer_visible` fires and P2P-CD connect fails, schedule a retry
+     with exponential backoff (1s, 2s, 4s... up to ~60s).
+  b. Set WG `persistent-keepalive = 25` for LAN peers so the tunnel stays up
+     regardless of P2P-CD status, giving P2P-CD more time to connect.
+  c. Both.
+
+Option (b) is trivially cheap and solves the immediate tunnel-death problem.
+`wg set howm0 peer <pubkey> persistent-keepalive 25` in `add_peer()` for LAN
+peers (detected by endpoint being a private/RFC1918 IP).
+
+### Summary of new issues
+
+| # | Bug | Severity | File |
+|---|-----|----------|------|
+| 9 | migrate_trust_levels decodes wg_pubkey as hex instead of base64 | Medium | main.rs:521 |
+| 10 | LAN transport hints not restored from peers.json on daemon restart | **High** | main.rs startup |
+| 11 | No P2P-CD retry / no WG keepalive for LAN peers → tunnel dies, peer stays offline | **High** | engine.rs + wireguard.rs |
+
+Bug #10 is the primary cause of "peer registered but offline" in this session.
+Bug #11 is the reason it doesn't recover. Bug #9 is a latent correctness issue
+that could cause access control problems for the pending peer.

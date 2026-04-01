@@ -499,6 +499,7 @@ fn build_p2pcd_engine(
 /// One-time migration: map peers.json TrustLevel to access.db group memberships.
 /// Runs only when the access database has no existing memberships (first startup).
 fn migrate_trust_levels(db: &howm_access::AccessDb, peers: &[peers::Peer]) {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
     use howm_access::{GROUP_DEFAULT, GROUP_FRIENDS};
 
     // Skip if there are already memberships (migration already ran)
@@ -508,7 +509,7 @@ fn migrate_trust_levels(db: &howm_access::AccessDb, peers: &[peers::Peer]) {
 
     // Check if any memberships exist
     let has_any = peers.iter().any(|p| {
-        let peer_id = hex::decode(&p.wg_pubkey).unwrap_or_default();
+        let peer_id = STANDARD.decode(&p.wg_pubkey).unwrap_or_default();
         db.peer_has_memberships(&peer_id).unwrap_or(false)
     });
 
@@ -518,7 +519,7 @@ fn migrate_trust_levels(db: &howm_access::AccessDb, peers: &[peers::Peer]) {
 
     let mut migrated = 0u32;
     for peer in peers {
-        let peer_id = match hex::decode(&peer.wg_pubkey) {
+        let peer_id = match STANDARD.decode(&peer.wg_pubkey) {
             Ok(id) if id.len() == 32 => id,
             _ => {
                 tracing::warn!(
