@@ -2520,6 +2520,10 @@
         case "ArrowRight":
           this.inputState.right = pressed;
           break;
+        case "ShiftLeft":
+        case "ShiftRight":
+          this.inputState.sprint = pressed;
+          break;
       }
     }
     destroy() {
@@ -2586,7 +2590,7 @@
   }
   var CameraController = class {
     constructor() {
-      __publicField(this, "moveSpeed", 5);
+      __publicField(this, "moveSpeed", 7);
       __publicField(this, "sprintMultiplier", 2.5);
       __publicField(this, "lookSensitivity", 2e-3);
       __publicField(this, "pitchLimit", Math.PI / 2 - 0.01);
