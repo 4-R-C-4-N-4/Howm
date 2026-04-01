@@ -294,3 +294,37 @@ Updated todo list ✓
    └ Read lan_routes.rs (node/daemon/src/api/lan_routes.rs) ✓                                                                                                                                                      
    The fallback defaults already use `req.from_name` correctly — `unwrap_or(&req.from_name)` for the success path and `req.from_name.clone()` for the error/missing paths. The `node_id` fallback uses `"...       
    └ Completed todo bug8 ✓ 
+
+   **Bug #3 (P2P-CD LAN awareness)**: P2P-CD now resolves peer addresses via LAN transport hints before falling back to WG overlay.
+   ├ Added `lan_transport_hints: Arc<RwLock<HashMap<PeerId, SocketAddr>>>` to ProtocolEngine
+   ├ Added `set_lan_hint(peer_id, addr)` public method
+   ├ `resolve_peer_addr()` checks LAN hints before `wg show dump` (engine.rs)
+   ├ `lan_accept` registers LAN hint after peering completes (lan_routes.rs)
+   └ Completed ✓
+
+   **Bug #4 (Sequencing fix)**: P2P-CD initiator sessions suppressed during invite flow.
+   ├ Added `peering_in_progress: Arc<Mutex<HashSet<PeerId>>>` to ProtocolEngine
+   ├ Added `set_peering_in_progress()` / `clear_peering_in_progress()` methods
+   ├ `on_peer_visible()` skips if peer is in peering_in_progress set
+   ├ `lan_accept` calls `clear_peering_in_progress()` after peering completes
+   └ Completed ✓
+
+   **Bug #5 (mdns-sd interface scoping)**: mDNS now scoped to LAN IP only.
+   ├ After `ServiceDaemon::new()`, calls `enable_interface(IfKind::Addr(lan_ip))`
+   ├ This excludes howm0/WG, tailscale0, docker0 from multicast
+   ├ Eliminates "Required key not available (os error 126)" errors on howm0
+   ├ Eliminates "Cannot find valid addrs" errors on tailscale0/docker0
+   └ Completed ✓
+
+   **Bug #2 (WG address coordination)**: Addressed indirectly via LAN transport hints.
+   ├ P2P-CD no longer depends on WG overlay IP routing for LAN peers
+   ├ `resolve_peer_addr()` → LAN hint → direct TCP to LAN IP:7654
+   ├ WG tunnel still used for encrypted data, but P2P-CD connection isn't blocked by address mismatch
+   └ Completed ✓
+
+   **Additional fixes**:
+   ├ Added `lan_ip: Option<String>` field to `Peer` struct (peers.rs)
+   ├ All Peer constructions updated (node_routes.rs ×5, lan_routes.rs ×1)
+   ├ LAN-discovered peers store `lan_ip: Some(ip)` for future use
+   ├ Fixed Bug #1 compile error: `remove_peer()` missing `node_id` arg → added "pending"
+   └ All 111 tests pass ✓

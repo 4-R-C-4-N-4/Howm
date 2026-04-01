@@ -263,6 +263,7 @@ pub async fn redeem_invite(
         port: decoded.their_daemon_port,
         last_seen: now,
         trust: TrustLevel::Friend,
+        lan_ip: None,
     };
 
     {
@@ -358,6 +359,7 @@ pub async fn complete_invite(
         port: req.my_daemon_port.unwrap_or(state.config.port),
         last_seen: now,
         trust: TrustLevel::Friend,
+        lan_ip: None,
     };
 
     {
@@ -618,6 +620,7 @@ pub async fn open_join(
         port: req.my_daemon_port,
         last_seen: now,
         trust: TrustLevel::Public,
+        lan_ip: None,
     };
 
     {
@@ -819,6 +822,7 @@ pub async fn redeem_open_invite(
         port: host_daemon_port_actual,
         last_seen: now,
         trust: TrustLevel::Friend,
+        lan_ip: None,
     };
 
     {
@@ -1094,6 +1098,7 @@ pub async fn redeem_accept(
         port: state.config.port,
         last_seen: now,
         trust: TrustLevel::Friend,
+        lan_ip: None,
     };
 
     {

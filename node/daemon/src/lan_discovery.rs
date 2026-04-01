@@ -56,6 +56,14 @@ impl LanDiscovery {
         let daemon = ServiceDaemon::new()
             .map_err(|e| anyhow::anyhow!("Failed to start mDNS daemon: {}", e))?;
 
+        // Scope mDNS to only the LAN interface — exclude WireGuard, Tailscale,
+        // Docker, and other non-LAN interfaces that cause multicast errors.
+        if let Ok(ip) = lan_ip.parse::<std::net::IpAddr>() {
+            if let Err(e) = daemon.enable_interface(mdns_sd::IfKind::Addr(ip)) {
+                warn!("LAN discovery: failed to scope mDNS to {}: {}", lan_ip, e);
+            }
+        }
+
         // Build TXT record properties
         let mut properties = HashMap::new();
         properties.insert("pubkey".to_string(), wg_pubkey.to_string());

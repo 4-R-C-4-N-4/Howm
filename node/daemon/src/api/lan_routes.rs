@@ -245,7 +245,7 @@ pub async fn lan_accept(
                 "LAN invite race detected with '{}' — their invite wins (lower pubkey)",
                 req.from_name
             );
-            let _ = wireguard::remove_peer(&state.config.data_dir, their_pubkey).await;
+            let _ = wireguard::remove_peer(&state.config.data_dir, their_pubkey, "pending").await;
         }
     }
 
@@ -350,6 +350,7 @@ pub async fn lan_accept(
         port: decoded.their_daemon_port,
         last_seen: now,
         trust: peers::TrustLevel::Friend,
+        lan_ip: Some(req.from_lan_ip.clone()),
     };
 
     {
@@ -371,6 +372,25 @@ pub async fn lan_accept(
             let _ = state
                 .access_db
                 .assign_peer_to_group(&peer_bytes, &howm_access::GROUP_FRIENDS);
+        }
+    }
+
+    // Register LAN transport hint with P2P-CD engine so it can reach this peer
+    // directly via LAN IP instead of relying on WG overlay routing.
+    if let Some(ref engine) = state.p2pcd_engine {
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
+        if let Ok(pubkey_bytes) = STANDARD.decode(&decoded.their_pubkey) {
+            if pubkey_bytes.len() == 32 {
+                let mut peer_id = [0u8; 32];
+                peer_id.copy_from_slice(&pubkey_bytes);
+                // P2P-CD listens on port 7654 (default from PeerConfig)
+                let listen_port: u16 = 7654;
+                if let Ok(ip) = req.from_lan_ip.parse::<std::net::IpAddr>() {
+                    let addr = std::net::SocketAddr::new(ip, listen_port);
+                    engine.set_lan_hint(peer_id, addr).await;
+                }
+                engine.clear_peering_in_progress(peer_id).await;
+            }
         }
     }
 

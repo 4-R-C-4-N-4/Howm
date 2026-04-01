@@ -99,6 +99,12 @@ pub struct ProtocolEngine {
     peer_senders: Arc<Mutex<HashMap<PeerId, SharedSender>>>,
     /// Mux task handles per peer — aborted on session teardown.
     mux_handles: Arc<Mutex<HashMap<PeerId, tokio::task::JoinHandle<()>>>>,
+    /// LAN transport hints: peer_id → LAN SocketAddr for direct TCP (bypasses WG overlay).
+    /// Set by LAN invite flow so P2P-CD can reach peers before WG routing is stable.
+    lan_transport_hints: Arc<RwLock<HashMap<PeerId, SocketAddr>>>,
+    /// Peers currently in the middle of an invite/peering flow.
+    /// P2P-CD initiator sessions are suppressed for these peers to avoid races.
+    peering_in_progress: Arc<Mutex<std::collections::HashSet<PeerId>>>,
 }
 
 impl ProtocolEngine {
@@ -130,6 +136,8 @@ impl ProtocolEngine {
             cap_router: Arc::new(CapabilityRouter::with_core_handlers_at(data_dir)),
             peer_senders: Arc::new(Mutex::new(HashMap::new())),
             mux_handles: Arc::new(Mutex::new(HashMap::new())),
+            lan_transport_hints: Arc::new(RwLock::new(HashMap::new())),
+            peering_in_progress: Arc::new(Mutex::new(std::collections::HashSet::new())),
         }
     }
 
@@ -137,6 +145,28 @@ impl ProtocolEngine {
     #[cfg(test)]
     pub async fn set_peer_addr(&self, peer_id: PeerId, addr: SocketAddr) {
         self.peer_addr_overrides.write().await.insert(peer_id, addr);
+    }
+
+    /// Register a LAN transport hint for a peer (e.g. their LAN IP + P2P-CD port).
+    /// `resolve_peer_addr` will prefer this over WG overlay addresses.
+    pub async fn set_lan_hint(&self, peer_id: PeerId, addr: SocketAddr) {
+        tracing::info!(
+            "engine: LAN transport hint for {} → {}",
+            short(peer_id),
+            addr
+        );
+        self.lan_transport_hints.write().await.insert(peer_id, addr);
+    }
+
+    /// Mark a peer as currently going through the invite/peering flow.
+    /// Suppresses P2P-CD initiator sessions to avoid racing the invite.
+    pub async fn set_peering_in_progress(&self, peer_id: PeerId) {
+        self.peering_in_progress.lock().await.insert(peer_id);
+    }
+
+    /// Clear the peering-in-progress flag for a peer after invite completes.
+    pub async fn clear_peering_in_progress(&self, peer_id: PeerId) {
+        self.peering_in_progress.lock().await.remove(&peer_id);
     }
 
     /// Run the engine. Spawns WgPeerMonitor and binds TCP listener.
@@ -213,6 +243,17 @@ impl ProtocolEngine {
         hb_event_tx: Arc<mpsc::Sender<HeartbeatEvent>>,
     ) {
         tracing::info!("engine: PEER_VISIBLE {}", short(peer_id));
+
+        // Skip if this peer is currently going through invite/peering flow.
+        // The invite code will set up the LAN transport hint and clear this flag
+        // once the peering handshake completes.
+        if self.peering_in_progress.lock().await.contains(&peer_id) {
+            tracing::info!(
+                "engine: {} peering in progress, deferring P2P-CD",
+                short(peer_id)
+            );
+            return;
+        }
 
         // Already in an active/in-progress session?
         {
@@ -977,6 +1018,11 @@ impl ProtocolEngine {
     async fn resolve_peer_addr(&self, peer_id: PeerId) -> Option<SocketAddr> {
         // Check test override map first (bypasses `wg show`).
         if let Some(addr) = self.peer_addr_overrides.read().await.get(&peer_id).copied() {
+            return Some(addr);
+        }
+        // Check LAN transport hints — preferred for LAN-discovered peers.
+        // These use the peer's LAN IP directly, bypassing potentially broken WG routing.
+        if let Some(addr) = self.lan_transport_hints.read().await.get(&peer_id).copied() {
             return Some(addr);
         }
         use base64::{engine::general_purpose::STANDARD, Engine as _};

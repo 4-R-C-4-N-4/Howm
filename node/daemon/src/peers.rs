@@ -21,6 +21,10 @@ pub struct Peer {
     pub last_seen: u64,
     #[serde(default)]
     pub trust: TrustLevel,
+    /// LAN IP address (set for peers discovered via mDNS LAN scan).
+    /// Used by P2P-CD as a transport hint for direct TCP connections.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lan_ip: Option<String>,
 }
 
 pub fn load(data_dir: &Path) -> anyhow::Result<Vec<Peer>> {
