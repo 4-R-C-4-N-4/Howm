@@ -592,3 +592,35 @@ Now I have a clear picture. Let me look at the full flow in the last session (st
    2. Set lan_ip on the peer                                                                            
    3. Register a LAN transport hint with the P2P-CD engine                                              
    4. Try to fetch peer info (name/node_id) instead of leaving "pending"  
+
+                                           
+   ANSWER TO YOUR QUESTION: Yes, WAN invites had the same class of bug.                                 
+   ============================================================                                         
+                                                                                                        
+   The original `complete_invite` never registered LAN transport hints                                  
+   OR resolved peer names — regardless of LAN or WAN. My first fix                                      
+   naively treated all non-loopback IPs as LAN, which would have:                                       
+                                                                                                        
+     WAN scenario: Bob at 73.x.x.x calls Alice's /node/complete-invite                                  
+     → My first fix would set LAN hint to 73.x.x.x:7654                                                 
+     → resolve_peer_addr would prefer this hint over WG overlay                                         
+     → P2P-CD tries to connect to 73.x.x.x:7654 through NAT → fails                                     
+     → WORSE than before (WG overlay path would have worked)                                            
+                                                                                                        
+   THE FIX: Private IP detection guards the LAN hint path                                               
+     - Only RFC 1918 IPv4 (10.x, 172.16-31.x, 192.168.x) gets LAN hints                                 
+     - IPv6 fe80::/10 link-local gets LAN hints                                                         
+     - Public IPs (WAN path) → no LAN hint, no endpoint override                                        
+     - WAN peers use WG overlay routing via allowed_ips (the existing path)                             
+                                                                                                        
+   TESTS ADDED (3 new, all passing):                                                                    
+     1. lan_hint_enables_identify_peer_by_addr                                                          
+        — Verifies LAN IP → peer_id resolution via hints                                                
+     2. lan_hint_enables_resolve_peer_addr                                                              
+        — Verifies outbound address resolution prefers LAN hint                                         
+     3. lan_hint_inbound_session_accepted                                                               
+        — Full engine integration: Alice uses set_lan_hint (not set_peer_addr),                         
+          Bob connects inbound, both reach Active. This is the exact scenario                           
+          that was failing in production ("inbound from unknown addr, dropping").                       
+                                                                                                        
+   Full test suite: 80+ unit tests + 13 integration + 18 punch tests — all pass.  

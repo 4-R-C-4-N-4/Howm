@@ -332,12 +332,28 @@ pub async fn complete_invite(
     }
 
     // Determine the caller's LAN IP from the inbound connection.
-    // This is how we know where the acceptor is on the local network.
+    // Only treat it as a LAN peer if the source IP is a private address
+    // (192.168.x.x, 10.x.x.x, 172.16-31.x.x, or IPv6 link-local).
+    // Public IPs from WAN invites must NOT get LAN transport hints —
+    // P2P-CD can't reach them through NAT.
     let caller_ip = addr.ip();
-    let caller_lan_ip = if caller_ip.is_loopback() {
-        None
-    } else {
-        Some(caller_ip.to_string())
+    let caller_lan_ip = match caller_ip {
+        std::net::IpAddr::V4(v4) => {
+            let o = v4.octets();
+            let is_private = o[0] == 10
+                || (o[0] == 172 && (16..=31).contains(&o[1]))
+                || (o[0] == 192 && o[1] == 168);
+            if is_private { Some(v4.to_string()) } else { None }
+        }
+        std::net::IpAddr::V6(v6) => {
+            // fe80::/10 link-local
+            let segs = v6.segments();
+            if segs[0] & 0xffc0 == 0xfe80 {
+                Some(v6.to_string())
+            } else {
+                None
+            }
+        }
     };
 
     // Use the caller's LAN IP as endpoint when available (LAN invite path),
