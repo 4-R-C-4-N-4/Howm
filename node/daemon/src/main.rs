@@ -172,7 +172,7 @@ async fn main() -> anyhow::Result<()> {
     // Build app state
     let mut state = state::AppState::new(
         identity.clone(),
-        peers,
+        peers.clone(),
         capabilities,
         config.clone(),
         api_token,
@@ -214,6 +214,36 @@ async fn main() -> anyhow::Result<()> {
         None
     };
     state.p2pcd_engine = p2pcd_engine.clone();
+
+    // Restore LAN transport hints from persisted peers so that P2P-CD can
+    // reach LAN peers directly after a daemon restart without waiting for a
+    // new scan or invite.  `lan_transport_hints` is in-memory only, so we
+    // re-populate it here from the `lan_ip` field stored in peers.json.
+    if let Some(ref engine) = p2pcd_engine {
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
+        let mut restored = 0u32;
+        for peer in &peers {
+            if let Some(ref lan_ip) = peer.lan_ip {
+                if let Ok(bytes) = STANDARD.decode(&peer.wg_pubkey) {
+                    if bytes.len() == 32 {
+                        let mut peer_id = [0u8; 32];
+                        peer_id.copy_from_slice(&bytes);
+                        if let Ok(ip) = lan_ip.parse::<std::net::IpAddr>() {
+                            let addr = std::net::SocketAddr::new(ip, 7654);
+                            engine.set_lan_hint(peer_id, addr).await;
+                            restored += 1;
+                        }
+                    }
+                }
+            }
+        }
+        if restored > 0 {
+            info!(
+                "Restored {} LAN transport hint(s) from peers.json",
+                restored
+            );
+        }
+    }
 
     // Store WG active state
     {
