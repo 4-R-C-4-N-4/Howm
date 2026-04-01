@@ -115,6 +115,10 @@ async function main() {
 
   const cameraController = new CameraController()
   const hud = new HUD()
+  hud.setDistrictIp(ip)
+
+  // Clear loading status — rendering is about to start
+  if (status) status.textContent = ''
 
   const loop = new RenderLoop(provider, frameBuffer, presenter, glyphCache, {
     targetFPS: 30,
