@@ -343,7 +343,11 @@ pub async fn complete_invite(
             let is_private = o[0] == 10
                 || (o[0] == 172 && (16..=31).contains(&o[1]))
                 || (o[0] == 192 && o[1] == 168);
-            if is_private { Some(v4.to_string()) } else { None }
+            if is_private {
+                Some(v4.to_string())
+            } else {
+                None
+            }
         }
         std::net::IpAddr::V6(v6) => {
             // fe80::/10 link-local
