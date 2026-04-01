@@ -331,9 +331,33 @@ pub async fn complete_invite(
         return Err(AppError::Internal("WireGuard not initialized".to_string()));
     }
 
+    // Determine the caller's LAN IP from the inbound connection.
+    // This is how we know where the acceptor is on the local network.
+    let caller_ip = addr.ip();
+    let caller_lan_ip = if caller_ip.is_loopback() {
+        None
+    } else {
+        Some(caller_ip.to_string())
+    };
+
+    // Use the caller's LAN IP as endpoint when available (LAN invite path),
+    // otherwise fall back to whatever the acceptor reported.
+    let effective_endpoint = if let Some(ref lan_ip) = caller_lan_ip {
+        // Extract the port from the reported endpoint, or use default WG port
+        let wg_port = req
+            .my_endpoint
+            .rsplit(':')
+            .next()
+            .and_then(|p| p.parse::<u16>().ok())
+            .unwrap_or(state.config.wg_port);
+        format!("{}:{}", lan_ip, wg_port)
+    } else {
+        req.my_endpoint.clone()
+    };
+
     let wg_peer = wireguard::WgPeerConfig {
         pubkey: req.my_pubkey.clone(),
-        endpoint: req.my_endpoint.clone(),
+        endpoint: effective_endpoint.clone(),
         psk: Some(req.psk.clone()),
         allowed_ip: invite.assigned_ip.clone(),
         name: "pending".to_string(),
@@ -344,22 +368,51 @@ pub async fn complete_invite(
         .await
         .map_err(|e| AppError::Internal(format!("failed to add WG peer: {}", e)))?;
 
-    // Add to peers list (name/node_id will be updated on next discovery)
+    // Try to fetch peer info (name/node_id) from the acceptor right away
+    // rather than leaving them as "pending".
+    let daemon_port = req.my_daemon_port.unwrap_or(state.config.port);
+    let (peer_node_id, peer_name) = if let Some(ref lan_ip) = caller_lan_ip {
+        let info_url = format!("http://{}:{}/node/info", lan_ip, daemon_port);
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(3))
+            .build()
+            .ok();
+        if let Some(client) = client {
+            if let Ok(resp) = client.get(&info_url).send().await {
+                if let Ok(info) = resp.json::<serde_json::Value>().await {
+                    (
+                        info["node_id"].as_str().unwrap_or("pending").to_string(),
+                        info["name"].as_str().unwrap_or("pending").to_string(),
+                    )
+                } else {
+                    ("pending".to_string(), "pending".to_string())
+                }
+            } else {
+                ("pending".to_string(), "pending".to_string())
+            }
+        } else {
+            ("pending".to_string(), "pending".to_string())
+        }
+    } else {
+        ("pending".to_string(), "pending".to_string())
+    };
+
+    // Add to peers list
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
 
     let peer = Peer {
-        node_id: "pending".to_string(),
-        name: "pending".to_string(),
+        node_id: peer_node_id.clone(),
+        name: peer_name.clone(),
         wg_pubkey: req.my_pubkey.clone(),
         wg_address: invite.assigned_ip.clone(),
-        wg_endpoint: req.my_endpoint.clone(),
-        port: req.my_daemon_port.unwrap_or(state.config.port),
+        wg_endpoint: effective_endpoint.clone(),
+        port: daemon_port,
         last_seen: now,
         trust: TrustLevel::Friend,
-        lan_ip: None,
+        lan_ip: caller_lan_ip.clone(),
     };
 
     {
@@ -386,10 +439,32 @@ pub async fn complete_invite(
         }
     }
 
+    // Register LAN transport hint with P2P-CD engine so it can identify
+    // inbound connections from this peer's LAN IP and reach them outbound.
+    if let Some(ref lan_ip) = caller_lan_ip {
+        if let Some(ref engine) = state.p2pcd_engine {
+            use base64::{engine::general_purpose::STANDARD, Engine as _};
+            if let Ok(pubkey_bytes) = STANDARD.decode(&req.my_pubkey) {
+                if pubkey_bytes.len() == 32 {
+                    let mut peer_id = [0u8; 32];
+                    peer_id.copy_from_slice(&pubkey_bytes);
+                    let listen_port: u16 = 7654;
+                    if let Ok(ip) = lan_ip.parse::<std::net::IpAddr>() {
+                        let hint_addr = std::net::SocketAddr::new(ip, listen_port);
+                        engine.set_lan_hint(peer_id, hint_addr).await;
+                    }
+                    engine.clear_peering_in_progress(peer_id).await;
+                }
+            }
+        }
+    }
+
     info!(
-        "Completed invite — added peer {} at {}",
+        "Completed invite — peered with '{}' ({}) at {}, lan={}",
+        peer_name,
         &req.my_pubkey[..8.min(req.my_pubkey.len())],
-        invite.assigned_ip
+        invite.assigned_ip,
+        caller_lan_ip.as_deref().unwrap_or("none"),
     );
 
     Ok(Json(json!({ "status": "completed" })))

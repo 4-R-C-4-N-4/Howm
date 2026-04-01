@@ -506,3 +506,89 @@ peers (detected by endpoint being a private/RFC1918 IP).
 Bug #10 is the primary cause of "peer registered but offline" in this session.
 Bug #11 is the reason it doesn't recover. Bug #9 is a latent correctness issue
 that could cause access control problems for the pending peer.
+
+Not interested in #11 atm.
+
+## Session 4
+Now I have a clear picture. Let me look at the full flow in the last session (starting at line       
+   604). Here's my analysis:                                                                            
+                                                                                                        
+   ---                                                                                                  
+                                                                                                        
+   ANALYSIS OF THE LAST SESSION (21:32 - 21:38)                                                         
+   =============================================                                                        
+                                                                                                        
+   TIMELINE:                                                                                            
+     21:32:13  Alice starts with "Loaded 0 peers" (peers were cleared)                                  
+     21:32:15  WgPeerMonitor sees CBy/Hg== visible (WG config has Bob from wg-peers.json)               
+     21:32:25  P2P-CD initiator TIMES OUT connecting to CBy/Hg== (Bob)                                  
+     21:32:29  LAN scan: 0 peers (Bob not yet advertising)                                              
+     21:34:22  LAN scan: 1 peer found (Bob is up now)                                                   
+     21:34:28  LAN invite sent to 192.168.1.169:7000 (Bob)                                              
+     21:34:39  LAN invite sent again (second attempt from UI)                                           
+     21:35:23  >>> INBOUND FROM UNKNOWN ADDR 192.168.1.169:40200, DROPPING <<<                          
+     21:35:31  P2P-CD initiator times out again                                                         
+     21:36:17  LAN invite sent (third attempt)                                                          
+     21:38:32  Shutdown, no session ever established                                                    
+                                                                                                        
+   THE SMOKING GUN: Line 717                                                                            
+     "engine: inbound from unknown addr 192.168.1.169:40200, dropping"                                  
+                                                                                                        
+   This means Bob (192.168.1.169) successfully connected to Alice via P2P-CD,                           
+   but Alice's identify_peer_by_addr() couldn't map 192.168.1.169 back to                               
+   any known peer, so it DROPPED the connection.                                                        
+                                                                                                        
+                                                                                                        
+   ROOT CAUSE: complete_invite doesn't set LAN transport hints                                          
+   =============================================================                                        
+                                                                                                        
+   The LAN invite flow has an asymmetry:                                                                
+                                                                                                        
+     ALICE (inviter) calls lan_invite:                                                                  
+       1. Generates invite code                                                                         
+       2. POSTs to Bob's /node/lan-accept                                                               
+       3. Bob's lan_accept calls Alice's /node/complete-invite                                          
+       4. Alice's complete_invite adds Bob as WG peer, adds to peers list                               
+       5. Back in lan_invite, sets LAN transport hint (IF wg_pubkey in request)                         
+                                                                                                        
+     BOB (acceptor) in lan_accept:                                                                      
+       - Adds Alice as WG peer                                                                          
+       - Calls Alice's /node/complete-invite                                                            
+       - Gets Alice's /node/info → proper name/node_id                                                  
+       - Adds Alice to peers list with correct info                                                     
+       - Sets LAN transport hint for Alice ← WORKS                                                      
+                                                                                                        
+   The problem is Alice's complete_invite (node_routes.rs:311-374):                                     
+                                                                                                        
+     1. It adds Bob with name="pending", node_id="pending"                                              
+     2. It sets lan_ip: None  ← NO LAN IP                                                               
+     3. It does NOT register a LAN transport hint with P2P-CD engine                                    
+     4. It logs NOTHING (no tracing::info! on success)                                                  
+                                                                                                        
+   So after the invite completes:                                                                       
+     - identify_peer_by_addr(192.168.1.169) checks:                                                     
+       a) peer_addr_overrides → nothing                                                                 
+       b) lan_transport_hints → nothing (never set!)                                                    
+       c) WG allowed_ips → 100.222.x.x (overlay IP, doesn't match LAN IP!)                              
+     → Returns None → "inbound from unknown addr, dropping"                                             
+                                                                                                        
+   Meanwhile resolve_peer_addr for outbound tries:                                                      
+     - LAN hints → nothing                                                                              
+     - WG overlay IP 100.222.x.x → tries to connect via WG tunnel                                       
+     → But WG tunnel may not be handshaking properly → timeout                                          
+                                                                                                        
+                                                                                                        
+   SECONDARY ISSUES:                                                                                    
+     - Alice's peer has name="pending" → shows wrong in UI                                              
+     - Warning at startup: "skipping migration for peer 'pending': invalid WG pubkey"                   
+     - No P2P-CD session = no heartbeats = both show "offline"                                          
+                                                                                                        
+                                                                                                        
+   THE FIX: complete_invite needs to register LAN transport hints                                       
+   ==============================================================                                       
+                                                                                                        
+   In complete_invite (node_routes.rs), after adding the peer, it should:                               
+   1. Use ConnectInfo(addr) to detect the caller's LAN IP                                               
+   2. Set lan_ip on the peer                                                                            
+   3. Register a LAN transport hint with the P2P-CD engine                                              
+   4. Try to fetch peer info (name/node_id) instead of leaving "pending"  
