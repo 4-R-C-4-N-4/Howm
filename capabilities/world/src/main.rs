@@ -438,6 +438,24 @@ async fn district_map_handler(AxumPath(ip): AxumPath<String>) -> Response {
         .into_response()
 }
 
+// ─── Neighborhood map (3×3 districts) ──────────────────────────────────────
+
+async fn neighborhood_map_handler(AxumPath(ip): AxumPath<String>) -> Response {
+    let cell = match parse_cell(&ip) {
+        Some(c) => c,
+        None => return bad_request(),
+    };
+
+    let svg = scene::map::generate_neighborhood_map(&cell);
+
+    (
+        StatusCode::OK,
+        [(axum::http::header::CONTENT_TYPE, "image/svg+xml")],
+        svg,
+    )
+        .into_response()
+}
+
 // ─── Astral Scene (compiled) ───────────────────────────────────────────────
 
 async fn district_scene_handler(AxumPath(ip): AxumPath<String>) -> Response {
@@ -523,6 +541,10 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/cap/world/district/{ip}/live",
             get(stream::handler::ws_handler),
+        )
+        .route(
+            "/cap/world/district/{ip}/neighborhood",
+            get(neighborhood_map_handler),
         )
         .route("/ui/{*path}", get(|path: AxumPath<String>| async move {
             serve_ui_file(&path)
