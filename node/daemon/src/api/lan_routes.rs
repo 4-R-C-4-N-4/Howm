@@ -210,6 +210,45 @@ pub async fn lan_accept(
         return Err(AppError::Gone("invite expired".to_string()));
     }
 
+    // Bug #1 fix: Double-invite race — deterministic tiebreaking by pubkey.
+    // If we already have this peer in WG config (from our own outbound invite)
+    // but NOT in peers list, there's a race. Lower pubkey wins.
+    {
+        let our_pubkey = state.identity.wg_pubkey.as_deref().unwrap_or("");
+        let their_pubkey = &decoded.their_pubkey;
+
+        // Check if peer already in WG (outbound invite in flight) but not yet in peers
+        let already_in_wg = match wireguard::get_status().await {
+            Ok(wg_peers) => wg_peers.iter().any(|p| p.pubkey == *their_pubkey),
+            Err(_) => false,
+        };
+        let already_in_peers = {
+            let peers = state.peers.read().await;
+            peers.iter().any(|p| p.wg_pubkey == *their_pubkey)
+        };
+
+        if already_in_wg && !already_in_peers {
+            // Race condition: both sides sent invites. Lower pubkey wins.
+            if our_pubkey < their_pubkey.as_str() {
+                info!(
+                    "LAN invite race detected with '{}' — our invite wins (lower pubkey)",
+                    req.from_name
+                );
+                return Ok(Json(json!({
+                    "status": "invite_superseded",
+                    "reason": "outbound invite takes priority (lower pubkey)",
+                })));
+            }
+            // Their pubkey is lower — their invite wins, continue processing.
+            // Remove our outbound WG peer entry so we can re-add with correct config.
+            info!(
+                "LAN invite race detected with '{}' — their invite wins (lower pubkey)",
+                req.from_name
+            );
+            let _ = wireguard::remove_peer(&state.config.data_dir, their_pubkey).await;
+        }
+    }
+
     // Check if already peered with this pubkey
     {
         let peers = state.peers.read().await;
@@ -284,7 +323,7 @@ pub async fn lan_accept(
 
     let peer_info_url = format!(
         "http://{}:{}/node/info",
-        decoded.their_wg_address, decoded.their_daemon_port
+        req.from_lan_ip, decoded.their_daemon_port
     );
     let peer_info = client.get(&peer_info_url).send().await.ok();
 
