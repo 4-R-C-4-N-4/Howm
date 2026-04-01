@@ -1875,6 +1875,7 @@
       __publicField(this, "inputState");
       __publicField(this, "cameraController");
       __publicField(this, "hud");
+      __publicField(this, "lastCameraChanged", false);
       // Stats overlay element (used when no HUD is provided)
       __publicField(this, "statsEl", null);
       this.provider = provider;
@@ -1951,6 +1952,7 @@
       const bg = scene.environment.backgroundColor;
       const temporal = this.temporal;
       const cameraChanged = temporal.cameraChanged(this.camera.position, this.camera.rotation);
+      this.lastCameraChanged = cameraChanged;
       const anyMoving = this.hasAnyMoving();
       const anyFlicker = this.hasAnyFlicker();
       const anyAnimated = this.hasAnyAnimatedEntities();
@@ -1989,7 +1991,8 @@
             }
           }
           const ray = createRay(this.camera, x, y, width, height);
-          const maxSteps = this.useAdaptiveQuality ? getMaxSteps(x, y, width, height) : DEFAULT_MAX_STEPS;
+          const baseSteps = this.useAdaptiveQuality ? getMaxSteps(x, y, width, height) : DEFAULT_MAX_STEPS;
+          const maxSteps = cameraChanged ? Math.floor(baseSteps * 0.6) : baseSteps;
           const result = raymarch(ray, world, maxSteps);
           if (result.hit) {
             const lit = computeLighting(result.position, result.normal, result.material, scene);
@@ -2219,8 +2222,10 @@
         } else {
           this.renderFrameSingleThread(this.frameBuffer);
         }
-        this.resetBgToAtmosphere(this.frameBuffer, this.provider.getScene());
-        this.applyEmissionBleed(this.frameBuffer, this.provider.getScene());
+        if (!this.lastCameraChanged) {
+          this.resetBgToAtmosphere(this.frameBuffer, this.provider.getScene());
+          this.applyEmissionBleed(this.frameBuffer, this.provider.getScene());
+        }
         this.presenter.present(this.frameBuffer);
         this.frameBuffer.clearDirtyFlags();
         const frameEnd = performance.now();
@@ -2520,10 +2525,6 @@
         case "ArrowRight":
           this.inputState.right = pressed;
           break;
-        case "ShiftLeft":
-        case "ShiftRight":
-          this.inputState.sprint = pressed;
-          break;
       }
     }
     destroy() {
@@ -2590,7 +2591,7 @@
   }
   var CameraController = class {
     constructor() {
-      __publicField(this, "moveSpeed", 7);
+      __publicField(this, "moveSpeed", 5);
       __publicField(this, "sprintMultiplier", 2.5);
       __publicField(this, "lookSensitivity", 2e-3);
       __publicField(this, "pitchLimit", Math.PI / 2 - 0.01);

@@ -60,6 +60,7 @@ export class RenderLoop {
   private inputState: InputState | null
   private cameraController: CameraController | null
   private hud: HUD | null
+  private lastCameraChanged = false
 
   // Stats overlay element (used when no HUD is provided)
   private statsEl: HTMLDivElement | null = null
@@ -151,6 +152,7 @@ export class RenderLoop {
     const bg = scene.environment.backgroundColor
     const temporal = this.temporal
     const cameraChanged = temporal.cameraChanged(this.camera.position, this.camera.rotation)
+    this.lastCameraChanged = cameraChanged
     const anyMoving = this.hasAnyMoving()
     const anyFlicker = this.hasAnyFlicker()
     const anyAnimated = this.hasAnyAnimatedEntities()
@@ -206,7 +208,9 @@ export class RenderLoop {
 
         // --- Full raymarch ---
         const ray = createRay(this.camera, x, y, width, height)
-        const maxSteps = this.useAdaptiveQuality ? getMaxSteps(x, y, width, height) : DEFAULT_MAX_STEPS
+        // Fewer steps during movement — rough but fast; full quality when still
+        const baseSteps = this.useAdaptiveQuality ? getMaxSteps(x, y, width, height) : DEFAULT_MAX_STEPS
+        const maxSteps = cameraChanged ? Math.floor(baseSteps * 0.6) : baseSteps
         const result = raymarch(ray, world, maxSteps)
 
         if (result.hit) {
@@ -487,12 +491,12 @@ export class RenderLoop {
         this.renderFrameSingleThread(this.frameBuffer)
       }
 
-      // Reset bg channels to atmosphere base before emission bleed
-      // (prevents accumulation bug — bleed must be computed fresh each frame)
-      this.resetBgToAtmosphere(this.frameBuffer, this.provider.getScene())
-
-      // Emission bleed post-process — emissive entities spill colour into nearby bg cells
-      this.applyEmissionBleed(this.frameBuffer, this.provider.getScene())
+      // Emission bleed — skip during camera movement for performance.
+      // Bleed is a screen-space post-process that's barely noticeable while moving.
+      if (!this.lastCameraChanged) {
+        this.resetBgToAtmosphere(this.frameBuffer, this.provider.getScene())
+        this.applyEmissionBleed(this.frameBuffer, this.provider.getScene())
+      }
 
       this.presenter.present(this.frameBuffer)
       this.frameBuffer.clearDirtyFlags()
