@@ -8,6 +8,7 @@ export class HUD {
   private promptEl: HTMLElement
 
   private districtIp: string = ''
+  private streamInfo: string = ''
 
   constructor() {
     const container = document.createElement('div')
@@ -56,12 +57,17 @@ export class HUD {
     this.districtIp = ip
   }
 
+  setStreamInfo(loadedDistricts: number, visibleEntities: number): void {
+    this.streamInfo = `${loadedDistricts} districts · ${visibleEntities} entities`
+  }
+
   update(fps: number, camera: Camera, pointerLocked: boolean): void {
     this.fpsEl.textContent = `${fps.toFixed(0)} FPS`
 
-    // District IP
+    // District IP + stream info
     if (this.districtIp) {
-      this.districtEl.textContent = `// ${this.districtIp}`
+      const extra = this.streamInfo ? ` · ${this.streamInfo}` : ''
+      this.districtEl.textContent = `// ${this.districtIp}${extra}`
     }
 
     // Compass — derive cardinal direction from camera Y rotation

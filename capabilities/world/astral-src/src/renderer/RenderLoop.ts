@@ -530,6 +530,14 @@ export class RenderLoop {
       console.log(msg)
 
       if (this.hud) {
+        // Update district IP from stream provider if available
+        const prov = this.provider as any
+        if (prov.currentDistrictIp) {
+          this.hud.setDistrictIp(prov.currentDistrictIp)
+          if (prov.loadedDistrictCount !== undefined) {
+            this.hud.setStreamInfo(prov.loadedDistrictCount, prov.visibleEntityCount)
+          }
+        }
         this.hud.update(fps, this.camera, this.inputState?.pointerLocked ?? false)
       } else if (this.statsEl) {
         this.statsEl.textContent = msg

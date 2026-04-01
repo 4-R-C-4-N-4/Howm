@@ -61,4 +61,12 @@ pub enum ServerMessage {
     Lights {
         lights: Vec<serde_json::Value>,
     },
+
+    /// Player's current district changed.
+    #[serde(rename = "district")]
+    District {
+        ip: String,
+        loaded_count: usize,
+        visible_count: usize,
+    },
 }

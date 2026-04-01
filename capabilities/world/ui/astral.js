@@ -137,7 +137,6 @@
 
   // astral-src/src/scene/HowmStreamProvider.ts
   var HowmStreamProvider = class {
-    // send camera 4 Hz
     constructor(baseUrl) {
       this.baseUrl = baseUrl;
       __publicField(this, "ws", null);
@@ -167,6 +166,11 @@
       __publicField(this, "camDZ", -1);
       __publicField(this, "sendTimer", 0);
       __publicField(this, "sendInterval", 0.25);
+      // send camera 4 Hz
+      // Current district info from server
+      __publicField(this, "currentDistrictIp", "");
+      __publicField(this, "loadedDistrictCount", 0);
+      __publicField(this, "visibleEntityCount", 0);
     }
     async connect(ip) {
       const wsUrl = this.baseUrl.replace("http", "ws") + `/cap/world/district/${ip}/live`;
@@ -242,6 +246,11 @@
           if (msg.lights) {
             this.lights = msg.lights;
           }
+          break;
+        case "district":
+          if (msg.ip) this.currentDistrictIp = msg.ip;
+          if (msg.loaded_count !== void 0) this.loadedDistrictCount = msg.loaded_count;
+          if (msg.visible_count !== void 0) this.visibleEntityCount = msg.visible_count;
           break;
       }
     }
@@ -2253,6 +2262,13 @@
         const msg = `FPS:${fps.toFixed(1)} avg:${avg.toFixed(1)}ms worst:${worst.toFixed(1)}ms cache:${hitRate}%${scaleStr}`;
         console.log(msg);
         if (this.hud) {
+          const prov = this.provider;
+          if (prov.currentDistrictIp) {
+            this.hud.setDistrictIp(prov.currentDistrictIp);
+            if (prov.loadedDistrictCount !== void 0) {
+              this.hud.setStreamInfo(prov.loadedDistrictCount, prov.visibleEntityCount);
+            }
+          }
           this.hud.update(fps, this.camera, this.inputState?.pointerLocked ?? false);
         } else if (this.statsEl) {
           this.statsEl.textContent = msg;
@@ -2687,6 +2703,7 @@
       __publicField(this, "compassEl");
       __publicField(this, "promptEl");
       __publicField(this, "districtIp", "");
+      __publicField(this, "streamInfo", "");
       const container = document.createElement("div");
       container.id = "hud";
       container.style.cssText = [
@@ -2731,10 +2748,14 @@
     setDistrictIp(ip) {
       this.districtIp = ip;
     }
+    setStreamInfo(loadedDistricts, visibleEntities) {
+      this.streamInfo = `${loadedDistricts} districts \xB7 ${visibleEntities} entities`;
+    }
     update(fps, camera, pointerLocked) {
       this.fpsEl.textContent = `${fps.toFixed(0)} FPS`;
       if (this.districtIp) {
-        this.districtEl.textContent = `// ${this.districtIp}`;
+        const extra = this.streamInfo ? ` \xB7 ${this.streamInfo}` : "";
+        this.districtEl.textContent = `// ${this.districtIp}${extra}`;
       }
       const yawDeg = (camera.rotation.y * 180 / Math.PI % 360 + 360) % 360;
       const cardinal = yawDeg < 22.5 ? "N" : yawDeg < 67.5 ? "NE" : yawDeg < 112.5 ? "E" : yawDeg < 157.5 ? "SE" : yawDeg < 202.5 ? "S" : yawDeg < 247.5 ? "SW" : yawDeg < 292.5 ? "W" : yawDeg < 337.5 ? "NW" : "N";

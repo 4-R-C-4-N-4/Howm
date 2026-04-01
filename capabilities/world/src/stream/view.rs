@@ -116,10 +116,18 @@ impl ViewState {
     pub fn new(cell: Cell, view_range: f64) -> Self {
         let district = LoadedDistrict::generate(cell.clone());
 
-        // Camera starts at district seed position
-        let cfg = config();
-        let origin_x = cell.gx as f64 * cfg.scale;
-        let origin_z = cell.gy as f64 * cfg.scale;
+        // Origin = camera position from scene compilation (seed_position + offset)
+        // Must match what the client sees after HowmSceneProvider.recentreToOrigin()
+        let cam_x = district.entities.iter()
+            .find(|e| e.id == "ground")
+            .map(|g| g.transform.position.x)
+            .unwrap_or(cell.gx as f64 * config().scale);
+        let cam_z = district.entities.iter()
+            .find(|e| e.id == "ground")
+            .map(|g| g.transform.position.z)
+            .unwrap_or(cell.gy as f64 * config().scale);
+        let origin_x = cam_x;
+        let origin_z = cam_z;
 
         let mut districts = HashMap::new();
         let key = cell.key;
@@ -213,6 +221,10 @@ impl ViewState {
 
             if dist < self.view_range + cfg.scale * 0.5 {
                 // Close enough — load this neighbor
+                tracing::info!(
+                    "Loading neighbor district {} (dist={:.0} wu, player at {:.0},{:.0})",
+                    ncell.ip_prefix(), dist, self.player_x, self.player_z
+                );
                 let district = LoadedDistrict::generate(ncell.clone());
                 self.districts.insert(ncell.key, district);
                 self.loaded_keys.insert(ncell.key);
@@ -332,5 +344,31 @@ impl ViewState {
 
     pub fn visible_count(&self) -> usize {
         self.visible.len()
+    }
+
+    pub fn loaded_count(&self) -> usize {
+        self.districts.len()
+    }
+
+    /// Determine which district the player is currently standing in.
+    pub fn current_district_ip(&self) -> String {
+        let cfg = config();
+        // Find the district whose centre is nearest to the player
+        let mut best_key = self.primary_cell.key;
+        let mut best_dist = f64::MAX;
+        for (key, district) in &self.districts {
+            let cx = district.cell.gx as f64 * cfg.scale;
+            let cz = district.cell.gy as f64 * cfg.scale;
+            let dx = cx - self.player_x;
+            let dz = cz - self.player_z;
+            let d = dx * dx + dz * dz;
+            if d < best_dist {
+                best_dist = d;
+                best_key = *key;
+            }
+        }
+        self.districts.get(&best_key)
+            .map(|d| d.cell.ip_prefix())
+            .unwrap_or_else(|| self.primary_cell.ip_prefix())
     }
 }

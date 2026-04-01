@@ -38,6 +38,11 @@ export class HowmStreamProvider implements SceneProvider {
   private sendTimer = 0
   private sendInterval = 0.25 // send camera 4 Hz
 
+  // Current district info from server
+  currentDistrictIp: string = ''
+  loadedDistrictCount: number = 0
+  visibleEntityCount: number = 0
+
   constructor(private baseUrl: string) {}
 
   async connect(ip: string): Promise<void> {
@@ -125,6 +130,12 @@ export class HowmStreamProvider implements SceneProvider {
         if (msg.lights) {
           this.lights = msg.lights
         }
+        break
+
+      case 'district':
+        if (msg.ip) this.currentDistrictIp = msg.ip
+        if (msg.loaded_count !== undefined) this.loadedDistrictCount = msg.loaded_count
+        if (msg.visible_count !== undefined) this.visibleEntityCount = msg.visible_count
         break
     }
   }

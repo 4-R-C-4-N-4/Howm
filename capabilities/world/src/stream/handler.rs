@@ -100,9 +100,19 @@ async fn handle_socket(socket: WebSocket, ip: String) {
 
                                 if let Ok(json) = serde_json::to_string(&msg) {
                                     if sender.send(Message::Text(json.into())).await.is_err() {
-                                        return; // client disconnected
+                                        return;
                                     }
                                 }
+                            }
+
+                            // Send current district info
+                            let district_msg = ServerMessage::District {
+                                ip: view.current_district_ip(),
+                                loaded_count: view.loaded_count(),
+                                visible_count: view.visible_count(),
+                            };
+                            if let Ok(json) = serde_json::to_string(&district_msg) {
+                                let _ = sender.send(Message::Text(json.into())).await;
                             }
                         }
                     }
