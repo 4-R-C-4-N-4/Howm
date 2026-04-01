@@ -71,6 +71,10 @@ pub struct LanInviteRequest {
     pub lan_ip: String,
     /// Daemon port of the target peer (from scan results).
     pub daemon_port: u16,
+    /// WG public key of the target peer (from scan results, base64).
+    /// Used to register P2P-CD LAN transport hints on the inviter side.
+    #[serde(default)]
+    pub wg_pubkey: Option<String>,
 }
 
 /// Generate a LAN invite and send it directly to a discovered peer.
@@ -149,6 +153,30 @@ pub async fn lan_invite(
             "LAN invite rejected by peer ({}): {}",
             status, body
         )));
+    }
+
+    // Register LAN transport hint on the inviter side so we can identify
+    // inbound P2P-CD connections from this peer's LAN IP, and also reach
+    // them outbound via LAN instead of the WG overlay.
+    if let Some(ref engine) = state.p2pcd_engine {
+        if let Some(ref pubkey_b64) = req.wg_pubkey {
+            use base64::{engine::general_purpose::STANDARD, Engine as _};
+            if let Ok(pubkey_bytes) = STANDARD.decode(pubkey_b64) {
+                if pubkey_bytes.len() == 32 {
+                    let mut peer_id = [0u8; 32];
+                    peer_id.copy_from_slice(&pubkey_bytes);
+                    let listen_port: u16 = 7654;
+                    if let Ok(ip) = req.lan_ip.parse::<std::net::IpAddr>() {
+                        let addr = std::net::SocketAddr::new(ip, listen_port);
+                        engine.set_lan_hint(peer_id, addr).await;
+                    }
+                    // By the time we get here, the remote's lan_accept has
+                    // already called our /node/complete-invite, so peering is
+                    // done. Clear the in-progress flag to let P2P-CD proceed.
+                    engine.clear_peering_in_progress(peer_id).await;
+                }
+            }
+        }
     }
 
     info!(

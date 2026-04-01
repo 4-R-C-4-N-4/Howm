@@ -1055,6 +1055,12 @@ impl ProtocolEngine {
                 return Some(*peer_id);
             }
         }
+        // Check LAN transport hints (reverse lookup by IP).
+        for (peer_id, addr) in self.lan_transport_hints.read().await.iter() {
+            if addr.ip() == ip {
+                return Some(*peer_id);
+            }
+        }
         use base64::{engine::general_purpose::STANDARD, Engine as _};
         match crate::wireguard::get_status().await {
             Ok(peers) => {

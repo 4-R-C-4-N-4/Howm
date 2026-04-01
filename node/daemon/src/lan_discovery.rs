@@ -58,7 +58,9 @@ impl LanDiscovery {
 
         // Scope mDNS to only the LAN interface — exclude WireGuard, Tailscale,
         // Docker, and other non-LAN interfaces that cause multicast errors.
+        // Disable all first, then enable only the LAN IP.
         if let Ok(ip) = lan_ip.parse::<std::net::IpAddr>() {
+            let _ = daemon.disable_interface(mdns_sd::IfKind::All);
             if let Err(e) = daemon.enable_interface(mdns_sd::IfKind::Addr(ip)) {
                 warn!("LAN discovery: failed to scope mDNS to {}: {}", lan_ip, e);
             }

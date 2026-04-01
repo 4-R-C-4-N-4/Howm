@@ -328,3 +328,32 @@ Updated todo list ✓
    ├ LAN-discovered peers store `lan_ip: Some(ip)` for future use
    ├ Fixed Bug #1 compile error: `remove_peer()` missing `node_id` arg → added "pending"
    └ All 111 tests pass ✓
+
+### Round 2 fixes (2026-04-01 post-test)
+
+   Log analysis from howm.log.2026-04-01 revealed three remaining issues:
+
+   **Fix A: `identify_peer_by_addr` must check LAN hints (responder path)**
+   The laptop connected inbound to archlinux from 192.168.1.169:34726.
+   `identify_peer_by_addr(192.168.1.169)` only checked WG allowed-ips (overlay IPs).
+   It couldn't identify the peer → "inbound from unknown addr, dropping".
+   ├ Added LAN transport hints reverse-lookup in `identify_peer_by_addr()`
+   └ Now checks `lan_transport_hints` map after test overrides, before WG dump
+
+   **Fix B: Inviter side never registered LAN hints**
+   Only `lan_accept` (responder) set LAN hints. The inviter (`lan_invite`)
+   knew the peer's LAN IP from scan results but didn't register it.
+   ├ Added `wg_pubkey: Option<String>` to `LanInviteRequest` (serde default, backward-compat)
+   ├ `lan_invite` now calls `engine.set_lan_hint()` after successful invite send
+   ├ Also calls `engine.clear_peering_in_progress()` since complete-invite has fired by then
+
+   **Fix C: mdns-sd `enable_interface` doesn't exclude others**
+   `enable_interface(IfKind::Addr(ip))` adds to the enabled set but by default
+   ALL interfaces are enabled. Must first `disable_interface(IfKind::All)` to
+   exclude everything, then re-enable only the LAN IP.
+   ├ Added `daemon.disable_interface(IfKind::All)` before `enable_interface`
+   └ Eliminates error-126 on howm0 and invalid-addr errors on tailscale0/docker0
+
+   All 111 tests pass ✓
+
+   (See Round 2 fixes above for the 3 issues found in the 2026-04-01 session.)
