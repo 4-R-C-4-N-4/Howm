@@ -1,15 +1,16 @@
-//! View state manager — frustum culling, LOD, entity diffing.
+//! View state manager — frustum culling, LOD, entity diffing, cross-district loading.
 //!
-//! Maintains the set of entities currently visible to a client.
-//! On each camera update, computes the diff and produces enter/leave/update events.
+//! Maintains the set of entities currently visible to a client across
+//! multiple districts. Loads neighboring districts when the player
+//! approaches a boundary.
 
 use std::collections::{HashMap, HashSet};
 
 use crate::gen::aesthetic::AestheticPalette;
 use crate::gen::atmosphere;
-use crate::gen::blocks::Block;
 use crate::gen::cell::Cell;
-use crate::scene::compiler::{self, Entity, Light, Environment, Camera};
+use crate::gen::config::config;
+use crate::scene::compiler::{self, Entity, Light, Scene};
 use crate::scene::geometry::Vec3;
 use crate::scene::material::Color;
 use crate::types::Point;
@@ -17,57 +18,58 @@ use crate::types::Point;
 /// LOD level for an entity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Lod {
-    Full,       // < 30 wu: displacement, composition, controllers
-    Simplified, // 30-60 wu: single primitive, no displacement
-    Billboard,  // > 60 wu: flat box, average colour
+    Full,       // < 30 wu
+    Simplified, // 30-60 wu
+    Billboard,  // > 60 wu
 }
 
 fn lod_for_distance(dist: f64) -> Lod {
-    if dist < 30.0 { Lod::Full }
-    else if dist < 60.0 { Lod::Simplified }
-    else { Lod::Billboard }
+    if dist < 30.0 {
+        Lod::Full
+    } else if dist < 60.0 {
+        Lod::Simplified
+    } else {
+        Lod::Billboard
+    }
 }
 
-/// A tracked entity in the view.
-struct TrackedEntity {
-    entity: Entity,
-    world_x: f64,
-    world_z: f64,
-    lod: Lod,
-}
-
-/// Per-client view state.
-pub struct ViewState {
-    /// Current player position in world space.
-    pub player_x: f64,
-    pub player_y: f64,
-    pub player_z: f64,
-    pub player_dx: f64,
-    pub player_dy: f64,
-    pub player_dz: f64,
-    pub fov: f64,
-
-    /// Entities currently in the client's view (keyed by entity id).
-    visible: HashMap<String, TrackedEntity>,
-
-    /// World-space origin (initial camera position for coordinate translation).
-    origin_x: f64,
-    origin_z: f64,
-
-    /// The district cell.
+/// A loaded district with its pre-generated entities.
+struct LoadedDistrict {
     cell: Cell,
-    palette: AestheticPalette,
+    entities: Vec<Entity>,
+    world_pos: Vec<(f64, f64)>, // world-space X/Z per entity
+    lights: Vec<Light>,
+}
 
-    /// All entities in the district (pre-generated, world coordinates).
-    all_entities: Vec<Entity>,
-    /// World positions for each entity (parallel to all_entities).
-    all_world_pos: Vec<(f64, f64)>, // (world_x, world_z)
-    /// All lights in the district.
-    all_lights: Vec<Light>,
+impl LoadedDistrict {
+    fn generate(cell: Cell) -> Self {
+        let palette = AestheticPalette::from_cell(&cell);
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        let atmo = atmosphere::compute_atmosphere(&cell, now_ms);
+        let scene = compiler::compile_district_scene(&cell, &palette, &[], &atmo);
 
-    /// View range in world units.
-    view_range: f64,
-    max_lights: usize,
+        let world_pos: Vec<(f64, f64)> = scene
+            .entities
+            .iter()
+            .map(|e| (e.transform.position.x, e.transform.position.z))
+            .collect();
+        let lights = scene.lights.clone();
+
+        Self {
+            cell,
+            entities: scene.entities,
+            world_pos,
+            lights,
+        }
+    }
+}
+
+/// A tracked visible entity.
+struct TrackedEntity {
+    lod: Lod,
 }
 
 /// Events produced by a view update.
@@ -77,69 +79,95 @@ pub enum ViewEvent {
     Lights(Vec<Light>),
 }
 
+/// Per-client view state — supports multiple loaded districts.
+pub struct ViewState {
+    pub player_x: f64,
+    pub player_y: f64,
+    pub player_z: f64,
+    pub player_dx: f64,
+    pub player_dy: f64,
+    pub player_dz: f64,
+    pub fov: f64,
+
+    origin_x: f64,
+    origin_z: f64,
+
+    /// Currently visible entities by id.
+    visible: HashMap<String, TrackedEntity>,
+
+    /// Loaded districts by cell key.
+    districts: HashMap<u32, LoadedDistrict>,
+
+    /// The primary district cell (the one the player entered).
+    primary_cell: Cell,
+
+    view_range: f64,
+    max_lights: usize,
+
+    /// District boundary detection threshold (wu).
+    /// Load neighbor when player is within this distance of any district edge.
+    neighbor_load_distance: f64,
+
+    /// Keys of districts we've already attempted to load.
+    loaded_keys: HashSet<u32>,
+}
+
 impl ViewState {
-    /// Create a new view state for a district.
     pub fn new(cell: Cell, view_range: f64) -> Self {
-        let palette = AestheticPalette::from_cell(&cell);
+        let district = LoadedDistrict::generate(cell.clone());
 
-        // Generate the full district scene once
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
-        let atmo = atmosphere::compute_atmosphere(&cell, now_ms);
-        let scene = compiler::compile_district_scene(&cell, &palette, &[], &atmo);
+        // Camera starts at district seed position
+        let cfg = config();
+        let origin_x = cell.gx as f64 * cfg.scale;
+        let origin_z = cell.gy as f64 * cfg.scale;
 
-        // Store world positions before any transformation
-        let all_world_pos: Vec<(f64, f64)> = scene.entities.iter()
-            .map(|e| (e.transform.position.x, e.transform.position.z))
-            .collect();
+        let mut districts = HashMap::new();
+        let key = cell.key;
+        districts.insert(key, district);
 
-        let all_lights = scene.lights.clone();
-
-        let origin_x = scene.camera.position.x;
-        let origin_z = scene.camera.position.z;
+        let mut loaded_keys = HashSet::new();
+        loaded_keys.insert(key);
 
         Self {
             player_x: origin_x,
-            player_y: scene.camera.position.y,
+            player_y: 8.0,
             player_z: origin_z,
             player_dx: 0.0,
             player_dy: -0.3,
             player_dz: -1.0,
             fov: 60.0,
-            visible: HashMap::new(),
             origin_x,
             origin_z,
-            cell,
-            palette,
-            all_entities: scene.entities,
-            all_world_pos,
-            all_lights,
+            visible: HashMap::new(),
+            districts,
+            primary_cell: cell,
             view_range,
             max_lights: 8,
+            neighbor_load_distance: view_range * 0.8,
+            loaded_keys,
         }
     }
 
-    /// Get initial scene setup (environment, camera, ground).
+    /// Get initial scene setup.
     pub fn get_init(&self) -> (serde_json::Value, serde_json::Value, serde_json::Value) {
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as u64;
-        let atmo = atmosphere::compute_atmosphere(&self.cell, now_ms);
-        let (env, _lights) = compiler::compile_environment(&self.cell, &atmo, &self.palette);
+        let palette = AestheticPalette::from_cell(&self.primary_cell);
+        let atmo = atmosphere::compute_atmosphere(&self.primary_cell, now_ms);
+        let (env, _) = compiler::compile_environment(&self.primary_cell, &atmo, &palette);
 
-        // Ground entity — translate to player-relative
-        let ground = self.all_entities.iter().find(|e| e.id == "ground");
-        let ground_json = if let Some(g) = ground {
-            let mut g = g.clone();
-            g.transform.position.x -= self.player_x;
-            g.transform.position.z -= self.player_z;
-            serde_json::to_value(&g).unwrap_or_default()
-        } else {
-            serde_json::json!(null)
-        };
+        // Ground entity from primary district
+        let ground = self.districts.get(&self.primary_cell.key)
+            .and_then(|d| d.entities.iter().find(|e| e.id == "ground"))
+            .map(|g| {
+                let mut g = g.clone();
+                g.transform.position.x -= self.origin_x;
+                g.transform.position.z -= self.origin_z;
+                serde_json::to_value(&g).unwrap_or_default()
+            })
+            .unwrap_or(serde_json::json!(null));
 
         let cam = serde_json::json!({
             "position": { "x": 0.0, "y": self.player_y, "z": 0.0 },
@@ -149,20 +177,60 @@ impl ViewState {
             "far": self.view_range * 2.0,
         });
 
-        (serde_json::to_value(&env).unwrap_or_default(), cam, ground_json)
+        (serde_json::to_value(&env).unwrap_or_default(), cam, ground)
     }
 
-    /// Update camera position and produce enter/leave events.
-    /// Client sends camera position in player-relative coords
-    /// (origin was the initial camera position from scene compile).
+    /// Check if neighboring districts need loading based on player position.
+    fn maybe_load_neighbors(&mut self) {
+        let cfg = config();
+        let [o1, o2, o3] = self.primary_cell.octets;
+
+        // Check 8 neighbors
+        let deltas: &[(i16, i16)] = &[
+            (0, 1), (0, -1), (1, 0), (-1, 0),
+            (1, 1), (1, -1), (-1, 1), (-1, -1),
+        ];
+
+        for &(do3, do2) in deltas {
+            let n3 = o3 as i16 + do3;
+            let n2 = o2 as i16 + do2;
+            if n3 < 0 || n3 > 255 || n2 < 0 || n2 > 255 {
+                continue;
+            }
+
+            let ncell = Cell::from_octets(o1, n2 as u8, n3 as u8);
+
+            if self.loaded_keys.contains(&ncell.key) {
+                continue;
+            }
+
+            // Distance from player to neighbor district centre
+            let nx = ncell.gx as f64 * cfg.scale;
+            let nz = ncell.gy as f64 * cfg.scale;
+            let dx = nx - self.player_x;
+            let dz = nz - self.player_z;
+            let dist = (dx * dx + dz * dz).sqrt();
+
+            if dist < self.view_range + cfg.scale * 0.5 {
+                // Close enough — load this neighbor
+                let district = LoadedDistrict::generate(ncell.clone());
+                self.districts.insert(ncell.key, district);
+                self.loaded_keys.insert(ncell.key);
+            }
+        }
+    }
+
+    /// Update camera and produce enter/leave/lights events.
     pub fn update_camera(
         &mut self,
-        px: f64, py: f64, pz: f64,
-        dx: f64, dy: f64, dz: f64,
+        px: f64,
+        py: f64,
+        pz: f64,
+        dx: f64,
+        dy: f64,
+        dz: f64,
         fov: f64,
     ) -> Vec<ViewEvent> {
-        // Convert client-relative position to world space
-        // origin_x/z was the initial camera world position
         self.player_x = self.origin_x + px;
         self.player_y = py;
         self.player_z = self.origin_z + pz;
@@ -171,59 +239,57 @@ impl ViewState {
         self.player_dz = dz;
         self.fov = fov;
 
-        let mut events = Vec::new();
+        // Check if we need to load neighboring districts
+        self.maybe_load_neighbors();
 
-        // Determine which entities should be visible
+        let mut events = Vec::new();
         let mut should_be_visible: HashSet<String> = HashSet::new();
         let range_sq = self.view_range * self.view_range;
 
-        for (i, entity) in self.all_entities.iter().enumerate() {
-            if entity.id == "ground" { continue; } // ground sent in init
+        // Iterate ALL loaded districts' entities
+        for district in self.districts.values() {
+            for (i, entity) in district.entities.iter().enumerate() {
+                if entity.id == "ground" {
+                    continue;
+                }
 
-            let (wx, wz) = self.all_world_pos[i];
-            let dx = wx - self.player_x;
-            let dz = wz - self.player_z;
-            let dist_sq = dx * dx + dz * dz;
+                let (wx, wz) = district.world_pos[i];
+                let ddx = wx - self.player_x;
+                let ddz = wz - self.player_z;
+                let dist_sq = ddx * ddx + ddz * ddz;
 
-            if dist_sq < range_sq {
-                should_be_visible.insert(entity.id.clone());
+                if dist_sq < range_sq {
+                    should_be_visible.insert(entity.id.clone());
 
-                if !self.visible.contains_key(&entity.id) {
-                    // Entity entering view — translate to player-relative coordinates
-                    let mut e = entity.clone();
-                    e.transform.position.x = wx - self.player_x;
-                    e.transform.position.z = wz - self.player_z;
+                    if !self.visible.contains_key(&entity.id) {
+                        // Entity entering — translate to player-relative
+                        let mut e = entity.clone();
+                        e.transform.position.x = wx - self.player_x;
+                        e.transform.position.z = wz - self.player_z;
 
-                    // LOD: strip displacement for distant entities
-                    let dist = dist_sq.sqrt();
-                    let lod = lod_for_distance(dist);
-                    if lod != Lod::Full {
-                        e.material.displacement = None;
-                        // For billboard: simplify geometry
-                        if lod == Lod::Billboard {
-                            e.description = None;
+                        let dist = dist_sq.sqrt();
+                        let lod = lod_for_distance(dist);
+                        if lod != Lod::Full {
+                            e.material.displacement = None;
+                            if lod == Lod::Billboard {
+                                e.description = None;
+                            }
                         }
-                    }
 
-                    self.visible.insert(entity.id.clone(), TrackedEntity {
-                        entity: e.clone(),
-                        world_x: wx,
-                        world_z: wz,
-                        lod,
-                    });
-                    events.push(ViewEvent::Enter(e));
-                } else {
-                    // Already visible — update position relative to player
-                    if let Some(tracked) = self.visible.get_mut(&entity.id) {
-                        tracked.entity.transform.position.x = wx - self.player_x;
-                        tracked.entity.transform.position.z = wz - self.player_z;
+                        self.visible.insert(
+                            entity.id.clone(),
+                            TrackedEntity { lod },
+                        );
+                        events.push(ViewEvent::Enter(e));
                     }
                 }
             }
         }
 
-        // Find entities that left the view
-        let to_remove: Vec<String> = self.visible.keys()
+        // Remove entities that left
+        let to_remove: Vec<String> = self
+            .visible
+            .keys()
             .filter(|id| !should_be_visible.contains(id.as_str()))
             .cloned()
             .collect();
@@ -233,30 +299,30 @@ impl ViewState {
             events.push(ViewEvent::Leave(id));
         }
 
-        // Stream nearest lights (player-relative)
-        let mut light_dists: Vec<(usize, f64)> = self.all_lights.iter().enumerate()
-            .filter_map(|(i, l)| {
-                if let Some(pos) = &l.position {
-                    let dx = pos.x - self.player_x;
-                    let dz = pos.z - self.player_z;
-                    Some((i, dx * dx + dz * dz))
+        // Stream nearest lights from ALL loaded districts
+        let mut all_lights: Vec<(f64, Light)> = Vec::new();
+        for district in self.districts.values() {
+            for l in &district.lights {
+                let dist_sq = if let Some(pos) = &l.position {
+                    let ddx = pos.x - self.player_x;
+                    let ddz = pos.z - self.player_z;
+                    ddx * ddx + ddz * ddz
                 } else {
-                    Some((i, 0.0)) // directional = always include
-                }
-            })
-            .collect();
-        light_dists.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
-
-        let active_lights: Vec<Light> = light_dists.iter()
-            .take(self.max_lights + 1) // +1 for directional
-            .map(|(i, _)| {
-                let mut l = self.all_lights[*i].clone();
-                if let Some(pos) = &mut l.position {
+                    0.0 // directional = always include
+                };
+                let mut light = l.clone();
+                if let Some(pos) = &mut light.position {
                     pos.x -= self.player_x;
                     pos.z -= self.player_z;
                 }
-                l
-            })
+                all_lights.push((dist_sq, light));
+            }
+        }
+        all_lights.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        let active_lights: Vec<Light> = all_lights
+            .into_iter()
+            .take(self.max_lights + 1)
+            .map(|(_, l)| l)
             .collect();
 
         events.push(ViewEvent::Lights(active_lights));
@@ -264,7 +330,6 @@ impl ViewState {
         events
     }
 
-    /// Get current visible entity count.
     pub fn visible_count(&self) -> usize {
         self.visible.len()
     }
