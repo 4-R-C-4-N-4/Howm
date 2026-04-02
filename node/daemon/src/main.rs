@@ -191,7 +191,9 @@ async fn main() -> anyhow::Result<()> {
                     cap_notifier.register(p2pcd_name.clone(), cap.port).await;
                     tracing::debug!(
                         "cap_notify: registered '{}' (p2pcd: {}) on port {}",
-                        cap.name, p2pcd_name, cap.port
+                        cap.name,
+                        p2pcd_name,
+                        cap.port
                     );
                 }
             }

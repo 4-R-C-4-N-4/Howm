@@ -22,10 +22,23 @@ pub async fn proxy_handler_root(
 pub async fn proxy_handler(
     State(state): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    Path((name, rest)): Path<(String, String)>,
+    Path((name, _rest)): Path<(String, String)>,
     req: Request<Body>,
 ) -> Result<Response<Body>, AppError> {
-    proxy_handler_inner(state, addr, name, rest, req).await
+    // Derive rest_path from the raw (still-percent-encoded) URI rather than
+    // from Axum's decoded path extractor. Axum decodes %2F → / which would
+    // split base64 peer IDs (containing '/') into spurious path segments,
+    // causing 404s when the proxy forwards to the capability.
+    let raw_rest = {
+        let raw_path = req.uri().path();
+        // Strip /cap/{name}/ prefix from the raw path
+        let prefix = format!("/cap/{}/", name);
+        raw_path
+            .strip_prefix(&prefix)
+            .unwrap_or(raw_path.strip_prefix(&format!("/cap/{}", name)).unwrap_or(""))
+            .to_string()
+    };
+    proxy_handler_inner(state, addr, name, raw_rest, req).await
 }
 
 async fn proxy_handler_inner(

@@ -198,7 +198,9 @@ pub async fn install_capability(
     //    peer-active / peer-inactive callbacks reach this newly installed cap.
     if let Some(ref p2pcd_name) = entry.p2pcd_name {
         if let Some(ref engine) = state.p2pcd_engine {
-            engine.register_capability(p2pcd_name.clone(), host_port).await;
+            engine
+                .register_capability(p2pcd_name.clone(), host_port)
+                .await;
         }
     }
 
@@ -256,7 +258,12 @@ pub async fn start_capability(
             .iter()
             .find(|c| c.name == name)
             .ok_or_else(|| AppError::NotFound(format!("capability '{}' not found", name)))?;
-        (cap.binary_path.clone(), cap.port, cap.data_dir.clone(), cap.p2pcd_name.clone())
+        (
+            cap.binary_path.clone(),
+            cap.port,
+            cap.data_dir.clone(),
+            cap.p2pcd_name.clone(),
+        )
     };
 
     let pid = executor::start_capability(&binary_path, &name, port, &data_dir, HashMap::new())
