@@ -122,3 +122,48 @@ Rebroadcast must NOT try to reuse the old transport. Instead, like `run_initiato
    2. After the re-exchange succeeds, the fresh transport is explicitly set to `None` before storing the new session. This closes the negotiation connection cleanly. The existing mux (from the original          
    connect) keeps running for capability traffic — that's intentional, it's what §8.4 active-set continuity is about.                                                                                                                
    The error was always failing because the transport was consumed by the mux setup and the rebroadcast was trying to reuse a gone connection.
+
+   
+                        
+**Root cause: `peer.last_seen` is never updated after initial pairing.**                                                                                                                                        
+                        
+The UI determines online/offline via `isOnline(peer.last_seen, now)` — a peer is online if `last_seen` was less than 90 seconds ago. But `last_seen` is written once at invite/accept time and stored in        
+`peers.json`. It's never updated by the session machinery. The heartbeat PONGs correctly update `session.last_activity` inside the engine's in-memory session map, but that value was never surfaced anywhere   
+the UI could read it.                                                                                                                                                                                           
+                        
+So when you restart the daemon with a saved peer:                                                                                                                                                               
+- `peers.json` has `last_seen = <invite time, hours ago>`                                                                                                                                                       
+- The session negotiates and reaches Active — heartbeats start flowing                                                                                                                                          
+- `GET /node/peers` returns the stale `last_seen` from disk                                                                                                                                                     
+- UI sees `last_seen = hours ago` → peer appears offline forever                                                                                                                                                
+                        
+**Why wiping peers.json worked:** Fresh invite sets `last_seen = now()` at the moment of the invite ceremony. If both daemons are up and the invite completes, `last_seen` is only seconds old — passes the     
+90s threshold. But after any restart, it's stale again.                                                                                                                                                         
+                        
+**Changes made:**                                                                                                                                                                                               
+                        
+1. `engine.rs` — added `last_activity` field to `SessionSummary` and populated it from `session.last_activity` in `active_sessions()`                                                                           
+                        
+2. `node_routes.rs` — `get_peers` now queries `engine.active_sessions()` and overlays the live `last_activity` as `last_seen` for any peer with an Active session. The stored `peers.json` value is only used   
+when no active session exists (peer is genuinely offline).                                                                                                                                                      
+                        
+The key is that `session.last_activity` is updated on every heartbeat PONG (every 5s), so the UI will always see a fresh timestamp while the peer is connected, and `isOnline`'s 90s threshold gives a          
+reasonable grace period if the daemon is briefly queried between PONGs.
+
+                                                                                                                                                                                                               
+   **Root cause: notifier keyed by `cap.name`, active_set uses `p2pcd_name` — they never match.**                                                                                                                         
+   The `CapabilityNotifier.endpoints` map is keyed by whatever string you pass to `register()`. It was being populated with `cap.name` (e.g. `"social.messaging"`). But `notify_peer_active` and                   
+   `notify_peer_inactive` iterate `active_set` from the session — which contains p2pcd-qualified names like `"howm.social.messaging.1"`. The `endpoints.get(cap_name)` lookup at notify time always came up        
+   empty, so no HTTP callback was ever sent to any capability process.                                                                                                                                                                                                       
+   This was true in all three paths where registration happened:                                                                                                                                                                                                      
+   1. **Daemon startup** — registered running caps with `cap.name`, not `cap.p2pcd_name`                                                                                                                           
+   2. **`install_capability`** — never registered at all (process was started but notifier was never updated)                                                                                                      
+   3. **`start_capability`** (restart path) — same, never registered                                                                                                                                                                                                  
+   **Changes made**                                                                                                  
+   1. `main.rs` startup loop — now registers under `cap.p2pcd_name` (e.g. `"howm.social.messaging.1"`). Skips caps that don't have a `p2pcd_name` set (core/non-p2pcd caps).                                       
+                                      
+   2. `ProtocolEngine` — new `register_capability(p2pcd_name, port)` and `unregister_capability(p2pcd_name)` public methods that delegate to the inner notifier, so the daemon's API layer can reach it via        
+   `state.p2pcd_engine`.                                                                                                                      
+   3. `install_capability` — calls `engine.register_capability` after persisting and starting the process.                                                                                                                 
+   4. `start_capability` — same, registers on (re)start.                                                                                                                                                                                                    
+   5. `uninstall_capability` — calls `engine.unregister_capability` before removing from the caps list, so peer-active/inactive POSTs stop going to the dead process.

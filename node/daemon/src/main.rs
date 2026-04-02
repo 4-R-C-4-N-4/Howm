@@ -185,8 +185,15 @@ async fn main() -> anyhow::Result<()> {
         let caps = state.capabilities.read().await;
         for cap in caps.iter() {
             if matches!(cap.status, capabilities::CapStatus::Running) {
-                cap_notifier.register(cap.name.clone(), cap.port).await;
-                tracing::debug!("cap_notify: registered '{}' on port {}", cap.name, cap.port);
+                // Register under the p2pcd name (e.g. "howm.social.messaging.1") so
+                // notify_peer_active can match it against the session's active_set.
+                if let Some(ref p2pcd_name) = cap.p2pcd_name {
+                    cap_notifier.register(p2pcd_name.clone(), cap.port).await;
+                    tracing::debug!(
+                        "cap_notify: registered '{}' (p2pcd: {}) on port {}",
+                        cap.name, p2pcd_name, cap.port
+                    );
+                }
             }
         }
     }

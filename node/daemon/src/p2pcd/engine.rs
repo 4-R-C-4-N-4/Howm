@@ -64,6 +64,8 @@ pub struct SessionSummary {
     pub state: SessionState,
     pub active_set: Vec<String>,
     pub uptime_s: u64,
+    /// Unix timestamp of the last heartbeat PONG (or session activation if no pong yet).
+    pub last_activity: u64,
 }
 
 // ── ProtocolEngine ───────────────────────────────────────────────────────────
@@ -988,6 +990,18 @@ impl ProtocolEngine {
 
     // ── Public query API ──────────────────────────────────────────────────────
 
+    /// Register a capability endpoint with the notifier so it receives peer-active
+    /// and peer-inactive callbacks. Must be called with the p2pcd capability name
+    /// (e.g. "howm.social.messaging.1") — that is what appears in session active_sets.
+    pub async fn register_capability(&self, p2pcd_name: String, port: u16) {
+        self.notifier.register(p2pcd_name, port).await;
+    }
+
+    /// Unregister a capability from the notifier (call on stop/uninstall).
+    pub async fn unregister_capability(&self, p2pcd_name: &str) {
+        self.notifier.unregister(p2pcd_name).await;
+    }
+
     pub async fn active_sessions(&self) -> Vec<SessionSummary> {
         let sessions = self.sessions.read().await;
         let now = unix_now();
@@ -998,6 +1012,7 @@ impl ProtocolEngine {
                 state: s.state.clone(),
                 active_set: s.active_set.clone(),
                 uptime_s: now.saturating_sub(s.created_at),
+                last_activity: s.last_activity,
             })
             .collect()
     }

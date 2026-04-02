@@ -194,6 +194,14 @@ pub async fn install_capability(
             .map_err(|e| AppError::Internal(e.to_string()))?;
     }
 
+    // 8. Register with the capability notifier under the p2pcd name so
+    //    peer-active / peer-inactive callbacks reach this newly installed cap.
+    if let Some(ref p2pcd_name) = entry.p2pcd_name {
+        if let Some(ref engine) = state.p2pcd_engine {
+            engine.register_capability(p2pcd_name.clone(), host_port).await;
+        }
+    }
+
     info!(
         "Installed capability '{}' on port {} (pid={})",
         manifest.name, host_port, pid
@@ -242,13 +250,13 @@ pub async fn start_capability(
     State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> Result<Json<Value>, AppError> {
-    let (binary_path, port, data_dir) = {
+    let (binary_path, port, data_dir, p2pcd_name) = {
         let caps = state.capabilities.read().await;
         let cap = caps
             .iter()
             .find(|c| c.name == name)
             .ok_or_else(|| AppError::NotFound(format!("capability '{}' not found", name)))?;
-        (cap.binary_path.clone(), cap.port, cap.data_dir.clone())
+        (cap.binary_path.clone(), cap.port, cap.data_dir.clone(), cap.p2pcd_name.clone())
     };
 
     let pid = executor::start_capability(&binary_path, &name, port, &data_dir, HashMap::new())
@@ -265,6 +273,13 @@ pub async fn start_capability(
             .map_err(|e| AppError::Internal(e.to_string()))?;
     }
 
+    // Re-register with the notifier under the p2pcd name after (re)start.
+    if let Some(ref p2pcd_name) = p2pcd_name {
+        if let Some(ref engine) = state.p2pcd_engine {
+            engine.register_capability(p2pcd_name.clone(), port).await;
+        }
+    }
+
     info!("Started capability '{}' (pid={})", name, pid);
     Ok(Json(
         json!({ "status": "started", "name": name, "pid": pid }),
@@ -277,19 +292,27 @@ pub async fn uninstall_capability(
     State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> Result<Json<Value>, AppError> {
-    let pid = {
+    let (pid, p2pcd_name) = {
         let caps = state.capabilities.read().await;
         let cap = caps
             .iter()
             .find(|c| c.name == name)
             .ok_or_else(|| AppError::NotFound(format!("capability '{}' not found", name)))?;
-        cap.pid
+        (cap.pid, cap.p2pcd_name.clone())
     };
 
     // Best-effort stop
     if let Some(pid) = pid {
         if let Err(e) = executor::stop_capability(pid).await {
             warn!("Stop before uninstall failed (ignoring): {}", e);
+        }
+    }
+
+    // Unregister from notifier so no further peer-active/inactive calls are sent
+    // to a now-dead process.
+    if let Some(ref p2pcd_name) = p2pcd_name {
+        if let Some(ref engine) = state.p2pcd_engine {
+            engine.unregister_capability(p2pcd_name).await;
         }
     }
 
