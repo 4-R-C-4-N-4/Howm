@@ -908,17 +908,42 @@ impl ProtocolEngine {
         for peer_id in active_peers {
             // §8.4 Active-set continuity: keep old active set alive during re-exchange.
             // Only capabilities removed from the new set are deactivated.
-            let (transport, old_active_set) = {
-                let mut sessions = self.sessions.write().await;
-                if let Some(s) = sessions.get_mut(&peer_id) {
-                    (s.transport.take(), s.active_set.clone())
+            let old_active_set = {
+                let sessions = self.sessions.read().await;
+                if let Some(s) = sessions.get(&peer_id) {
+                    s.active_set.clone()
                 } else {
                     continue;
                 }
             };
 
+            // Rebroadcast must open a fresh TCP connection — the session's transport
+            // was already consumed by post_session_setup (converted into mux channels).
+            let addr = match self.resolve_peer_addr(peer_id).await {
+                Some(a) => a,
+                None => {
+                    tracing::warn!(
+                        "engine: rebroadcast to {} skipped: can't resolve addr",
+                        short(peer_id)
+                    );
+                    continue;
+                }
+            };
+
+            let fresh_transport = match transport::connect(addr).await {
+                Ok(t) => t,
+                Err(e) => {
+                    tracing::warn!(
+                        "engine: rebroadcast to {} failed: connect error: {:?}",
+                        short(peer_id),
+                        e
+                    );
+                    continue;
+                }
+            };
+
             let mut new_s = Session::new(peer_id, manifest.clone());
-            new_s.transport = transport;
+            new_s.transport = Some(fresh_transport);
             new_s.state = SessionState::PeerVisible;
 
             let access_db = Arc::clone(&self.access_db);
@@ -928,10 +953,6 @@ impl ProtocolEngine {
 
             if let Err(e) = session::run_initiator_exchange(&mut new_s, &trust_gate).await {
                 tracing::warn!("engine: rebroadcast to {} failed: {:?}", short(peer_id), e);
-                // On failure, restore the old session's transport and keep active set
-                self.sessions.write().await.entry(peer_id).and_modify(|s| {
-                    s.transport = new_s.transport.take();
-                });
                 continue;
             }
 
@@ -956,6 +977,10 @@ impl ProtocolEngine {
                     .notify_peer_inactive(peer_id, &removed, "re-exchange")
                     .await;
             }
+
+            // Drop the negotiation-only transport — capability traffic continues
+            // on the existing mux established during the initial session setup.
+            new_s.transport = None;
 
             self.sessions.write().await.insert(peer_id, new_s);
         }

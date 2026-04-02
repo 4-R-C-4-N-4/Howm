@@ -37,7 +37,7 @@ The pipeline from "two peers connected" to "capability works between them":
 
 ### ROOT CAUSE FOUND — Log Analysis (2026-04-01)
 
-**Session goes `CapabilityExchange → None` — active_set is empty.**
+**Session goes ` → None` — active_set is empty.**
 
 The logs show:
 ```
@@ -98,3 +98,27 @@ Once the TOML is correct:
 - **Presence and voice missing from default config:** Even regenerated TOML won't have these
 - **Rebroadcast may fail silently:** No retry on transport error during re-exchange
 - **Capability notification timing:** Late-starting caps miss peer-active
+
+### sessions forever
+**The Bug:**
+`rebroadcast()` (line 894) calls `s.transport.take()` to steal the session's transport. But `post_session_setup` already called `transport.take()` after the initial exchange to build the mux. So by the time rebroadcast fires, `session.transport` is always `None`. The stolen `None` goes into `new_s.transport`, and `run_initiator_exchange` immediately fails.
+
+**The Fix:**
+Rebroadcast must NOT try to reuse the old transport. Instead, like `run_initiator_session`, it should:
+1. Call `resolve_peer_addr(peer_id)` to get the address
+2. Call `transport::connect(addr)` to open a fresh TCP connection
+3. Run the exchange on the fresh transport
+4. Then call `post_session_setup` (or a rebroadcast variant of it) with the `hb_event_tx` from `self`
+**Root cause confirmed.**                                     
+   The bug is in `rebroadcast()` in `engine.rs`. Here's the chain:                                                                                                                   
+   1. Initial session (12:06:50): `run_initiator_session` connects TCP, runs the OFFER/CONFIRM exchange, then `post_session_setup` calls `s.transport.take()` at line 561 to hand the connection over to the mux   
+   (for ongoing cap message routing + heartbeat). The session is stored with `transport = None`.                                                                                                                       
+   2. At 12:16:37, something triggers `rebroadcast()` (probably a membership/trust change). The old code tried to do `s.transport.take()` from the stored session to "reuse" it for the re-exchange — but that's   
+   already `None`. So `new_s.transport = None`. Then `run_initiator_exchange` hits `session.transport.as_mut().context("no transport in initiator exchange")?` and bails.                                          
+                                       
+   **What the fix does (2 changes):**                                                                                                                       
+   1. Instead of stealing `s.transport` (which is always None post-setup), the rebroadcast now calls `resolve_peer_addr` + `transport::connect` to open a **fresh short-lived TCP connection** for the             
+   re-negotiation only — same pattern as `run_initiator_session`.                                                                                                                       
+   2. After the re-exchange succeeds, the fresh transport is explicitly set to `None` before storing the new session. This closes the negotiation connection cleanly. The existing mux (from the original          
+   connect) keeps running for capability traffic — that's intentional, it's what §8.4 active-set continuity is about.                                                                                                                
+   The error was always failing because the transport was consumed by the mux setup and the rebroadcast was trying to reuse a gone connection.
