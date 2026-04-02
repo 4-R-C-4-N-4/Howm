@@ -199,34 +199,53 @@ impl PeerTracker {
     ///
     /// Queries the bridge for already-active peers. This handles the case where
     /// the capability restarts while peers are already connected.
+    ///
+    /// Retries with backoff on connection errors — capabilities may be spawned
+    /// before the daemon's HTTP listener is ready.
     pub async fn init_from_daemon(&self, bridge: &BridgeClient) {
-        match bridge.list_peers(Some(&self.cap_name)).await {
-            Ok(bridge_peers) => {
-                let mut peers = self.peers.write().await;
-                for bp in &bridge_peers {
-                    // Avoid duplicates
-                    if !peers.iter().any(|p| p.peer_id == bp.peer_id) {
-                        peers.push(ActivePeer {
-                            peer_id: bp.peer_id.clone(),
-                            wg_address: String::new(), // filled on next peer-active callback
-                            active_since: 0,
-                        });
+        let delays_ms: &[u64] = &[50, 150, 500, 1000, 2000];
+        for (attempt, &delay_ms) in delays_ms.iter().enumerate() {
+            match bridge.list_peers(Some(&self.cap_name)).await {
+                Ok(bridge_peers) => {
+                    let mut peers = self.peers.write().await;
+                    for bp in &bridge_peers {
+                        // Avoid duplicates
+                        if !peers.iter().any(|p| p.peer_id == bp.peer_id) {
+                            peers.push(ActivePeer {
+                                peer_id: bp.peer_id.clone(),
+                                wg_address: String::new(), // filled on next peer-active callback
+                                active_since: 0,
+                            });
+                        }
+                    }
+                    if !peers.is_empty() {
+                        tracing::info!(
+                            "capability_sdk: restored {} active peers for '{}' from daemon",
+                            peers.len(),
+                            self.cap_name
+                        );
+                    }
+                    return;
+                }
+                Err(crate::bridge_client::BridgeError::Http(ref e)) if e.is_connect() => {
+                    if attempt + 1 < delays_ms.len() {
+                        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                    } else {
+                        tracing::debug!(
+                            "capability_sdk: daemon not reachable for '{}' after {} attempts, starting with empty peer list",
+                            self.cap_name,
+                            delays_ms.len()
+                        );
                     }
                 }
-                if !peers.is_empty() {
-                    tracing::info!(
-                        "capability_sdk: restored {} active peers for '{}' from daemon",
-                        peers.len(),
+                Err(e) => {
+                    // Other errors (auth, parse, etc.) — not retryable
+                    tracing::debug!(
+                        "capability_sdk: daemon not reachable for '{}' ({e}), starting with empty peer list",
                         self.cap_name
                     );
+                    return;
                 }
-            }
-            Err(e) => {
-                // Daemon may not be running yet — not fatal
-                tracing::debug!(
-                    "capability_sdk: daemon not reachable for '{}' ({e}), starting with empty peer list",
-                    self.cap_name
-                );
             }
         }
     }

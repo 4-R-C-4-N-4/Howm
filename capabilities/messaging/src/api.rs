@@ -69,23 +69,37 @@ impl AppState {
 
 /// Initialise active peers from the daemon on startup.
 pub async fn init_peers_from_daemon(state: AppState) {
-    match state
-        .bridge
-        .list_peers(Some("howm.social.messaging.1"))
-        .await
-    {
-        Ok(peers) => {
-            let mut active = state.active_peers.write().await;
-            for p in peers {
-                active.insert(p.peer_id.clone(), String::new());
+    // Retry with backoff — the daemon may not have its HTTP listener bound yet
+    // if capabilities are spawned before the Axum server starts accepting.
+    let delays_ms = [50, 150, 500, 1000, 2000];
+    for (attempt, delay_ms) in delays_ms.iter().enumerate() {
+        match state
+            .bridge
+            .list_peers(Some("howm.social.messaging.1"))
+            .await
+        {
+            Ok(peers) => {
+                let mut active = state.active_peers.write().await;
+                for p in peers {
+                    active.insert(p.peer_id.clone(), String::new());
+                }
+                info!(
+                    "Initialised {} active messaging peers from daemon",
+                    active.len()
+                );
+                return;
             }
-            info!(
-                "Initialised {} active messaging peers from daemon",
-                active.len()
-            );
-        }
-        Err(e) => {
-            warn!("Failed to fetch initial peers from daemon: {}", e);
+            Err(p2pcd::bridge_client::BridgeError::Http(ref e)) if e.is_connect() => {
+                if attempt + 1 < delays_ms.len() {
+                    tokio::time::sleep(std::time::Duration::from_millis(*delay_ms)).await;
+                } else {
+                    warn!("Failed to fetch initial peers from daemon after {} attempts: daemon not reachable", delays_ms.len());
+                }
+            }
+            Err(e) => {
+                warn!("Failed to fetch initial peers from daemon: {}", e);
+                return;
+            }
         }
     }
 }
