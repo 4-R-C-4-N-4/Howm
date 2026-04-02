@@ -278,7 +278,7 @@ howm.default:
   - core.session.timesync.1   → allow
 
 howm.friends (adds to default):
-  - howm.feed.1        → allow
+  - howm.social.feed.1        → allow
   - howm.social.messaging.1   → allow
   - howm.social.files.1       → allow
   - howm.world.room.1         → allow

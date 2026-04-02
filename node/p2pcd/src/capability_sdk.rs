@@ -246,7 +246,7 @@ impl PeerTracker {
 /// ```ignore
 /// use p2pcd::capability_sdk::CapabilityRuntime;
 ///
-/// let runtime = CapabilityRuntime::new("howm.feed.1", 7000);
+/// let runtime = CapabilityRuntime::new("howm.social.feed.1", 7000);
 /// runtime.init_from_daemon().await;
 ///
 /// // Use runtime.bridge() for outbound messages
@@ -261,7 +261,7 @@ pub struct CapabilityRuntime {
 impl CapabilityRuntime {
     /// Create a new runtime for a capability.
     ///
-    /// `cap_name` is the fully-qualified capability name (e.g. "howm.feed.1").
+    /// `cap_name` is the fully-qualified capability name (e.g. "howm.social.feed.1").
     /// `daemon_port` is the port the howm daemon listens on (default 7000).
     pub fn new(cap_name: impl Into<String>, daemon_port: u16) -> Self {
         let cap_name = cap_name.into();
@@ -320,21 +320,21 @@ mod tests {
         let p = PeerActivePayload {
             peer_id: "AAAA".into(),
             wg_address: "100.222.0.2".into(),
-            capability: "howm.feed.1".into(),
+            capability: "howm.social.feed.1".into(),
             scope: serde_json::json!({}),
             active_since: 1234567890,
         };
         let json = serde_json::to_string(&p).unwrap();
         let q: PeerActivePayload = serde_json::from_str(&json).unwrap();
         assert_eq!(q.peer_id, "AAAA");
-        assert_eq!(q.capability, "howm.feed.1");
+        assert_eq!(q.capability, "howm.social.feed.1");
     }
 
     #[test]
     fn peer_inactive_payload_serde() {
         let p = PeerInactivePayload {
             peer_id: "BBBB".into(),
-            capability: "howm.feed.1".into(),
+            capability: "howm.social.feed.1".into(),
             reason: "timeout".into(),
         };
         let json = serde_json::to_string(&p).unwrap();
@@ -347,7 +347,7 @@ mod tests {
             peer_id: "CCCC".into(),
             message_type: 100,
             payload: "dGVzdA==".into(),
-            capability: "howm.feed.1".into(),
+            capability: "howm.social.feed.1".into(),
         };
         let json = serde_json::to_string(&m).unwrap();
         let m2: InboundMessage = serde_json::from_str(&json).unwrap();
@@ -473,18 +473,18 @@ mod tests {
 
     #[test]
     fn capability_runtime_creates_correctly() {
-        let rt = CapabilityRuntime::new("howm.feed.1", 7000);
-        assert_eq!(rt.capability_name(), "howm.feed.1");
+        let rt = CapabilityRuntime::new("howm.social.feed.1", 7000);
+        assert_eq!(rt.capability_name(), "howm.social.feed.1");
     }
 
     #[test]
     fn is_for_us_checks_capability() {
-        let tracker = PeerTracker::new("howm.feed.1");
+        let tracker = PeerTracker::new("howm.social.feed.1");
         let msg_yes = InboundMessage {
             peer_id: "x".into(),
             message_type: 100,
             payload: "".into(),
-            capability: "howm.feed.1".into(),
+            capability: "howm.social.feed.1".into(),
         };
         let msg_no = InboundMessage {
             peer_id: "x".into(),

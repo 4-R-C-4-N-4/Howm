@@ -138,7 +138,7 @@ impl Default for DiscoveryConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CapabilityConfig {
-    /// Fully-qualified capability name (e.g. "howm.feed.1").
+    /// Fully-qualified capability name (e.g. "howm.social.feed.1").
     /// Must match the namespace grammar §4.4.
     pub name: String,
     /// Role: "provide" | "consume" | "both"
@@ -546,7 +546,7 @@ mode = "wireguard"
 poll_interval_ms = 2000
 
 [capabilities.feed]
-name = "howm.feed.1"
+name = "howm.social.feed.1"
 role = "both"
 mutual = true
 
@@ -617,14 +617,14 @@ list = []
     fn trust_policies_built_correctly() {
         let cfg: PeerConfig = toml::from_str(SAMPLE_TOML).unwrap();
         let policies = cfg.trust_policies();
-        assert!(policies.contains_key("howm.feed.1"));
+        assert!(policies.contains_key("howm.social.feed.1"));
         // Heartbeat has no classification config → no policy
         assert!(!policies.contains_key("core.session.heartbeat.1"));
     }
 
     #[test]
     fn validate_capability_names() {
-        assert!(validate_capability_name("howm.feed.1"));
+        assert!(validate_capability_name("howm.social.feed.1"));
         assert!(validate_capability_name("core.session.heartbeat.1"));
         assert!(validate_capability_name("org.example.cap.2"));
         assert!(!validate_capability_name("invalid"));

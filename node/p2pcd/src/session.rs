@@ -458,7 +458,7 @@ mod tests {
 
     fn social_cap(role: Role) -> CapabilityDeclaration {
         CapabilityDeclaration {
-            name: "howm.feed.1".to_string(),
+            name: "howm.social.feed.1".to_string(),
             role,
             mutual: false,
             scope: Some(ScopeParams {
@@ -529,12 +529,12 @@ mod tests {
             .unwrap();
         finalize_session(
             &mut session,
-            vec!["howm.feed.1".to_string()],
+            vec!["howm.social.feed.1".to_string()],
             BTreeMap::new(),
         )
         .unwrap();
         assert_eq!(session.state, SessionState::Active);
-        assert_eq!(session.active_set, vec!["howm.feed.1"]);
+        assert_eq!(session.active_set, vec!["howm.social.feed.1"]);
     }
 
     #[test]
@@ -603,8 +603,8 @@ mod tests {
         );
 
         assert!(
-            session.active_set.contains(&"howm.feed.1".to_string()),
-            "howm.feed.1 should be in active_set, got {:?}",
+            session.active_set.contains(&"howm.social.feed.1".to_string()),
+            "howm.social.feed.1 should be in active_set, got {:?}",
             session.active_set
         );
     }
@@ -614,7 +614,7 @@ mod tests {
     async fn lurker_lurker_no_social() {
         // Both have Role::Both but mutual=false for social → no match
         let lurker_cap = CapabilityDeclaration {
-            name: "howm.feed.1".to_string(),
+            name: "howm.social.feed.1".to_string(),
             role: Role::Consume,
             mutual: false,
             scope: None,
@@ -652,7 +652,7 @@ mod tests {
         // social: Both+Both mutual=false → no match
         // heartbeat: Both+Both mutual=true → match
         assert!(
-            !session.active_set.contains(&"howm.feed.1".to_string()),
+            !session.active_set.contains(&"howm.social.feed.1".to_string()),
             "lurker+lurker social should NOT match"
         );
         assert!(
@@ -664,7 +664,7 @@ mod tests {
         );
         assert_eq!(session.state, SessionState::Active);
 
-        assert!(!resp_set.contains(&"howm.feed.1".to_string()));
+        assert!(!resp_set.contains(&"howm.social.feed.1".to_string()));
         assert_eq!(resp_state, SessionState::Active);
     }
 
@@ -674,7 +674,7 @@ mod tests {
         let local_manifest = make_manifest(5, vec![social_cap(Role::Provide)]);
         // remote only has a different cap (no consumer for social, no heartbeat mutual)
         let other_cap = CapabilityDeclaration {
-            name: "howm.feed.1".to_string(),
+            name: "howm.social.feed.1".to_string(),
             role: Role::Provide,
             mutual: false,
             scope: None,

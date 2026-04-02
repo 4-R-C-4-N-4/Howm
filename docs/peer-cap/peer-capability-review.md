@@ -56,7 +56,7 @@ The TOML on this node (`~/.local/share/howm/p2pcd-peer.toml`) contains:
 name = "core.heartbeat.liveness.1"    ← WRONG (should be core.session.heartbeat.1)
 
 [capabilities.social_feed]
-name = "howm.social.feed.1"           ← WRONG (should be howm.feed.1)
+name = "howm.social.feed.1"           ← WRONG (should be howm.social.feed.1)
 ```
 
 Only 2 capabilities listed (heartbeat + feed). Missing: messaging, files, presence, voice.
@@ -64,7 +64,7 @@ Only 2 capabilities listed (heartbeat + feed). Missing: messaging, files, presen
 The current `PeerConfig::generate_default()` produces:
 ```
 core.session.heartbeat.1    ← correct name
-howm.feed.1                 ← correct name
+howm.social.feed.1                 ← correct name
 howm.social.messaging.1
 howm.social.files.1
 ```
@@ -86,7 +86,7 @@ Even heartbeat fails because `core.heartbeat.liveness.1` ≠ `core.session.heart
 Once the TOML is correct:
 1. Both peers advertise `core.session.heartbeat.1` → heartbeat negotiates
 2. Session reaches Active
-3. `howm.feed.1` and other caps in the active_set
+3. `howm.social.feed.1` and other caps in the active_set
 4. `cap_notify.notify_peer_active()` fires
 5. Capabilities get the peer-active webhook
 6. Peers show as online
