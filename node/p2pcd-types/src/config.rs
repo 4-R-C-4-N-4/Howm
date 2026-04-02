@@ -326,11 +326,30 @@ impl PeerConfig {
             discovery: DiscoveryConfig::default(),
             capabilities: {
                 let mut m = HashMap::new();
-                // Single social capability — Both/mutual:true, direction handled at app layer
+
+                // ── Core protocol capabilities ──────────────────────────
+                m.insert(
+                    "heartbeat".to_string(),
+                    CapabilityConfig {
+                        name: "core.session.heartbeat.1".to_string(),
+                        role: RoleConfig::Both,
+                        mutual: true,
+                        scope: None,
+                        classification: None,
+                        params: Some(HeartbeatParams {
+                            interval_ms: 5000,
+                            timeout_ms: 15000,
+                        }),
+                    },
+                );
+
+                // ── Howm application capabilities ───────────────────────
+                // Names MUST match the access schema in howm-access
+                // (schema.rs: howm.friends group allowed capabilities).
                 m.insert(
                     "feed".to_string(),
                     CapabilityConfig {
-                        name: "howm.feed.1".to_string(),
+                        name: "howm.social.feed.1".to_string(),
                         role: RoleConfig::Both,
                         mutual: true,
                         scope: Some(ScopeConfig {
@@ -367,19 +386,39 @@ impl PeerConfig {
                     },
                 );
                 m.insert(
-                    "heartbeat".to_string(),
+                    "presence".to_string(),
                     CapabilityConfig {
-                        name: "core.session.heartbeat.1".to_string(),
+                        name: "howm.social.presence.1".to_string(),
                         role: RoleConfig::Both,
                         mutual: true,
                         scope: None,
                         classification: None,
-                        params: Some(HeartbeatParams {
-                            interval_ms: 5000,
-                            timeout_ms: 15000,
-                        }),
+                        params: None,
                     },
                 );
+                m.insert(
+                    "voice".to_string(),
+                    CapabilityConfig {
+                        name: "howm.social.voice.1".to_string(),
+                        role: RoleConfig::Both,
+                        mutual: true,
+                        scope: None,
+                        classification: None,
+                        params: None,
+                    },
+                );
+                m.insert(
+                    "world".to_string(),
+                    CapabilityConfig {
+                        name: "howm.world.room.1".to_string(),
+                        role: RoleConfig::Both,
+                        mutual: true,
+                        scope: None,
+                        classification: None,
+                        params: None,
+                    },
+                );
+
                 m
             },
             friends: FriendsConfig::default(),
@@ -558,7 +597,8 @@ list = []
         let cfg = PeerConfig::generate_default(&data_dir);
         let peer_id = [0xA1u8; 32];
         let manifest = cfg.to_manifest(peer_id, 1);
-        assert_eq!(manifest.capabilities.len(), 4);
+        // 7 capabilities: heartbeat + feed + messaging + files + presence + voice + world
+        assert_eq!(manifest.capabilities.len(), 7);
         // Capabilities must be sorted
         let names: Vec<_> = manifest
             .capabilities
