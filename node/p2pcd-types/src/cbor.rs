@@ -688,7 +688,10 @@ mod tests {
             .iter()
             .map(|c| c.name.as_str())
             .collect();
-        assert_eq!(names, vec!["core.session.heartbeat.1", "howm.social.feed.1"]);
+        assert_eq!(
+            names,
+            vec!["core.session.heartbeat.1", "howm.social.feed.1"]
+        );
     }
 
     #[test]

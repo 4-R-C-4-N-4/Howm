@@ -603,7 +603,9 @@ mod tests {
         );
 
         assert!(
-            session.active_set.contains(&"howm.social.feed.1".to_string()),
+            session
+                .active_set
+                .contains(&"howm.social.feed.1".to_string()),
             "howm.social.feed.1 should be in active_set, got {:?}",
             session.active_set
         );
@@ -652,7 +654,9 @@ mod tests {
         // social: Both+Both mutual=false → no match
         // heartbeat: Both+Both mutual=true → match
         assert!(
-            !session.active_set.contains(&"howm.social.feed.1".to_string()),
+            !session
+                .active_set
+                .contains(&"howm.social.feed.1".to_string()),
             "lurker+lurker social should NOT match"
         );
         assert!(

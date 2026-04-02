@@ -1345,7 +1345,9 @@ mod tests {
 
         // ── Build Alice's engine ──
         let alice_notifier = Arc::new(CapabilityNotifier::new());
-        alice_notifier.register("howm.social.feed.1".to_string(), 0).await;
+        alice_notifier
+            .register("howm.social.feed.1".to_string(), 0)
+            .await;
         // Override notifier URL so callbacks reach our mock server
         alice_notifier
             .register_with_url("howm.social.feed.1".to_string(), alice_notifier_url.clone())

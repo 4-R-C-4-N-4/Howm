@@ -853,7 +853,10 @@ mod tests {
         let bob = social_peer(0xB0);
         let allow_all = |_: &str, _: &PeerId| true;
         let active = compute_intersection(&alice, &bob, &allow_all);
-        assert_eq!(active, vec!["core.session.heartbeat.1", "howm.social.feed.1"]);
+        assert_eq!(
+            active,
+            vec!["core.session.heartbeat.1", "howm.social.feed.1"]
+        );
     }
 
     /// §9.2: Social ↔ No-Social → heartbeat only
@@ -911,7 +914,10 @@ mod tests {
         };
 
         let active = compute_intersection(&private_user, &friend, &gate);
-        assert_eq!(active, vec!["core.session.heartbeat.1", "howm.social.feed.1"]);
+        assert_eq!(
+            active,
+            vec!["core.session.heartbeat.1", "howm.social.feed.1"]
+        );
     }
 
     /// §9.5: No-Social ↔ No-Social → heartbeat only
