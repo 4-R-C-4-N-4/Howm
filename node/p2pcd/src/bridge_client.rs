@@ -34,6 +34,8 @@ use serde::{Deserialize, Serialize};
 pub struct BridgeClient {
     http: reqwest::Client,
     base_url: String,
+    /// Daemon root URL (e.g. "http://127.0.0.1:7000") for non-bridge endpoints.
+    daemon_url: String,
 }
 
 impl BridgeClient {
@@ -46,16 +48,26 @@ impl BridgeClient {
         Self {
             http,
             base_url: format!("http://127.0.0.1:{}/p2pcd/bridge", daemon_port),
+            daemon_url: format!("http://127.0.0.1:{}", daemon_port),
         }
     }
 
     /// Create with a custom base URL (for testing or non-standard setups).
     pub fn with_base_url(base_url: String) -> Self {
+        // Derive daemon_url by stripping the /p2pcd/bridge suffix if present
+        let daemon_url = base_url
+            .strip_suffix("/p2pcd/bridge")
+            .map(str::to_owned)
+            .unwrap_or_else(|| base_url.clone());
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .build()
             .unwrap_or_default();
-        Self { http, base_url }
+        Self {
+            http,
+            base_url,
+            daemon_url,
+        }
     }
 
     // ── Send ────────────────────────────────────────────────────────────────
@@ -212,6 +224,37 @@ impl BridgeClient {
     /// Check if the daemon bridge is reachable.
     pub async fn is_available(&self) -> bool {
         self.list_peers(None).await.is_ok()
+    }
+
+    /// Fetch the local node's WireGuard public key (base64) from the daemon.
+    /// This is the local peer ID used as the "self" side of conversation IDs.
+    /// Returns None if the daemon is unreachable or the key is not yet set.
+    pub async fn get_local_peer_id(&self) -> Result<String, BridgeError> {
+        let url = format!("{}/node/info", self.daemon_url);
+        let resp = self
+            .http
+            .get(&url)
+            .send()
+            .await
+            .map_err(BridgeError::Http)?;
+
+        if resp.status().is_success() {
+            let info: serde_json::Value = resp.json().await.map_err(BridgeError::Http)?;
+            let pubkey = info
+                .get("wg_pubkey")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+                .ok_or_else(|| BridgeError::Decode("wg_pubkey missing from /node/info".into()))?;
+            Ok(pubkey)
+        } else {
+            let status = resp.status().as_u16();
+            let text = resp.text().await.unwrap_or_default();
+            Err(BridgeError::Bridge {
+                status,
+                message: text,
+            })
+        }
     }
 
     // ── Blob operations ──────────────────────────────────────────────────────

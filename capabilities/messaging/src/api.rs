@@ -67,17 +67,19 @@ impl AppState {
     }
 }
 
-/// Initialise active peers from the daemon on startup.
+/// Initialise active peers and local peer ID from the daemon on startup.
 pub async fn init_peers_from_daemon(state: AppState) {
     // Retry with backoff — the daemon may not have its HTTP listener bound yet
     // if capabilities are spawned before the Axum server starts accepting.
     let delays_ms = [50, 150, 500, 1000, 2000];
     for (attempt, delay_ms) in delays_ms.iter().enumerate() {
-        match state
-            .bridge
-            .list_peers(Some("howm.social.messaging.1"))
-            .await
-        {
+        // Fetch both peers and local peer ID in parallel
+        let (peers_result, local_id_result) = tokio::join!(
+            state.bridge.list_peers(Some("howm.social.messaging.1")),
+            state.bridge.get_local_peer_id(),
+        );
+
+        match peers_result {
             Ok(peers) => {
                 let mut active = state.active_peers.write().await;
                 for p in peers {
@@ -87,6 +89,14 @@ pub async fn init_peers_from_daemon(state: AppState) {
                     "Initialised {} active messaging peers from daemon",
                     active.len()
                 );
+                // Set local peer ID regardless of whether peers were found
+                match local_id_result {
+                    Ok(id) => {
+                        *state.local_peer_id.write().await = Some(id.clone());
+                        info!("Local peer ID set from daemon: {}…", &id[..8.min(id.len())]);
+                    }
+                    Err(e) => warn!("Failed to fetch local peer ID from daemon: {}", e),
+                }
                 return;
             }
             Err(p2pcd::bridge_client::BridgeError::Http(ref e)) if e.is_connect() => {
@@ -646,10 +656,26 @@ pub async fn inbound_message(
         return StatusCode::BAD_REQUEST;
     }
 
-    // Get local peer ID
+    // Get local peer ID — required for a stable conversation key
     let local_peer_id = {
         let local = state.local_peer_id.read().await;
-        local.clone().unwrap_or_default()
+        match local.clone() {
+            Some(id) => id,
+            None => {
+                // Try fetching it now — race between inbound message and init startup
+                drop(local);
+                match state.bridge.get_local_peer_id().await {
+                    Ok(id) => {
+                        *state.local_peer_id.write().await = Some(id.clone());
+                        id
+                    }
+                    Err(e) => {
+                        warn!("Inbound message dropped: local peer ID not available ({})", e);
+                        return StatusCode::SERVICE_UNAVAILABLE;
+                    }
+                }
+            }
+        }
     };
 
     let conversation_id = MessageDb::conversation_id(&local_peer_id, &payload.peer_id);

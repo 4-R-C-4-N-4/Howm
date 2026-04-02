@@ -35,7 +35,11 @@ pub async fn proxy_handler(
         let prefix = format!("/cap/{}/", name);
         raw_path
             .strip_prefix(&prefix)
-            .unwrap_or(raw_path.strip_prefix(&format!("/cap/{}", name)).unwrap_or(""))
+            .unwrap_or(
+                raw_path
+                    .strip_prefix(&format!("/cap/{}", name))
+                    .unwrap_or(""),
+            )
             .to_string()
     };
     proxy_handler_inner(state, addr, name, raw_rest, req).await
