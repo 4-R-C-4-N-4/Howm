@@ -1663,6 +1663,7 @@ mod tests {
             state: SessionState::Active,
             active_set: vec!["core.session.heartbeat.1".to_string()],
             uptime_s: 42,
+            last_activity: 0,
         };
         assert_eq!(s.active_set.len(), 1);
     }
