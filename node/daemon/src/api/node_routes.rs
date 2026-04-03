@@ -73,12 +73,15 @@ pub async fn get_peers(
         .iter()
         .map(|p| {
             let mut v = serde_json::to_value(p).unwrap_or_default();
-            // If this peer has an active session, override last_seen with the
-            // live last_activity timestamp so the UI correctly shows them online.
-            if let Some(&activity) = active_sessions.get(&p.wg_pubkey) {
-                if let Some(obj) = v.as_object_mut() {
+            let online = active_sessions.contains_key(&p.wg_pubkey);
+            if let Some(obj) = v.as_object_mut() {
+                // If this peer has an active session, override last_seen with the
+                // live last_activity timestamp so the UI correctly shows them online.
+                if let Some(&activity) = active_sessions.get(&p.wg_pubkey) {
                     obj.insert("last_seen".to_string(), serde_json::json!(activity));
                 }
+                // Explicit boolean — authoritative, no timestamp-threshold guessing needed.
+                obj.insert("online".to_string(), serde_json::json!(online));
             }
             v
         })

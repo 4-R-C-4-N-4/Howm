@@ -120,7 +120,7 @@ function showChatView(peerId) {
   document.getElementById("list-view").style.display = "none";
   document.getElementById("chat-view").style.display = "flex";
   document.getElementById("chat-peer-name").textContent = peerName(peerId);
-  // updateOnlineStatus(peerId);
+  updateOnlineStatus(peerId);
   document.getElementById("msg-input").value = "";
   updateByteCounter();
 
@@ -146,8 +146,8 @@ function startup() {
     updateBadge();
   }, 5000);
 
-  // Refresh peers every 30s
-  setInterval(fetchPeers, 30000);
+  // Refresh peers every 10s so online status stays current
+  setInterval(fetchPeers, 10000);
 
   // Refresh presence every 5s
   setInterval(fetchPresence, 5000);
@@ -225,12 +225,16 @@ function peerName(pubkey) {
 }
 
 function isPeerOnline(pubkey) {
-  var now = Date.now();
   for (var i = 0; i < peers.length; i++) {
     if (peers[i].wg_pubkey === pubkey) {
-      // last_seen is a Unix timestamp in seconds; peer is online if seen within 90s
+      // Prefer the explicit boolean injected by the daemon's active-session overlay.
+      // Fall back to last_seen timestamp heuristic if the field is absent (old daemon).
+      if (typeof peers[i].online === "boolean") {
+        return peers[i].online;
+      }
+      var now = Date.now();
       var lastSeen = peers[i].last_seen * 1000;
-      return (now - lastSeen) < 90000;
+      return now - lastSeen < 90000;
     }
   }
   return false;

@@ -610,6 +610,10 @@ async fn handle_peers(
     let peers: Vec<PeerInfo> = sessions
         .into_iter()
         .filter(|s| {
+            // Only expose sessions that are truly active — not Closed, Handshake, etc.
+            if s.state != p2pcd::SessionState::Active {
+                return false;
+            }
             if let Some(ref cap) = query.capability {
                 s.active_set.contains(cap)
             } else {

@@ -167,3 +167,13 @@ reasonable grace period if the daemon is briefly queried between PONGs.
    3. `install_capability` — calls `engine.register_capability` after persisting and starting the process.                                                                                                                 
    4. `start_capability` — same, registers on (re)start.                                                                                                                                                                                                    
    5. `uninstall_capability` — calls `engine.unregister_capability` before removing from the caps list, so peer-active/inactive POSTs stop going to the dead process.
+ 
+### infinte revisions 
+     **Bug 1 (Critical): `bridge/peers` does NOT filter by `SessionState::Active`**
+     The `handle_peers` filter only checks `active_set.contains(cap)` but not `s.state == SessionState::Active`. So closed/timed-out sessions are returned as "online" peers. This is why `bridge/peers` returns the peer even though the session is `Closed { reason: Timeout }`.
+     
+     **Bug 2 (Critical): `node_routes::get_peers` active session overlay only applies to `Active` sessions but the `last_seen` in peers.json is 22h stale** — since the session is closed, no overlay fires, so last_seen stays ancient (78830s ago >> 90s threshold), making `isPeerOnline()` return false in the UI.
+     
+     **Bug 3 (UI): `messaging` startup `init_peers_from_daemon` uses the same broken `bridge/peers` endpoint** — so even though the peer is seeded on startup, when the session closes it never gets removed (no `peer-inactive` notification reaches the capability because the session has already timed out and the cap_notify may have failed).
+     
+     **Bug 4 (UI logic): `updateOnlineStatus` only checks `/node/peers` last_seen** — but should also (or instead) check `bridge/peers` with the active-session filter, which is authoritative for p2pcd connectivity.
