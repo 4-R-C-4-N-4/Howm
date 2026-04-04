@@ -420,6 +420,10 @@ async fn main() -> anyhow::Result<()> {
         info!("Capability health check loop started (30s interval)");
     }
 
+    // Start the HTTP health watchdog (polls /health, restarts unresponsive caps).
+    // Complements the PID loop above: PID loop = hard crashes, watchdog = soft failures.
+    howm::watchdog::start(state.clone());
+
     // Start HTTP server with graceful shutdown
     let addr: SocketAddr = format!("0.0.0.0:{}", config.port).parse()?;
     info!("Starting Howm daemon on {}", addr);

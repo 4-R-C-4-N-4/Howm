@@ -23,4 +23,5 @@ pub mod proxy;
 pub mod punch;
 pub mod state;
 pub mod stun;
+pub mod watchdog;
 pub mod wireguard;
