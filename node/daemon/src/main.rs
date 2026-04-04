@@ -96,6 +96,23 @@ async fn main() -> anyhow::Result<()> {
     let peers = peers::load(&config.data_dir)?;
     let mut capabilities = capabilities::load(&config.data_dir)?;
 
+    // Migrate stale p2pcd_name entries: software major version 0 was incorrectly used
+    // as the protocol version, producing "howm.social.messaging.0" instead of ".1".
+    // All capabilities speak protocol version 1 regardless of their software version.
+    let mut migrated = false;
+    for cap in capabilities.iter_mut() {
+        if let Some(ref mut name) = cap.p2pcd_name {
+            if name.ends_with(".0") {
+                *name = format!("{}.1", &name[..name.len() - 2]);
+                migrated = true;
+            }
+        }
+    }
+    if migrated {
+        tracing::info!("Migrated capability p2pcd_names from .0 to .1 protocol version");
+        capabilities::save(&config.data_dir, &capabilities)?;
+    }
+
     // Restart capability processes that were running before daemon shutdown
     for cap in capabilities.iter_mut() {
         if matches!(cap.status, capabilities::CapStatus::Stopped) {

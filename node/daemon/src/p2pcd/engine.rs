@@ -337,6 +337,13 @@ impl ProtocolEngine {
             handle.abort();
         }
 
+        // Clear replay-detection entry so the peer can reconnect with the same
+        // sequence_num. The replay guard exists to catch duplicate manifests within
+        // a single session, not across independent reconnects. Keeping the entry
+        // after a session ends blocks legitimate reconnects when the remote peer
+        // hasn't incremented their sequence_num (the common case after a restart).
+        self.last_seen_sequence.lock().await.remove(&peer_id);
+
         let active_set = {
             let mut sessions = self.sessions.write().await;
             if let Some(s) = sessions.get_mut(&peer_id) {

@@ -166,10 +166,24 @@ pub async fn install_capability(
 
     // route_name already derived above (before duplicate check).
 
-    // Derive P2P-CD fully-qualified name: howm.{manifest.name}.{major_version}
-    // e.g. manifest.name="social.feed", version="0.1.0" → "howm.social.feed.0"
-    let major_version = manifest.version.split('.').next().unwrap_or("1");
-    let p2pcd_name = Some(format!("howm.{}.{}", manifest.name, major_version));
+    // Derive P2P-CD fully-qualified name: howm.{manifest.name}.{protocol_version}
+    //
+    // The manifest `version` field is the *software* version (e.g. "0.1.0").
+    // The P2P-CD protocol version is declared in p2pcd-peer.toml separately and
+    // is always "1" for all current capabilities — the protocol is stable even
+    // when the software is pre-1.0. Using the software major ("0") would produce
+    // "howm.social.messaging.0" which never matches the negotiated "howm.social.messaging.1"
+    // in active_sets, breaking capability notifications and online detection.
+    //
+    // Rule: protocol version = max(software_major, 1) — pre-1.0 software still speaks v1.
+    let protocol_version = manifest
+        .version
+        .split('.')
+        .next()
+        .and_then(|m| m.parse::<u32>().ok())
+        .map(|m| m.max(1))
+        .unwrap_or(1);
+    let p2pcd_name = Some(format!("howm.{}.{}", manifest.name, protocol_version));
 
     let entry = CapabilityEntry {
         name: manifest.name.clone(),
