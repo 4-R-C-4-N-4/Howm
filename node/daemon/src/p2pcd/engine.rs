@@ -1384,7 +1384,8 @@ mod tests {
         let (bob_notifier_url, bob_active, _bob_inactive) = spawn_mock_notifier().await;
 
         // ── Build Alice's engine ──
-        let alice_notifier = Arc::new(CapabilityNotifier::new());
+        let alice_notifier =
+            CapabilityNotifier::new(Arc::new(crate::p2pcd::event_bus::EventBus::new()));
         alice_notifier
             .register("howm.social.feed.1".to_string(), 0)
             .await;
@@ -1410,7 +1411,8 @@ mod tests {
         let alice_p2pcd_addr = alice_listener.local_addr;
 
         // ── Build Bob's engine ──
-        let bob_notifier = Arc::new(CapabilityNotifier::new());
+        let bob_notifier =
+            CapabilityNotifier::new(Arc::new(crate::p2pcd::event_bus::EventBus::new()));
         bob_notifier
             .register_with_url("howm.social.feed.1".to_string(), bob_notifier_url.clone())
             .await;
@@ -1529,7 +1531,8 @@ mod tests {
             .unwrap();
         let bob_p2pcd_addr = bob_listener.local_addr;
 
-        let alice_notifier = Arc::new(CapabilityNotifier::new());
+        let alice_notifier =
+            CapabilityNotifier::new(Arc::new(crate::p2pcd::event_bus::EventBus::new()));
         let alice_engine = Arc::new(ProtocolEngine::new(
             make_peer_config_fast_heartbeat(0),
             alice_id,
@@ -1544,7 +1547,8 @@ mod tests {
             .unwrap();
         let alice_p2pcd_addr = alice_listener.local_addr;
 
-        let bob_notifier = Arc::new(CapabilityNotifier::new());
+        let bob_notifier =
+            CapabilityNotifier::new(Arc::new(crate::p2pcd::event_bus::EventBus::new()));
         let bob_engine = Arc::new(ProtocolEngine::new(
             make_peer_config_fast_heartbeat(bob_p2pcd_addr.port()),
             bob_id,
@@ -1686,7 +1690,8 @@ mod tests {
             .unwrap();
         let bob_p2pcd_addr = bob_listener.local_addr;
 
-        let alice_notifier = Arc::new(CapabilityNotifier::new());
+        let alice_notifier =
+            CapabilityNotifier::new(Arc::new(crate::p2pcd::event_bus::EventBus::new()));
         let alice_engine = Arc::new(ProtocolEngine::new(
             make_peer_config(0),
             alice_id,
@@ -1701,7 +1706,8 @@ mod tests {
             .unwrap();
         let alice_p2pcd_addr = alice_listener.local_addr;
 
-        let bob_notifier = Arc::new(CapabilityNotifier::new());
+        let bob_notifier =
+            CapabilityNotifier::new(Arc::new(crate::p2pcd::event_bus::EventBus::new()));
         let bob_engine = Arc::new(ProtocolEngine::new(
             make_peer_config(bob_p2pcd_addr.port()),
             bob_id,
@@ -1789,7 +1795,8 @@ mod tests {
             .unwrap();
         let bob_p2pcd_addr = bob_listener.local_addr;
 
-        let alice_notifier = Arc::new(CapabilityNotifier::new());
+        let alice_notifier =
+            CapabilityNotifier::new(Arc::new(crate::p2pcd::event_bus::EventBus::new()));
         let alice_engine = Arc::new(ProtocolEngine::new(
             make_peer_config(0),
             alice_id,
@@ -1803,7 +1810,8 @@ mod tests {
             .await
             .unwrap();
 
-        let bob_notifier = Arc::new(CapabilityNotifier::new());
+        let bob_notifier =
+            CapabilityNotifier::new(Arc::new(crate::p2pcd::event_bus::EventBus::new()));
         let bob_engine = Arc::new(ProtocolEngine::new(
             make_peer_config(bob_p2pcd_addr.port()),
             bob_id,
@@ -1881,7 +1889,8 @@ mod tests {
         let bob_p2pcd_addr = bob_listener.local_addr;
 
         let (alice_notifier_url, _alice_active, alice_inactive) = spawn_mock_notifier().await;
-        let alice_notifier = Arc::new(CapabilityNotifier::new());
+        let alice_notifier =
+            CapabilityNotifier::new(Arc::new(crate::p2pcd::event_bus::EventBus::new()));
         alice_notifier
             .register_with_url("howm.social.feed.1".to_string(), alice_notifier_url.clone())
             .await;
@@ -1905,7 +1914,8 @@ mod tests {
             .await
             .unwrap();
 
-        let bob_notifier = Arc::new(CapabilityNotifier::new());
+        let bob_notifier =
+            CapabilityNotifier::new(Arc::new(crate::p2pcd::event_bus::EventBus::new()));
         let bob_engine = Arc::new(ProtocolEngine::new(
             make_peer_config(bob_p2pcd_addr.port()),
             bob_id,
@@ -2011,7 +2021,7 @@ mod tests {
         let alice_id: PeerId = [0xD1u8; 32];
         let bob_id: PeerId = [0xD2u8; 32];
 
-        let notifier = Arc::new(CapabilityNotifier::new());
+        let notifier = CapabilityNotifier::new(Arc::new(crate::p2pcd::event_bus::EventBus::new()));
         let engine = Arc::new(ProtocolEngine::new(
             make_peer_config(0),
             alice_id,
@@ -2049,7 +2059,9 @@ mod tests {
         let alice_id: PeerId = [0xE1u8; 32];
         let bob_id: PeerId = [0xE2u8; 32];
 
-        let notifier = Arc::new(crate::p2pcd::cap_notify::CapabilityNotifier::new());
+        let notifier = crate::p2pcd::cap_notify::CapabilityNotifier::new(Arc::new(
+            crate::p2pcd::event_bus::EventBus::new(),
+        ));
         let engine = Arc::new(ProtocolEngine::new(
             make_peer_config(0),
             alice_id,
@@ -2086,7 +2098,9 @@ mod tests {
         let alice_id: PeerId = [0xF1u8; 32];
         let bob_id: PeerId = [0xF2u8; 32];
 
-        let notifier = Arc::new(crate::p2pcd::cap_notify::CapabilityNotifier::new());
+        let notifier = crate::p2pcd::cap_notify::CapabilityNotifier::new(Arc::new(
+            crate::p2pcd::event_bus::EventBus::new(),
+        ));
         let engine = Arc::new(ProtocolEngine::new(
             make_peer_config(0),
             alice_id,
@@ -2144,7 +2158,8 @@ mod tests {
 
         // Build Alice — use set_lan_hint instead of set_peer_addr to simulate
         // what complete_invite now does (the LAN invite path).
-        let alice_notifier = Arc::new(CapabilityNotifier::new());
+        let alice_notifier =
+            CapabilityNotifier::new(Arc::new(crate::p2pcd::event_bus::EventBus::new()));
         alice_notifier
             .register_with_url("howm.social.feed.1".to_string(), alice_notifier_url.clone())
             .await;
@@ -2162,7 +2177,8 @@ mod tests {
         alice_engine.set_lan_hint(bob_id, bob_p2pcd_addr).await;
 
         // Build Bob — needs peer_addr for Alice so Bob can also accept/initiate
-        let bob_notifier = Arc::new(CapabilityNotifier::new());
+        let bob_notifier =
+            CapabilityNotifier::new(Arc::new(crate::p2pcd::event_bus::EventBus::new()));
         bob_notifier
             .register_with_url("howm.social.feed.1".to_string(), bob_notifier_url.clone())
             .await;

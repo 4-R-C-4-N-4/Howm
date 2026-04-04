@@ -36,6 +36,8 @@ pub struct BridgeClient {
     base_url: String,
     /// Daemon root URL (e.g. "http://127.0.0.1:7000") for non-bridge endpoints.
     daemon_url: String,
+    /// The daemon port this client connects to.
+    daemon_port: u16,
 }
 
 impl BridgeClient {
@@ -49,7 +51,22 @@ impl BridgeClient {
             http,
             base_url: format!("http://127.0.0.1:{}/p2pcd/bridge", daemon_port),
             daemon_url: format!("http://127.0.0.1:{}", daemon_port),
+            daemon_port,
         }
+    }
+
+    /// The daemon port this client connects to.
+    pub fn daemon_port(&self) -> u16 {
+        self.daemon_port
+    }
+
+    /// The URL for the daemon's SSE event stream for a given capability.
+    ///
+    /// Safe to call on URL-based runtimes (with_bridge_url) because it derives
+    /// from base_url, not daemon_port. Port-based runtimes also use base_url, so
+    /// this is the canonical way to build the SSE URL in all cases.
+    pub fn events_url(&self, cap_name: &str) -> String {
+        format!("{}/events?capability={}", self.base_url, cap_name)
     }
 
     /// Create with a custom base URL (for testing or non-standard setups).
@@ -67,6 +84,7 @@ impl BridgeClient {
             http,
             base_url,
             daemon_url,
+            daemon_port: 0,
         }
     }
 

@@ -26,15 +26,6 @@ pub use rpc::{inbound_message, peer_catalogue};
 
 // ── Shared state ─────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone)]
-pub struct ActivePeer {
-    /// WireGuard IP address (used by FEAT-003-E for peer display).
-    #[allow(dead_code)]
-    pub wg_address: String,
-    /// Cached group memberships (built-in + custom).
-    pub groups: Vec<PeerGroup>,
-}
-
 #[derive(Clone)]
 pub struct AppState {
     pub db: Arc<FilesDb>,
@@ -45,8 +36,11 @@ pub struct AppState {
     pub local_port: u16,
     /// Data directory for direct blob filesystem writes.
     pub data_dir: PathBuf,
-    /// Active peers with files capability: peer_id_b64 → ActivePeer.
-    pub active_peers: Arc<RwLock<HashMap<String, ActivePeer>>>,
+    /// Self-healing SSE peer stream — drives the PeerTracker automatically.
+    pub stream: Arc<p2pcd::capability_sdk::PeerStream>,
+    /// Cached ACL group memberships per peer: peer_id_b64 → groups.
+    /// Populated by the on_active hook; queried in access-policy checks.
+    pub peer_groups: Arc<RwLock<HashMap<String, Vec<PeerGroup>>>>,
     /// Our own peer ID (base64), learned from X-Node-Id header or daemon (used in FEAT-003-E).
     #[allow(dead_code)]
     pub local_peer_id: Arc<RwLock<Option<String>>>,
@@ -64,6 +58,8 @@ impl AppState {
         daemon_port: u16,
         local_port: u16,
         data_dir: PathBuf,
+        stream: Arc<p2pcd::capability_sdk::PeerStream>,
+        peer_groups: Arc<RwLock<HashMap<String, Vec<PeerGroup>>>>,
     ) -> Self {
         Self {
             db: Arc::new(db),
@@ -71,7 +67,8 @@ impl AppState {
             daemon_port,
             local_port,
             data_dir,
-            active_peers: Arc::new(RwLock::new(HashMap::new())),
+            stream,
+            peer_groups,
             local_peer_id: Arc::new(RwLock::new(None)),
         }
     }
@@ -85,49 +82,11 @@ impl AppState {
     }
 }
 
-/// Initialise active peers from the daemon on startup.
-pub async fn init_peers_from_daemon(state: AppState) {
-    // Retry with backoff — the daemon may not have its HTTP listener bound yet
-    // if capabilities are spawned before the Axum server starts accepting.
-    let delays_ms = [50, 150, 500, 1000, 2000];
-    for (attempt, delay_ms) in delays_ms.iter().enumerate() {
-        match state.bridge.list_peers(Some("howm.social.files.1")).await {
-            Ok(peers) => {
-                let mut active = state.active_peers.write().await;
-                for p in &peers {
-                    // Fetch group membership for each peer
-                    let groups = fetch_peer_groups(&state, &p.peer_id).await;
-                    active.insert(
-                        p.peer_id.clone(),
-                        ActivePeer {
-                            wg_address: String::new(),
-                            groups,
-                        },
-                    );
-                }
-                info!(
-                    "Initialised {} active files peers from daemon",
-                    active.len()
-                );
-                return;
-            }
-            Err(p2pcd::bridge_client::BridgeError::Http(ref e)) if e.is_connect() => {
-                if attempt + 1 < delays_ms.len() {
-                    tokio::time::sleep(std::time::Duration::from_millis(*delay_ms)).await;
-                } else {
-                    warn!("Failed to fetch initial peers from daemon after {} attempts: daemon not reachable", delays_ms.len());
-                }
-            }
-            Err(e) => {
-                warn!("Failed to fetch initial peers from daemon: {}", e);
-                return;
-            }
-        }
-    }
-}
-
-/// Fetch a peer's group memberships from the daemon access API.
-async fn fetch_peer_groups(state: &AppState, peer_id_b64: &str) -> Vec<PeerGroup> {
+/// Fetch a peer's ACL group memberships from the daemon access API.
+///
+/// Called by the on_active hook in main.rs for each newly-active peer.
+/// The peer_id_b64 is the base64-encoded 32-byte WireGuard public key.
+pub async fn fetch_peer_groups_by_id(bridge: &BridgeClient, peer_id_b64: &str) -> Vec<PeerGroup> {
     // Convert base64 peer_id to hex for the access API
     let hex_peer_id = match base64_to_hex(peer_id_b64) {
         Some(h) => h,
@@ -139,7 +98,8 @@ async fn fetch_peer_groups(state: &AppState, peer_id_b64: &str) -> Vec<PeerGroup
 
     let url = format!(
         "http://127.0.0.1:{}/access/peers/{}/groups",
-        state.daemon_port, hex_peer_id
+        bridge.daemon_port(),
+        hex_peer_id
     );
 
     let client = reqwest::Client::new();
@@ -178,84 +138,20 @@ pub async fn health() -> impl IntoResponse {
 
 /// GET /peers — return active peers for the UI.
 pub async fn list_active_peers(State(state): State<AppState>) -> impl IntoResponse {
-    let active = state.active_peers.read().await;
-    let peers: Vec<serde_json::Value> = active
-        .iter()
-        .map(|(peer_id, ap)| {
+    let peers: Vec<serde_json::Value> = state
+        .stream
+        .tracker()
+        .peers()
+        .await
+        .into_iter()
+        .map(|p| {
             serde_json::json!({
-                "peer_id": peer_id,
-                "wg_address": ap.wg_address,
+                "peer_id": p.peer_id,
+                "wg_address": p.wg_address,
             })
         })
         .collect();
     Json(serde_json::json!({ "peers": peers }))
-}
-
-// ── P2P-CD lifecycle hooks ───────────────────────────────────────────────────
-
-#[derive(Debug, Deserialize)]
-pub struct PeerActivePayload {
-    pub peer_id: String,
-    #[serde(default)]
-    pub wg_address: String,
-    #[serde(default)]
-    pub capability: String,
-}
-
-pub async fn peer_active(
-    State(state): State<AppState>,
-    Json(payload): Json<PeerActivePayload>,
-) -> impl IntoResponse {
-    info!(
-        "peer-active: {} (cap: {})",
-        &payload.peer_id[..8.min(payload.peer_id.len())],
-        payload.capability
-    );
-
-    // Fetch group membership for access filtering
-    let groups = fetch_peer_groups(&state, &payload.peer_id).await;
-    info!(
-        "  cached {} groups for peer {}",
-        groups.len(),
-        &payload.peer_id[..8.min(payload.peer_id.len())]
-    );
-
-    let mut active = state.active_peers.write().await;
-    active.insert(
-        payload.peer_id,
-        ActivePeer {
-            wg_address: payload.wg_address,
-            groups,
-        },
-    );
-
-    StatusCode::OK
-}
-
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)]
-pub struct PeerInactivePayload {
-    pub peer_id: String,
-    #[serde(default)]
-    pub capability: String,
-    #[serde(default)]
-    pub reason: String,
-}
-
-pub async fn peer_inactive(
-    State(state): State<AppState>,
-    Json(payload): Json<PeerInactivePayload>,
-) -> impl IntoResponse {
-    info!(
-        "peer-inactive: {} (reason: {})",
-        &payload.peer_id[..8.min(payload.peer_id.len())],
-        payload.reason
-    );
-
-    let mut active = state.active_peers.write().await;
-    active.remove(&payload.peer_id);
-
-    StatusCode::OK
 }
 
 // ── Internal: transfer-complete callback ─────────────────────────────────────
@@ -792,14 +688,17 @@ pub async fn initiate_download(
     Json(req): Json<InitiateDownloadRequest>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<serde_json::Value>)> {
     // Validate peer is active
+    if state
+        .stream
+        .tracker()
+        .find_peer(&req.peer_id)
+        .await
+        .is_none()
     {
-        let active = state.active_peers.read().await;
-        if !active.contains_key(&req.peer_id) {
-            return Err((
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({ "error": "peer not active" })),
-            ));
-        }
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "peer not active" })),
+        ));
     }
 
     // Parse blob_id as hex hash

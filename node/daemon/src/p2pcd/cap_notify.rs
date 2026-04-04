@@ -23,6 +23,8 @@ use tokio::sync::RwLock;
 
 use p2pcd_types::{PeerId, ScopeParams};
 
+use super::event_bus::{CapEvent, EventBus};
+
 // ── Wire types for HTTP callbacks ────────────────────────────────────────────
 
 /// Payload sent to a capability when a peer becomes active for it.
@@ -79,15 +81,16 @@ pub struct CapabilityEndpoint {
 
 /// Registry of capability endpoints to notify.
 /// Populated from the capabilities module at engine startup.
-#[derive(Default)]
 pub struct CapabilityNotifier {
     endpoints: RwLock<HashMap<String, CapabilityEndpoint>>,
+    event_bus: Arc<EventBus>,
 }
 
 impl CapabilityNotifier {
-    pub fn new() -> Arc<Self> {
+    pub fn new(event_bus: Arc<EventBus>) -> Arc<Self> {
         Arc::new(Self {
             endpoints: RwLock::new(HashMap::new()),
+            event_bus,
         })
     }
 
@@ -149,6 +152,14 @@ impl CapabilityNotifier {
                 let url = format!("{}/p2pcd/peer-active", base);
                 tokio::spawn(post_notification(url, payload));
             }
+            // Also publish to the in-process event bus (runs regardless of endpoint registration).
+            self.event_bus.publish(CapEvent::PeerActive {
+                peer_id: peer_id_b64.clone(),
+                wg_address: wg_address.to_string(),
+                capability: cap_name.clone(),
+                scope: scope_params.get(cap_name).cloned().unwrap_or_default(),
+                active_since,
+            });
         }
     }
 
@@ -178,14 +189,26 @@ impl CapabilityNotifier {
                     .unwrap_or_else(|| format!("http://127.0.0.1:{}", ep.port));
                 let url = format!("{}/p2pcd/inbound", base);
 
+                let peer_id_b64 = STANDARD.encode(peer_id);
+                let payload_b64 = STANDARD.encode(payload);
+
                 let body = InboundMessage {
-                    peer_id: STANDARD.encode(peer_id),
+                    peer_id: peer_id_b64.clone(),
                     message_type,
-                    payload: STANDARD.encode(payload),
+                    payload: payload_b64.clone(),
                     capability: cap_name.clone(),
                 };
 
-                tokio::spawn(post_inbound(url, body));
+                tokio::spawn(post_inbound_with_retry(url, body));
+
+                // Also publish to the in-process event bus.
+                self.event_bus.publish(CapEvent::Inbound {
+                    peer_id: peer_id_b64,
+                    capability: cap_name.clone(),
+                    message_type,
+                    payload: payload_b64,
+                });
+
                 return true;
             }
         }
@@ -212,6 +235,12 @@ impl CapabilityNotifier {
                 let url = format!("{}/p2pcd/peer-inactive", base);
                 tokio::spawn(post_inactive_notification(url, payload));
             }
+            // Also publish to the in-process event bus (runs regardless of endpoint registration).
+            self.event_bus.publish(CapEvent::PeerInactive {
+                peer_id: peer_id_b64.clone(),
+                capability: cap_name.clone(),
+                reason: reason.to_string(),
+            });
         }
     }
 }
@@ -239,29 +268,39 @@ async fn post_notification(url: String, payload: PeerActivePayload) {
     }
 }
 
-/// Fire-and-forget HTTP POST for inbound capability message forwarding.
-async fn post_inbound(url: String, body: InboundMessage) {
+/// HTTP POST for inbound capability message forwarding with retry-with-backoff.
+/// Makes up to 4 attempts with delays: 0, 100ms, 500ms, 2000ms.
+async fn post_inbound_with_retry(url: String, body: InboundMessage) {
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
+        .timeout(std::time::Duration::from_secs(5))
         .build()
         .unwrap_or_default();
-    match client.post(&url).json(&body).send().await {
-        Ok(resp) if resp.status().is_success() => {
-            tracing::debug!("cap_notify: inbound POST {} → {}", url, resp.status());
+
+    for (attempt, delay_ms) in [0u64, 100, 500, 2000].iter().enumerate() {
+        if *delay_ms > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(*delay_ms)).await;
         }
-        Ok(resp) => {
-            tracing::warn!(
-                "cap_notify: inbound POST {} returned {}",
-                url,
-                resp.status()
-            );
-        }
-        Err(e) => {
-            tracing::debug!(
-                "cap_notify: inbound POST {} failed (cap may not be running): {}",
-                url,
-                e
-            );
+        match client.post(&url).json(&body).send().await {
+            Ok(r) if r.status().is_success() => {
+                tracing::debug!(
+                    "cap_notify: inbound delivered to {} on attempt {}",
+                    url,
+                    attempt + 1
+                );
+                return;
+            }
+            Ok(r) => {
+                tracing::warn!("cap_notify: inbound POST {} returned {}", url, r.status());
+            }
+            Err(e) if attempt < 3 => {
+                tracing::debug!("cap_notify: inbound POST {} failed ({e}), retrying", url);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "cap_notify: inbound POST {} failed after 4 attempts: {e}",
+                    url
+                );
+            }
         }
     }
 }
@@ -271,7 +310,21 @@ async fn post_inactive_notification(url: String, payload: PeerInactivePayload) {
         .timeout(Duration::from_secs(5))
         .build()
         .unwrap_or_default();
-    let _ = client.post(&url).json(&payload).send().await;
+    match client.post(&url).json(&payload).send().await {
+        Ok(resp) if resp.status().is_success() => {
+            tracing::debug!("cap_notify: POST {} → {}", url, resp.status());
+        }
+        Ok(resp) => {
+            tracing::warn!("cap_notify: POST {} returned {}", url, resp.status());
+        }
+        Err(e) => {
+            tracing::debug!(
+                "cap_notify: POST {} failed (cap may not be running): {}",
+                url,
+                e
+            );
+        }
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -295,6 +348,8 @@ mod tests {
 
     #[tokio::test]
     async fn notifier_sends_to_registered_cap() {
+        use crate::p2pcd::event_bus::{CapEvent, EventBus};
+
         // Spin up a tiny axum server simulating a capability
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -310,7 +365,8 @@ mod tests {
         // Give the server a moment to start
         tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
 
-        let notifier = CapabilityNotifier::new();
+        let event_bus = std::sync::Arc::new(EventBus::new());
+        let notifier = CapabilityNotifier::new(std::sync::Arc::clone(&event_bus));
         notifier
             .register("core.session.heartbeat.1".to_string(), port)
             .await;
@@ -320,10 +376,28 @@ mod tests {
         let active_set = vec!["core.session.heartbeat.1".to_string()];
         let scope = BTreeMap::new();
 
+        // Subscribe before calling notify to ensure we don't miss the event.
+        let mut bus_rx = event_bus.subscribe();
+
         // Should not panic
         notifier
-            .notify_peer_active(peer_id, wg_addr, &active_set, &scope, 0)
+            .notify_peer_active(peer_id, wg_addr, &active_set, &scope, 1234)
             .await;
+
+        // Assert the CapEvent::PeerActive appeared on the bus.
+        let event = bus_rx.recv().await.expect("expected bus event");
+        match event {
+            CapEvent::PeerActive {
+                capability,
+                active_since,
+                ..
+            } => {
+                assert_eq!(capability, "core.session.heartbeat.1");
+                assert_eq!(active_since, 1234);
+            }
+            other => panic!("unexpected event: {:?}", other),
+        }
+
         // Give the spawned HTTP call time to fire
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
@@ -335,11 +409,19 @@ mod tests {
 
     #[tokio::test]
     async fn notifier_ignores_unregistered_cap() {
-        let notifier = CapabilityNotifier::new();
+        use crate::p2pcd::event_bus::{CapEvent, EventBus};
+        use std::time::Duration;
+
+        let event_bus = std::sync::Arc::new(EventBus::new());
+        let notifier = CapabilityNotifier::new(std::sync::Arc::clone(&event_bus));
         let peer_id = [2u8; 32];
         let active_set = vec!["unknown.cap.1".to_string()];
         let scope = BTreeMap::new();
-        // Should not panic even if cap not registered
+
+        // Subscribe before calling notify_peer_active so we don't miss the event.
+        let mut bus_rx = event_bus.subscribe();
+
+        // Should not panic even if cap not registered in endpoints map.
         notifier
             .notify_peer_active(
                 peer_id,
@@ -349,6 +431,76 @@ mod tests {
                 0,
             )
             .await;
+
+        // Give the spawn a moment to propagate.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // The bus fires unconditionally regardless of endpoint registration.
+        let event = bus_rx.recv().await.expect("expected bus event");
+        match event {
+            CapEvent::PeerActive { capability, .. } => {
+                assert_eq!(capability, "unknown.cap.1");
+            }
+            other => panic!("unexpected event: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn post_inbound_with_retry_succeeds_on_third_attempt() {
+        use axum::{extract::State, response::IntoResponse};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        // Shared counter for how many requests the server has received.
+        let counter = std::sync::Arc::new(AtomicUsize::new(0));
+        let counter_srv = std::sync::Arc::clone(&counter);
+
+        async fn handler(
+            State(counter): State<std::sync::Arc<AtomicUsize>>,
+            Json(_body): Json<serde_json::Value>,
+        ) -> impl IntoResponse {
+            let n = counter.fetch_add(1, Ordering::SeqCst) + 1;
+            if n < 3 {
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR
+            } else {
+                axum::http::StatusCode::OK
+            }
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let router = axum::Router::new()
+            .route("/p2pcd/inbound", post(handler))
+            .with_state(counter_srv);
+
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+
+        // Give the server a moment to start.
+        tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
+
+        let url = format!("http://127.0.0.1:{}/p2pcd/inbound", port);
+        let body = InboundMessage {
+            peer_id: "AAAA".to_string(),
+            message_type: 1,
+            payload: "dGVzdA==".to_string(),
+            capability: "test.cap.1".to_string(),
+        };
+
+        // Guard against hanging — the delays are 0+100+500 = 600ms max before 3rd attempt.
+        tokio::time::timeout(
+            tokio::time::Duration::from_secs(5),
+            post_inbound_with_retry(url, body),
+        )
+        .await
+        .expect("post_inbound_with_retry timed out");
+
+        assert_eq!(
+            counter.load(Ordering::SeqCst),
+            3,
+            "expected exactly 3 requests"
+        );
     }
 
     #[test]

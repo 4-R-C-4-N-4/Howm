@@ -48,21 +48,50 @@ async fn main() -> anyhow::Result<()> {
     let msg_db = db::MessageDb::open(&config.data_dir)?;
     let bridge = p2pcd::bridge_client::BridgeClient::new(config.daemon_port);
 
+    // Fetch local peer ID once at startup (with retry)
+    let local_peer_id = {
+        let delays = [0u64, 150, 500, 1000, 2000];
+        let mut id = String::new();
+        for delay in &delays {
+            if *delay > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(*delay)).await;
+            }
+            match bridge.get_local_peer_id().await {
+                Ok(pid) => {
+                    id = pid;
+                    break;
+                }
+                Err(_) => continue,
+            }
+        }
+        if id.is_empty() {
+            tracing::warn!(
+                "messaging: could not fetch local peer ID from daemon; \
+                 inbound messages will be rejected until daemon is reachable"
+            );
+        }
+        std::sync::Arc::new(id)
+    };
+
+    // Start SSE stream — no hooks needed for messaging (Type 1 pure presence)
+    let stream = std::sync::Arc::new(p2pcd::capability_sdk::PeerStream::connect(
+        "howm.social.messaging.1",
+        config.daemon_port,
+    ));
+
     let http_client = reqwest::Client::new();
     let msg_db_arc = std::sync::Arc::new(msg_db);
     let daemon_notifier =
         notifier::DaemonNotifier::new(http_client, &config.daemon_url, msg_db_arc.clone());
 
-    let state =
-        api::AppState::new_with_notifier(msg_db_arc, bridge, config.daemon_port, daemon_notifier);
-
-    // Restore active peers from daemon on startup
-    {
-        let state_clone = state.clone();
-        tokio::spawn(async move {
-            api::init_peers_from_daemon(state_clone).await;
-        });
-    }
+    let state = api::AppState::new_with_notifier(
+        msg_db_arc,
+        bridge,
+        config.daemon_port,
+        daemon_notifier,
+        stream,
+        local_peer_id,
+    );
 
     let app = Router::new()
         // Messaging API
@@ -80,9 +109,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/ui/{*path}", get(serve_ui_asset))
         // Health
         .route("/health", get(api::health))
-        // P2P-CD lifecycle hooks (called by daemon cap_notify)
-        .route("/p2pcd/peer-active", post(api::peer_active))
-        .route("/p2pcd/peer-inactive", post(api::peer_inactive))
+        // P2P-CD inbound message forwarding (lifecycle hooks removed — using PeerStream)
         .route("/p2pcd/inbound", post(api::inbound_message))
         .with_state(state)
         .layer(DefaultBodyLimit::max(1_048_576)); // 1 MB for text messages

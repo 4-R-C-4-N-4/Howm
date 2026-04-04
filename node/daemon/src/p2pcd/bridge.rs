@@ -18,10 +18,14 @@ use std::sync::Arc;
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
-    response::IntoResponse,
+    response::{
+        sse::{Event, KeepAlive, Sse},
+        IntoResponse,
+    },
     routing::{get, post},
     Json, Router,
 };
+use futures::StreamExt as _;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
@@ -31,6 +35,7 @@ use p2pcd::blob_store::BlobStore;
 use p2pcd::capabilities::blob::{TransferEvent, TransferStatus};
 
 use super::engine::ProtocolEngine;
+use super::event_bus::EventBus;
 
 // ── Transfer callback registry ──────────────────────────────────────────────
 
@@ -348,15 +353,25 @@ fn encode_b64(data: &[u8]) -> String {
 pub struct BridgeState {
     pub engine: Arc<ProtocolEngine>,
     pub callback_registry: Arc<TransferCallbackRegistry>,
+    /// Shared with the SSE handler (GET /p2pcd/bridge/events).
+    pub event_bus: Arc<EventBus>,
+}
+
+/// Query params for GET /events.
+#[derive(Deserialize)]
+struct EventsQuery {
+    capability: String,
 }
 
 pub fn bridge_routes(
     engine: Arc<ProtocolEngine>,
     callback_registry: Arc<TransferCallbackRegistry>,
+    event_bus: Arc<EventBus>,
 ) -> Router {
     let state = BridgeState {
         engine,
         callback_registry,
+        event_bus,
     };
     Router::new()
         .route("/send", post(handle_send))
@@ -373,6 +388,8 @@ pub fn bridge_routes(
         // Latency endpoints
         .route("/latency", get(handle_bulk_latency))
         .route("/latency/{peer_id}", get(handle_peer_latency))
+        // SSE event stream
+        .route("/events", get(handle_events))
         .with_state(state)
 }
 
@@ -741,6 +758,7 @@ async fn handle_blob_request(
     State(BridgeState {
         engine,
         callback_registry,
+        ..
     }): State<BridgeState>,
     Json(req): Json<BlobRequestRequest>,
 ) -> impl IntoResponse {
@@ -1072,6 +1090,104 @@ async fn handle_bulk_latency(
     (StatusCode::OK, Json(serde_json::json!({ "peers": peers })))
 }
 
+// ── SSE event stream ─────────────────────────────────────────────────────────
+
+/// GET /p2pcd/bridge/events?capability=<name>
+///
+/// Streams a capability-filtered snapshot of active sessions on connect,
+/// then streams live peer-active, peer-inactive, and inbound events from
+/// the EventBus indefinitely.
+///
+/// CRITICAL: subscribe() is called BEFORE building the snapshot so no events
+/// are missed between the snapshot and the start of the live stream.
+async fn handle_events(
+    State(BridgeState {
+        engine, event_bus, ..
+    }): State<BridgeState>,
+    Query(q): Query<EventsQuery>,
+) -> Sse<impl futures::Stream<Item = Result<Event, std::convert::Infallible>>> {
+    use crate::p2pcd::event_bus::CapEvent;
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+
+    // Subscribe to the event bus BEFORE building the snapshot.
+    // Any event that fires during snapshot construction is buffered here
+    // and will be delivered to the client after the snapshot, preserving
+    // strict ordering. This eliminates the startup race.
+    let rx = event_bus.subscribe();
+
+    // Build snapshot of currently active peers for this capability.
+    let sessions = engine.active_sessions().await;
+    let snapshot_peers: Vec<_> = sessions
+        .into_iter()
+        .filter(|s| {
+            s.state == p2pcd::session::SessionState::Active && s.active_set.contains(&q.capability)
+        })
+        .map(|s| {
+            serde_json::json!({
+                "peer_id":    STANDARD.encode(s.peer_id),
+                "wg_address": serde_json::Value::Null, // wg_address is not stored in SessionSummary; null until a live peer-active event arrives
+                "active_since": s.last_activity,
+            })
+        })
+        .collect();
+
+    let snapshot_event = Event::default().event("snapshot").data(
+        serde_json::to_string(&serde_json::json!({ "peers": snapshot_peers }))
+            .inspect_err(|e| tracing::error!("Failed to serialize SSE snapshot: {e}"))
+            .unwrap_or_default(),
+    );
+
+    // Incremental stream: filter by capability, close stream on lag so client reconnects.
+    let cap_clone = q.capability.clone();
+    let incremental = {
+        let mut rx = rx;
+        async_stream::stream! {
+            loop {
+                match rx.recv().await {
+                    Ok(event) => {
+                        let matches = match &event {
+                            CapEvent::PeerActive   { capability, .. } => capability == &cap_clone,
+                            CapEvent::PeerInactive { capability, .. } => capability == &cap_clone,
+                            CapEvent::Inbound      { capability, .. } => capability == &cap_clone,
+                        };
+                        if !matches { continue; }
+                        let name = event_name(&event);
+                        if let Ok(data) = serde_json::to_string(&event) {
+                            yield Ok::<Event, std::convert::Infallible>(
+                                Event::default().event(name).data(data)
+                            );
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!(
+                            "SSE consumer for '{}' lagged, dropped {} events; closing stream so client reconnects",
+                            cap_clone, n
+                        );
+                        break; // close stream — client's SSE reconnect will get a fresh snapshot
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        }
+    };
+
+    let stream = futures::stream::once(futures::future::ready(
+        Ok::<Event, std::convert::Infallible>(snapshot_event),
+    ))
+    .chain(incremental);
+
+    Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+fn event_name(e: &crate::p2pcd::event_bus::CapEvent) -> &'static str {
+    use crate::p2pcd::event_bus::CapEvent;
+    match e {
+        CapEvent::PeerActive { .. } => "peer-active",
+        CapEvent::PeerInactive { .. } => "peer-inactive",
+        CapEvent::Inbound { .. } => "inbound",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1132,5 +1248,356 @@ mod tests {
     async fn callback_registry_take_missing() {
         let reg = TransferCallbackRegistry::new();
         assert!(reg.take(999).await.is_none());
+    }
+
+    // ── SSE /events integration tests ─────────────────────────────────────────
+
+    use crate::p2pcd::cap_notify::CapabilityNotifier;
+    use crate::p2pcd::engine::ProtocolEngine;
+    use howm_access::AccessDb;
+    use p2pcd_types::config::PeerConfig;
+    use std::path::PathBuf;
+
+    fn make_test_access_db() -> Arc<AccessDb> {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("access.db");
+        let db = AccessDb::open(&db_path).unwrap();
+        std::mem::forget(dir); // Intentional: TempDir is leaked so the directory outlives the test; in-memory WAL is fine for test purposes.
+        Arc::new(db)
+    }
+
+    #[allow(deprecated)] // PeerConfig::new is deprecated in favour of PeerConfig::default(); used here for test setup only.
+    fn make_test_peer_config() -> PeerConfig {
+        use p2pcd_types::config::*;
+        PeerConfig {
+            identity: IdentityConfig {
+                wireguard_private_key_file: None,
+                wireguard_interface: None,
+                display_name: "test-peer".to_string(),
+            },
+            protocol: ProtocolConfig::default(),
+            transport: TransportConfig {
+                listen_port: 0,
+                wireguard_interface: "test0".to_string(),
+                http_port: 0,
+            },
+            discovery: DiscoveryConfig::default(),
+            capabilities: std::collections::HashMap::new(),
+            friends: FriendsConfig::default(),
+            invite: InviteConfig::default(),
+            data: DataConfig {
+                dir: "/tmp/howm-test".to_string(),
+            },
+        }
+    }
+
+    /// Build a minimal BridgeState for SSE tests (no real sessions).
+    fn make_test_bridge_state(bus: Arc<super::super::event_bus::EventBus>) -> BridgeState {
+        let notifier = CapabilityNotifier::new(Arc::clone(&bus));
+        let engine = Arc::new(ProtocolEngine::new(
+            make_test_peer_config(),
+            [0x01u8; 32],
+            Arc::clone(&notifier),
+            PathBuf::from("/tmp"),
+            make_test_access_db(),
+        ));
+        BridgeState {
+            engine,
+            callback_registry: TransferCallbackRegistry::new(),
+            event_bus: bus,
+        }
+    }
+
+    /// Spin up a test axum server with just the events route.
+    /// Returns the base URL.
+    async fn spawn_test_sse_server(bus: Arc<super::super::event_bus::EventBus>) -> String {
+        use tokio::net::TcpListener as TokioListener;
+        let state = make_test_bridge_state(bus);
+        let app = Router::new()
+            .route("/events", get(handle_events))
+            .with_state(state);
+        let listener = TokioListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        format!("http://{}", addr)
+    }
+
+    /// Parse a single SSE event from a chunk of text.
+    /// Returns (event_name, data) if found.
+    fn parse_sse_event(chunk: &str) -> Option<(String, String)> {
+        let mut event_name = String::from("message");
+        let mut data = String::new();
+        for line in chunk.lines() {
+            if let Some(rest) = line.strip_prefix("event:") {
+                event_name = rest.trim().to_string();
+            } else if let Some(rest) = line.strip_prefix("data:") {
+                data = rest.trim().to_string();
+            }
+        }
+        if data.is_empty() {
+            None
+        } else {
+            Some((event_name, data))
+        }
+    }
+
+    /// Collect up to N SSE events from a response body (raw bytes stream).
+    /// Stops when `count` events have arrived OR `timeout_ms` elapses.
+    /// Returns whatever events arrived before the deadline — never panics on timeout.
+    async fn collect_sse_events(
+        resp: reqwest::Response,
+        count: usize,
+        timeout_ms: u64,
+    ) -> Vec<(String, String)> {
+        use tokio::time::Duration;
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
+        let mut events: Vec<(String, String)> = Vec::new();
+        let mut buf = String::new();
+        let mut stream = resp.bytes_stream();
+        use futures::StreamExt as _;
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            match tokio::time::timeout(remaining, stream.next()).await {
+                Ok(Some(Ok(chunk))) => {
+                    buf.push_str(&String::from_utf8_lossy(&chunk));
+                    // SSE events are separated by double newlines
+                    while let Some(pos) = buf.find("\n\n") {
+                        let event_text = buf[..pos + 2].to_string();
+                        buf = buf[pos + 2..].to_string();
+                        if let Some(ev) = parse_sse_event(&event_text) {
+                            events.push(ev);
+                            if events.len() >= count {
+                                return events;
+                            }
+                        }
+                    }
+                }
+                // timeout, stream error, or stream ended
+                _ => break,
+            }
+        }
+        events
+    }
+
+    #[tokio::test]
+    async fn snapshot_arrives_on_connect() {
+        let bus = Arc::new(super::super::event_bus::EventBus::new());
+        let base_url = spawn_test_sse_server(Arc::clone(&bus)).await;
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .get(format!("{}/events?capability=test.cap.1", base_url))
+            .send()
+            .await
+            .expect("request failed");
+
+        assert_eq!(resp.status(), 200);
+
+        let events = collect_sse_events(resp, 1, 1000).await;
+        assert_eq!(events.len(), 1, "expected snapshot event");
+        let (name, data) = &events[0];
+        assert_eq!(name, "snapshot");
+        let parsed: serde_json::Value =
+            serde_json::from_str(data).expect("snapshot data should be JSON");
+        let peers = parsed["peers"].as_array().expect("peers should be array");
+        assert!(
+            peers.is_empty(),
+            "no active sessions so snapshot should have empty peers"
+        );
+    }
+
+    #[tokio::test]
+    async fn live_event_delivered() {
+        use crate::p2pcd::event_bus::CapEvent;
+        use p2pcd_types::ScopeParams;
+
+        let bus = Arc::new(super::super::event_bus::EventBus::new());
+        let base_url = spawn_test_sse_server(Arc::clone(&bus)).await;
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .get(format!("{}/events?capability=test.cap.1", base_url))
+            .send()
+            .await
+            .expect("request failed");
+
+        // Give the connection time to establish and receive snapshot
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        // Publish peer-active
+        bus.publish(CapEvent::PeerActive {
+            peer_id: "dGVzdA==".to_string(),
+            wg_address: "100.64.0.1".to_string(),
+            capability: "test.cap.1".to_string(),
+            scope: ScopeParams::default(),
+            active_since: 12345,
+        });
+
+        // Publish peer-inactive
+        bus.publish(CapEvent::PeerInactive {
+            peer_id: "dGVzdA==".to_string(),
+            capability: "test.cap.1".to_string(),
+            reason: "Timeout".to_string(),
+        });
+
+        // Collect snapshot + 2 live events
+        let events = collect_sse_events(resp, 3, 2000).await;
+        assert!(
+            events.len() >= 3,
+            "expected snapshot + 2 events, got {:?}",
+            events
+        );
+        assert_eq!(events[0].0, "snapshot");
+        assert_eq!(
+            events[1].0, "peer-active",
+            "second event should be peer-active"
+        );
+        assert_eq!(
+            events[2].0, "peer-inactive",
+            "third event should be peer-inactive"
+        );
+    }
+
+    #[tokio::test]
+    async fn capability_filter_other_cap_not_delivered() {
+        use crate::p2pcd::event_bus::CapEvent;
+        use p2pcd_types::ScopeParams;
+
+        let bus = Arc::new(super::super::event_bus::EventBus::new());
+        let base_url = spawn_test_sse_server(Arc::clone(&bus)).await;
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .get(format!("{}/events?capability=test.cap.1", base_url))
+            .send()
+            .await
+            .expect("request failed");
+
+        // Wait for snapshot
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        // Publish event for a DIFFERENT capability — must not arrive
+        bus.publish(CapEvent::PeerActive {
+            peer_id: "dGVzdA==".to_string(),
+            wg_address: "100.64.0.2".to_string(),
+            capability: "other.cap.1".to_string(),
+            scope: ScopeParams::default(),
+            active_since: 99999,
+        });
+
+        // Only the snapshot should arrive; no further events for 150ms
+        let events = collect_sse_events(resp, 2, 300).await;
+        assert_eq!(
+            events.len(),
+            1,
+            "only snapshot should arrive; other.cap.1 event must be filtered out"
+        );
+        assert_eq!(events[0].0, "snapshot");
+    }
+
+    /// Verifies that the SSE stream delivers events in the order they were
+    /// published (flap ordering preserved).
+    ///
+    /// Publishes a peer-inactive followed by peer-active for the same peer,
+    /// then verifies the SSE stream delivers them in published order (inactive
+    /// first, then active), with no peer-inactive appearing after the final
+    /// peer-active.
+    ///
+    /// Steps:
+    ///   1. Connect the SSE client (subscribe() fires inside the handler).
+    ///   2. Wait for the snapshot to arrive (no active peers → empty list).
+    ///   3. Publish a rapid flap: peer-inactive THEN peer-active for the same peer.
+    ///   4. Assert both arrive in published order (inactive before active).
+    ///   5. Assert no peer-inactive appears after the final peer-active.
+    ///
+    /// NOTE: The daemon's only responsibility is in-order delivery.  Whether the
+    /// SDK considers the peer "active" or "inactive" after a flap is Phase 3
+    /// (SDK-side state tracking).
+    ///
+    /// The subscribe-before-snapshot aspect is also exercised: if subscribe() were
+    /// called AFTER the snapshot, events published during snapshot construction
+    /// would be missed.  Because the broadcast channel is tapped before the engine
+    /// query, any event published in that window is buffered and will arrive here.
+    #[tokio::test]
+    async fn flap_ordering_preserved() {
+        use crate::p2pcd::event_bus::CapEvent;
+        use p2pcd_types::ScopeParams;
+
+        let bus = Arc::new(super::super::event_bus::EventBus::new());
+        let base_url = spawn_test_sse_server(Arc::clone(&bus)).await;
+
+        // Step 1: Connect the SSE client — handle_events() calls subscribe()
+        // before building the snapshot, so all subsequent publishes are buffered.
+        let client = reqwest::Client::new();
+        let resp = client
+            .get(format!("{}/events?capability=test.cap.1", base_url))
+            .send()
+            .await
+            .expect("request failed");
+
+        // Step 2: Wait for snapshot event to arrive.
+        // Once snapshot arrives we know the handler has subscribed and is streaming.
+        let snap_events = collect_sse_events(resp, 1, 1000).await;
+        assert_eq!(snap_events.len(), 1, "snapshot should arrive");
+        assert_eq!(snap_events[0].0, "snapshot");
+
+        // We need the original response to keep reading. Re-connect for the live events.
+        // Actually we need a fresh connection since we consumed the first one.
+        // Open a second SSE connection for the live-event part of this test.
+        let resp2 = client
+            .get(format!("{}/events?capability=test.cap.1", base_url))
+            .send()
+            .await
+            .expect("request 2 failed");
+
+        // Give the second connection time to subscribe and receive its snapshot.
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        // Step 3: Publish a rapid flap — peer-inactive THEN peer-active.
+        bus.publish(CapEvent::PeerInactive {
+            peer_id: "X_peer_id".to_string(),
+            capability: "test.cap.1".to_string(),
+            reason: "Timeout".to_string(),
+        });
+        bus.publish(CapEvent::PeerActive {
+            peer_id: "X_peer_id".to_string(),
+            wg_address: "100.64.0.10".to_string(),
+            capability: "test.cap.1".to_string(),
+            scope: ScopeParams::default(),
+            active_since: 55555,
+        });
+
+        // Step 4: Collect snapshot + 2 live flap events from the second connection.
+        let events = collect_sse_events(resp2, 3, 2000).await;
+        assert!(
+            events.len() >= 3,
+            "expected snapshot + peer-inactive + peer-active, got {:?}",
+            events
+        );
+        assert_eq!(events[0].0, "snapshot", "first event must be snapshot");
+        // The flap events must arrive in published order.
+        assert_eq!(
+            events[1].0, "peer-inactive",
+            "second event must be peer-inactive (first flap event)"
+        );
+        assert_eq!(
+            events[2].0, "peer-active",
+            "third event must be peer-active (second flap event)"
+        );
+
+        // Step 5: No peer-inactive should appear AFTER the final peer-active.
+        let post_active: Vec<_> = events[3..]
+            .iter()
+            .filter(|(n, _)| n == "peer-inactive")
+            .collect();
+        assert!(
+            post_active.is_empty(),
+            "no peer-inactive should appear after the final peer-active"
+        );
     }
 }

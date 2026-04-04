@@ -169,6 +169,9 @@ async fn main() -> anyhow::Result<()> {
     };
     info!("Access control database initialised");
 
+    // Build the single canonical EventBus; shared by AppState and CapabilityNotifier.
+    let event_bus = Arc::new(p2pcd::event_bus::EventBus::new());
+
     // Build app state
     let mut state = state::AppState::new(
         identity.clone(),
@@ -177,10 +180,9 @@ async fn main() -> anyhow::Result<()> {
         config.clone(),
         api_token,
         Arc::clone(&access_db),
+        Arc::clone(&event_bus),
     );
-
-    // Build capability notifier and register running capabilities
-    let cap_notifier = p2pcd::cap_notify::CapabilityNotifier::new();
+    let cap_notifier = p2pcd::cap_notify::CapabilityNotifier::new(Arc::clone(&event_bus));
     {
         let caps = state.capabilities.read().await;
         for cap in caps.iter() {
