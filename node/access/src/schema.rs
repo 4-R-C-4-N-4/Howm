@@ -138,7 +138,6 @@ pub fn seed_built_in_groups(conn: &Connection) -> rusqlite::Result<()> {
         "howm.social.feed.1",
         "howm.social.messaging.1",
         "howm.social.files.1",
-        "howm.world.room.1",
         "core.network.peerexchange.1",
     ];
     seed_capability_rules(conn, &GROUP_FRIENDS.to_string(), friends_caps)?;

@@ -96,6 +96,25 @@ async fn main() -> anyhow::Result<()> {
     let peers = peers::load(&config.data_dir)?;
     let mut capabilities = capabilities::load(&config.data_dir)?;
 
+    // Prune capabilities whose manifest no longer exists on disk.
+    // This cleans up WIP capabilities that exist on other branches but not this one,
+    // preventing the watchdog and PID loop from crash-looping a binary that isn't here.
+    let before = capabilities.len();
+    capabilities.retain(|cap| {
+        let exists = std::path::Path::new(&cap.manifest_path).exists();
+        if !exists {
+            tracing::info!(
+                "Removing capability '{}' — manifest no longer on disk ({})",
+                cap.name,
+                cap.manifest_path
+            );
+        }
+        exists
+    });
+    if capabilities.len() < before {
+        capabilities::save(&config.data_dir, &capabilities)?;
+    }
+
     // Migrate stale p2pcd_name entries: software major version 0 was incorrectly used
     // as the protocol version, producing "howm.social.messaging.0" instead of ".1".
     // All capabilities speak protocol version 1 regardless of their software version.

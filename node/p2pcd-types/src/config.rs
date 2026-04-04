@@ -407,17 +407,8 @@ impl PeerConfig {
                         params: None,
                     },
                 );
-                m.insert(
-                    "world".to_string(),
-                    CapabilityConfig {
-                        name: "howm.world.room.1".to_string(),
-                        role: RoleConfig::Both,
-                        mutual: true,
-                        scope: None,
-                        classification: None,
-                        params: None,
-                    },
-                );
+                // world.generation is a WIP capability on a separate branch.
+                // Not included in the default manifest until it ships.
 
                 m
             },
@@ -597,8 +588,9 @@ list = []
         let cfg = PeerConfig::generate_default(&data_dir);
         let peer_id = [0xA1u8; 32];
         let manifest = cfg.to_manifest(peer_id, 1);
-        // 7 capabilities: heartbeat + feed + messaging + files + presence + voice + world
-        assert_eq!(manifest.capabilities.len(), 7);
+        // 6 capabilities: heartbeat + feed + messaging + files + presence + voice
+        // (world.generation is WIP on a separate branch)
+        assert_eq!(manifest.capabilities.len(), 6);
         // Capabilities must be sorted
         let names: Vec<_> = manifest
             .capabilities

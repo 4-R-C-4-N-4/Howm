@@ -1239,12 +1239,6 @@ mod tests {
                 ttl: None,
             },
             howm_access::CapabilityRule {
-                capability_name: "howm.world.room.1".into(),
-                allow: true,
-                rate_limit: None,
-                ttl: None,
-            },
-            howm_access::CapabilityRule {
                 capability_name: "core.network.peerexchange.1".into(),
                 allow: true,
                 rate_limit: None,

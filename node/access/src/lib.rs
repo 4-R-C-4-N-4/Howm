@@ -126,9 +126,6 @@ mod tests {
             .resolve_permission(&peer, "howm.social.files.1")
             .is_allowed());
         assert!(!db
-            .resolve_permission(&peer, "howm.world.room.1")
-            .is_allowed());
-        assert!(!db
             .resolve_permission(&peer, "core.network.peerexchange.1")
             .is_allowed());
         assert!(!db
@@ -169,9 +166,6 @@ mod tests {
             .resolve_permission(&peer, "howm.social.files.1")
             .is_allowed());
         assert!(db
-            .resolve_permission(&peer, "howm.world.room.1")
-            .is_allowed());
-        assert!(db
             .resolve_permission(&peer, "core.network.peerexchange.1")
             .is_allowed());
 
@@ -204,9 +198,6 @@ mod tests {
             .is_allowed());
         assert!(db
             .resolve_permission(&peer, "howm.social.files.1")
-            .is_allowed());
-        assert!(db
-            .resolve_permission(&peer, "howm.world.room.1")
             .is_allowed());
         assert!(db
             .resolve_permission(&peer, "core.network.peerexchange.1")
