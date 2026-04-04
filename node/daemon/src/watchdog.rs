@@ -41,7 +41,10 @@ async fn watchdog_loop(state: AppState) {
 
         // Snapshot the Running caps (release lock before doing async HTTP)
         let caps: Vec<_> = {
-            state.capabilities.read().await
+            state
+                .capabilities
+                .read()
+                .await
                 .iter()
                 .filter(|c| c.status == crate::capabilities::CapStatus::Running)
                 .cloned()
@@ -77,7 +80,10 @@ async fn watchdog_loop(state: AppState) {
 
             // Two consecutive failures — restart.
             failures.remove(&cap.name);
-            warn!("watchdog: restarting unresponsive capability '{}'", cap.name);
+            warn!(
+                "watchdog: restarting unresponsive capability '{}'",
+                cap.name
+            );
 
             // Mark Crashed so the UI can surface it.
             {
@@ -120,8 +126,8 @@ async fn watchdog_loop(state: AppState) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
 
     /// Verify that the failure counter increments and the cap transitions to
     /// Crashed after 2 consecutive failures — without needing a real daemon state.
@@ -158,16 +164,24 @@ mod tests {
         let mut failures: HashMap<String, u32> = HashMap::new();
 
         // First poll — count = 1, below threshold
-        let ok = client.get(&url).send().await
-            .map(|r| r.status().is_success()).unwrap_or(false);
+        let ok = client
+            .get(&url)
+            .send()
+            .await
+            .map(|r| r.status().is_success())
+            .unwrap_or(false);
         assert!(!ok);
         let count = failures.entry("test.cap".to_string()).or_insert(0);
         *count += 1;
         assert_eq!(*count, 1, "should not trigger restart yet");
 
         // Second poll — count = 2, at threshold
-        let ok = client.get(&url).send().await
-            .map(|r| r.status().is_success()).unwrap_or(false);
+        let ok = client
+            .get(&url)
+            .send()
+            .await
+            .map(|r| r.status().is_success())
+            .unwrap_or(false);
         assert!(!ok);
         let count = failures.entry("test.cap".to_string()).or_insert(0);
         *count += 1;
@@ -202,13 +216,20 @@ mod tests {
         failures.insert("test.cap".to_string(), 1); // pre-seeded with one failure
 
         let url = format!("http://127.0.0.1:{}/health", port);
-        let ok = client.get(&url).send().await
-            .map(|r| r.status().is_success()).unwrap_or(false);
+        let ok = client
+            .get(&url)
+            .send()
+            .await
+            .map(|r| r.status().is_success())
+            .unwrap_or(false);
         assert!(ok);
 
         // Clear on success
         let removed = failures.remove("test.cap");
-        assert!(removed.is_some(), "failure counter should be cleared on healthy response");
+        assert!(
+            removed.is_some(),
+            "failure counter should be cleared on healthy response"
+        );
         assert!(failures.is_empty());
     }
 }
