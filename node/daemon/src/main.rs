@@ -384,15 +384,16 @@ async fn main() -> anyhow::Result<()> {
                 let mut any_changed = false;
                 for cap in caps.iter_mut() {
                     if !matches!(cap.status, capabilities::CapStatus::Running) {
+                        // Skip Stopped, Crashed, Error — watchdog handles Crashed.
                         continue;
                     }
                     let alive = cap.pid.map(executor::check_health).unwrap_or(false);
                     if !alive {
-                        tracing::warn!(
-                            "Capability '{}' (pid={:?}) crashed — restarting",
-                            cap.name,
-                            cap.pid
-                        );
+                        // Mark Crashed immediately so the HTTP watchdog skips it on its
+                        // next tick and doesn't double-restart the same capability.
+                        cap.status = capabilities::CapStatus::Crashed;
+                        cap.pid = None;
+                        tracing::warn!("Capability '{}' process died — restarting", cap.name,);
                         let data_dir = &cap.data_dir;
                         match executor::start_capability(
                             &cap.binary_path,
@@ -410,6 +411,7 @@ async fn main() -> anyhow::Result<()> {
                                     new_pid
                                 );
                                 cap.pid = Some(new_pid);
+                                cap.status = capabilities::CapStatus::Running;
                             }
                             Err(e) => {
                                 tracing::error!(

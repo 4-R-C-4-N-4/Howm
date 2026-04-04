@@ -39,7 +39,9 @@ async fn watchdog_loop(state: AppState) {
     loop {
         interval.tick().await;
 
-        // Snapshot the Running caps (release lock before doing async HTTP)
+        // Snapshot the Running caps (release lock before doing async HTTP).
+        // Only poll Running caps — Crashed caps are being restarted by the
+        // PID health loop in main.rs; skip them to avoid a double-restart race.
         let caps: Vec<_> = {
             state
                 .capabilities

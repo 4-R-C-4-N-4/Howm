@@ -12,8 +12,8 @@
 #   --wg-endpoint HOST:PORT Public WireGuard endpoint for peers
 #   --no-ui                 Skip the web UI
 #   --dev                   Pass --dev flag to daemon (enables CORS for Vite proxy)
-#   --debug                 Show daemon logs in the foreground
-#   --release               Build in release mode (default: debug)
+#   --debug-log             Show daemon logs in the foreground
+#   --debug                 Build in debug mode instead of release (default: release)
 #   --help                  Show this help
 #
 # Examples:
@@ -35,7 +35,7 @@ WG_ENDPOINT=""
 NO_UI=0
 DEV_FLAG=""
 DEBUG_FLAG=""
-RELEASE_MODE=0
+RELEASE_MODE=1
 
 # ── Parse args ──────────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -47,8 +47,8 @@ while [[ $# -gt 0 ]]; do
         --wg-endpoint)       WG_ENDPOINT="$2";    shift 2 ;;
         --no-ui)             NO_UI=1;             shift   ;;
         --dev)               DEV_FLAG="--dev";    shift   ;;
-        --debug)             DEBUG_FLAG="--debug"; shift  ;;
-        --release)           RELEASE_MODE=1;      shift   ;;
+        --debug-log)         DEBUG_FLAG="--debug"; shift  ;;
+        --debug)             RELEASE_MODE=0;      shift   ;;
         --help|-h)
             grep '^#' "$0" | sed 's/^# \{0,2\}//'
             exit 0
@@ -122,6 +122,13 @@ else
     info "Building howm (debug)..."
     BUILD_OUT=$(cd "$ROOT_DIR/node" && cargo build 2>&1) || BUILD_EXIT=$?
     HOWM_BIN="$ROOT_DIR/node/target/debug/howm"
+    # Remove stale release binaries for each capability so the daemon install
+    # logic falls through to the freshly-built debug binary instead of the old release.
+    for cap in "$ROOT_DIR/capabilities"/*/; do
+        cap_name="$(basename "$cap")"
+        stale_release="$cap/target/release/$cap_name"
+        [[ -f "$stale_release" ]] && rm -f "$stale_release"
+    done
 fi
 
 if [[ $BUILD_EXIT -ne 0 ]]; then

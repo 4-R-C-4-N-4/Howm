@@ -255,6 +255,14 @@ async fn post_notification(url: String, payload: PeerActivePayload) {
         Ok(resp) if resp.status().is_success() => {
             tracing::debug!("cap_notify: POST {} → {}", url, resp.status());
         }
+        Ok(resp) if resp.status() == reqwest::StatusCode::NOT_FOUND => {
+            // 404 is expected for capabilities that have migrated to the SSE event stream
+            // and intentionally removed their /p2pcd/peer-active HTTP endpoint.
+            tracing::debug!(
+                "cap_notify: POST {} → 404 (capability uses SSE, skipping POST)",
+                url
+            );
+        }
         Ok(resp) => {
             tracing::warn!("cap_notify: POST {} returned {}", url, resp.status());
         }
@@ -313,6 +321,12 @@ async fn post_inactive_notification(url: String, payload: PeerInactivePayload) {
     match client.post(&url).json(&payload).send().await {
         Ok(resp) if resp.status().is_success() => {
             tracing::debug!("cap_notify: POST {} → {}", url, resp.status());
+        }
+        Ok(resp) if resp.status() == reqwest::StatusCode::NOT_FOUND => {
+            tracing::debug!(
+                "cap_notify: POST {} → 404 (capability uses SSE, skipping POST)",
+                url
+            );
         }
         Ok(resp) => {
             tracing::warn!("cap_notify: POST {} returned {}", url, resp.status());
