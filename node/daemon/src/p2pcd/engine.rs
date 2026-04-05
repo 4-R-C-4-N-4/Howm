@@ -64,6 +64,8 @@ pub struct SessionSummary {
     pub state: SessionState,
     pub active_set: Vec<String>,
     pub uptime_s: u64,
+    /// Unix timestamp of the last heartbeat PONG (or session activation if no pong yet).
+    pub last_activity: u64,
 }
 
 // ── ProtocolEngine ───────────────────────────────────────────────────────────
@@ -334,6 +336,13 @@ impl ProtocolEngine {
         if let Some(handle) = self.mux_handles.lock().await.remove(&peer_id) {
             handle.abort();
         }
+
+        // Clear replay-detection entry so the peer can reconnect with the same
+        // sequence_num. The replay guard exists to catch duplicate manifests within
+        // a single session, not across independent reconnects. Keeping the entry
+        // after a session ends blocks legitimate reconnects when the remote peer
+        // hasn't incremented their sequence_num (the common case after a restart).
+        self.last_seen_sequence.lock().await.remove(&peer_id);
 
         let active_set = {
             let mut sessions = self.sessions.write().await;
@@ -908,17 +917,42 @@ impl ProtocolEngine {
         for peer_id in active_peers {
             // §8.4 Active-set continuity: keep old active set alive during re-exchange.
             // Only capabilities removed from the new set are deactivated.
-            let (transport, old_active_set) = {
-                let mut sessions = self.sessions.write().await;
-                if let Some(s) = sessions.get_mut(&peer_id) {
-                    (s.transport.take(), s.active_set.clone())
+            let old_active_set = {
+                let sessions = self.sessions.read().await;
+                if let Some(s) = sessions.get(&peer_id) {
+                    s.active_set.clone()
                 } else {
                     continue;
                 }
             };
 
+            // Rebroadcast must open a fresh TCP connection — the session's transport
+            // was already consumed by post_session_setup (converted into mux channels).
+            let addr = match self.resolve_peer_addr(peer_id).await {
+                Some(a) => a,
+                None => {
+                    tracing::warn!(
+                        "engine: rebroadcast to {} skipped: can't resolve addr",
+                        short(peer_id)
+                    );
+                    continue;
+                }
+            };
+
+            let fresh_transport = match transport::connect(addr).await {
+                Ok(t) => t,
+                Err(e) => {
+                    tracing::warn!(
+                        "engine: rebroadcast to {} failed: connect error: {:?}",
+                        short(peer_id),
+                        e
+                    );
+                    continue;
+                }
+            };
+
             let mut new_s = Session::new(peer_id, manifest.clone());
-            new_s.transport = transport;
+            new_s.transport = Some(fresh_transport);
             new_s.state = SessionState::PeerVisible;
 
             let access_db = Arc::clone(&self.access_db);
@@ -928,10 +962,6 @@ impl ProtocolEngine {
 
             if let Err(e) = session::run_initiator_exchange(&mut new_s, &trust_gate).await {
                 tracing::warn!("engine: rebroadcast to {} failed: {:?}", short(peer_id), e);
-                // On failure, restore the old session's transport and keep active set
-                self.sessions.write().await.entry(peer_id).and_modify(|s| {
-                    s.transport = new_s.transport.take();
-                });
                 continue;
             }
 
@@ -957,11 +987,27 @@ impl ProtocolEngine {
                     .await;
             }
 
+            // Drop the negotiation-only transport — capability traffic continues
+            // on the existing mux established during the initial session setup.
+            new_s.transport = None;
+
             self.sessions.write().await.insert(peer_id, new_s);
         }
     }
 
     // ── Public query API ──────────────────────────────────────────────────────
+
+    /// Register a capability endpoint with the notifier so it receives peer-active
+    /// and peer-inactive callbacks. Must be called with the p2pcd capability name
+    /// (e.g. "howm.social.messaging.1") — that is what appears in session active_sets.
+    pub async fn register_capability(&self, p2pcd_name: String, port: u16) {
+        self.notifier.register(p2pcd_name, port).await;
+    }
+
+    /// Unregister a capability from the notifier (call on stop/uninstall).
+    pub async fn unregister_capability(&self, p2pcd_name: &str) {
+        self.notifier.unregister(p2pcd_name).await;
+    }
 
     pub async fn active_sessions(&self) -> Vec<SessionSummary> {
         let sessions = self.sessions.read().await;
@@ -973,6 +1019,7 @@ impl ProtocolEngine {
                 state: s.state.clone(),
                 active_set: s.active_set.clone(),
                 uptime_s: now.saturating_sub(s.created_at),
+                last_activity: s.last_activity,
             })
             .collect()
     }
@@ -1165,7 +1212,7 @@ mod tests {
     // Two ProtocolEngine instances on loopback. No WireGuard, no network.
     // Alice dials Bob; both should reach Active and fire HTTP callbacks.
 
-    /// Build a minimal PeerConfig for tests: one `howm.feed.1` capability.
+    /// Build a minimal PeerConfig for tests: one `howm.social.feed.1` capability.
     fn test_access_db() -> Arc<AccessDb> {
         let dir = tempfile::TempDir::new().unwrap();
         let db_path = dir.path().join("access.db");
@@ -1174,7 +1221,7 @@ mod tests {
         // so the trust gate doesn't block anything (tests focus on protocol, not access).
         let all_caps = vec![
             howm_access::CapabilityRule {
-                capability_name: "howm.feed.1".into(),
+                capability_name: "howm.social.feed.1".into(),
                 allow: true,
                 rate_limit: None,
                 ttl: None,
@@ -1187,12 +1234,6 @@ mod tests {
             },
             howm_access::CapabilityRule {
                 capability_name: "howm.social.files.1".into(),
-                allow: true,
-                rate_limit: None,
-                ttl: None,
-            },
-            howm_access::CapabilityRule {
-                capability_name: "howm.world.room.1".into(),
                 allow: true,
                 rate_limit: None,
                 ttl: None,
@@ -1248,7 +1289,7 @@ mod tests {
                 m.insert(
                     "social".to_string(),
                     CapabilityConfig {
-                        name: "howm.feed.1".to_string(),
+                        name: "howm.social.feed.1".to_string(),
                         role: RoleConfig::Both,
                         mutual: true,
                         scope: None,
@@ -1344,11 +1385,14 @@ mod tests {
         let (bob_notifier_url, bob_active, _bob_inactive) = spawn_mock_notifier().await;
 
         // ── Build Alice's engine ──
-        let alice_notifier = Arc::new(CapabilityNotifier::new());
-        alice_notifier.register("howm.feed.1".to_string(), 0).await;
+        let alice_notifier =
+            CapabilityNotifier::new(Arc::new(crate::p2pcd::event_bus::EventBus::new()));
+        alice_notifier
+            .register("howm.social.feed.1".to_string(), 0)
+            .await;
         // Override notifier URL so callbacks reach our mock server
         alice_notifier
-            .register_with_url("howm.feed.1".to_string(), alice_notifier_url.clone())
+            .register_with_url("howm.social.feed.1".to_string(), alice_notifier_url.clone())
             .await;
 
         let alice_engine = Arc::new(ProtocolEngine::new(
@@ -1368,9 +1412,10 @@ mod tests {
         let alice_p2pcd_addr = alice_listener.local_addr;
 
         // ── Build Bob's engine ──
-        let bob_notifier = Arc::new(CapabilityNotifier::new());
+        let bob_notifier =
+            CapabilityNotifier::new(Arc::new(crate::p2pcd::event_bus::EventBus::new()));
         bob_notifier
-            .register_with_url("howm.feed.1".to_string(), bob_notifier_url.clone())
+            .register_with_url("howm.social.feed.1".to_string(), bob_notifier_url.clone())
             .await;
 
         let bob_engine = Arc::new(ProtocolEngine::new(
@@ -1487,7 +1532,8 @@ mod tests {
             .unwrap();
         let bob_p2pcd_addr = bob_listener.local_addr;
 
-        let alice_notifier = Arc::new(CapabilityNotifier::new());
+        let alice_notifier =
+            CapabilityNotifier::new(Arc::new(crate::p2pcd::event_bus::EventBus::new()));
         let alice_engine = Arc::new(ProtocolEngine::new(
             make_peer_config_fast_heartbeat(0),
             alice_id,
@@ -1502,7 +1548,8 @@ mod tests {
             .unwrap();
         let alice_p2pcd_addr = alice_listener.local_addr;
 
-        let bob_notifier = Arc::new(CapabilityNotifier::new());
+        let bob_notifier =
+            CapabilityNotifier::new(Arc::new(crate::p2pcd::event_bus::EventBus::new()));
         let bob_engine = Arc::new(ProtocolEngine::new(
             make_peer_config_fast_heartbeat(bob_p2pcd_addr.port()),
             bob_id,
@@ -1621,6 +1668,7 @@ mod tests {
             state: SessionState::Active,
             active_set: vec!["core.session.heartbeat.1".to_string()],
             uptime_s: 42,
+            last_activity: 0,
         };
         assert_eq!(s.active_set.len(), 1);
     }
@@ -1643,7 +1691,8 @@ mod tests {
             .unwrap();
         let bob_p2pcd_addr = bob_listener.local_addr;
 
-        let alice_notifier = Arc::new(CapabilityNotifier::new());
+        let alice_notifier =
+            CapabilityNotifier::new(Arc::new(crate::p2pcd::event_bus::EventBus::new()));
         let alice_engine = Arc::new(ProtocolEngine::new(
             make_peer_config(0),
             alice_id,
@@ -1658,7 +1707,8 @@ mod tests {
             .unwrap();
         let alice_p2pcd_addr = alice_listener.local_addr;
 
-        let bob_notifier = Arc::new(CapabilityNotifier::new());
+        let bob_notifier =
+            CapabilityNotifier::new(Arc::new(crate::p2pcd::event_bus::EventBus::new()));
         let bob_engine = Arc::new(ProtocolEngine::new(
             make_peer_config(bob_p2pcd_addr.port()),
             bob_id,
@@ -1746,7 +1796,8 @@ mod tests {
             .unwrap();
         let bob_p2pcd_addr = bob_listener.local_addr;
 
-        let alice_notifier = Arc::new(CapabilityNotifier::new());
+        let alice_notifier =
+            CapabilityNotifier::new(Arc::new(crate::p2pcd::event_bus::EventBus::new()));
         let alice_engine = Arc::new(ProtocolEngine::new(
             make_peer_config(0),
             alice_id,
@@ -1760,7 +1811,8 @@ mod tests {
             .await
             .unwrap();
 
-        let bob_notifier = Arc::new(CapabilityNotifier::new());
+        let bob_notifier =
+            CapabilityNotifier::new(Arc::new(crate::p2pcd::event_bus::EventBus::new()));
         let bob_engine = Arc::new(ProtocolEngine::new(
             make_peer_config(bob_p2pcd_addr.port()),
             bob_id,
@@ -1838,9 +1890,10 @@ mod tests {
         let bob_p2pcd_addr = bob_listener.local_addr;
 
         let (alice_notifier_url, _alice_active, alice_inactive) = spawn_mock_notifier().await;
-        let alice_notifier = Arc::new(CapabilityNotifier::new());
+        let alice_notifier =
+            CapabilityNotifier::new(Arc::new(crate::p2pcd::event_bus::EventBus::new()));
         alice_notifier
-            .register_with_url("howm.feed.1".to_string(), alice_notifier_url.clone())
+            .register_with_url("howm.social.feed.1".to_string(), alice_notifier_url.clone())
             .await;
         alice_notifier
             .register_with_url(
@@ -1862,7 +1915,8 @@ mod tests {
             .await
             .unwrap();
 
-        let bob_notifier = Arc::new(CapabilityNotifier::new());
+        let bob_notifier =
+            CapabilityNotifier::new(Arc::new(crate::p2pcd::event_bus::EventBus::new()));
         let bob_engine = Arc::new(ProtocolEngine::new(
             make_peer_config(bob_p2pcd_addr.port()),
             bob_id,
@@ -1916,7 +1970,7 @@ mod tests {
         assert!(
             alice_session
                 .active_set
-                .contains(&"howm.feed.1".to_string()),
+                .contains(&"howm.social.feed.1".to_string()),
             "social feed should be active before rebroadcast"
         );
 
@@ -1968,7 +2022,7 @@ mod tests {
         let alice_id: PeerId = [0xD1u8; 32];
         let bob_id: PeerId = [0xD2u8; 32];
 
-        let notifier = Arc::new(CapabilityNotifier::new());
+        let notifier = CapabilityNotifier::new(Arc::new(crate::p2pcd::event_bus::EventBus::new()));
         let engine = Arc::new(ProtocolEngine::new(
             make_peer_config(0),
             alice_id,
@@ -2006,7 +2060,9 @@ mod tests {
         let alice_id: PeerId = [0xE1u8; 32];
         let bob_id: PeerId = [0xE2u8; 32];
 
-        let notifier = Arc::new(crate::p2pcd::cap_notify::CapabilityNotifier::new());
+        let notifier = crate::p2pcd::cap_notify::CapabilityNotifier::new(Arc::new(
+            crate::p2pcd::event_bus::EventBus::new(),
+        ));
         let engine = Arc::new(ProtocolEngine::new(
             make_peer_config(0),
             alice_id,
@@ -2043,7 +2099,9 @@ mod tests {
         let alice_id: PeerId = [0xF1u8; 32];
         let bob_id: PeerId = [0xF2u8; 32];
 
-        let notifier = Arc::new(crate::p2pcd::cap_notify::CapabilityNotifier::new());
+        let notifier = crate::p2pcd::cap_notify::CapabilityNotifier::new(Arc::new(
+            crate::p2pcd::event_bus::EventBus::new(),
+        ));
         let engine = Arc::new(ProtocolEngine::new(
             make_peer_config(0),
             alice_id,
@@ -2101,9 +2159,10 @@ mod tests {
 
         // Build Alice — use set_lan_hint instead of set_peer_addr to simulate
         // what complete_invite now does (the LAN invite path).
-        let alice_notifier = Arc::new(CapabilityNotifier::new());
+        let alice_notifier =
+            CapabilityNotifier::new(Arc::new(crate::p2pcd::event_bus::EventBus::new()));
         alice_notifier
-            .register_with_url("howm.feed.1".to_string(), alice_notifier_url.clone())
+            .register_with_url("howm.social.feed.1".to_string(), alice_notifier_url.clone())
             .await;
 
         let alice_engine = Arc::new(ProtocolEngine::new(
@@ -2119,9 +2178,10 @@ mod tests {
         alice_engine.set_lan_hint(bob_id, bob_p2pcd_addr).await;
 
         // Build Bob — needs peer_addr for Alice so Bob can also accept/initiate
-        let bob_notifier = Arc::new(CapabilityNotifier::new());
+        let bob_notifier =
+            CapabilityNotifier::new(Arc::new(crate::p2pcd::event_bus::EventBus::new()));
         bob_notifier
-            .register_with_url("howm.feed.1".to_string(), bob_notifier_url.clone())
+            .register_with_url("howm.social.feed.1".to_string(), bob_notifier_url.clone())
             .await;
 
         let bob_engine = Arc::new(ProtocolEngine::new(

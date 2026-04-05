@@ -140,6 +140,7 @@ impl MessageDb {
     }
 
     /// Transition all pending messages to a peer to 'failed'.
+    #[allow(dead_code)]
     pub fn fail_pending_to_peer(&self, conversation_id: &str, reason: &str) -> anyhow::Result<u64> {
         let _ = reason; // stored in delivery_status as "failed"
         let conn = self.conn.lock();

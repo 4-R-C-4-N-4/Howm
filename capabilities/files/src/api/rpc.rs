@@ -107,11 +107,8 @@ async fn handle_catalogue_list(state: &AppState, peer_id_b64: &str, payload: &[u
 
     // Get peer's cached group memberships
     let groups = {
-        let active = state.active_peers.read().await;
-        match active.get(peer_id_b64) {
-            Some(peer) => peer.groups.clone(),
-            None => vec![], // unknown peer gets no groups
-        }
+        let pg = state.peer_groups.read().await;
+        pg.get(peer_id_b64).cloned().unwrap_or_default()
     };
 
     // Query filtered offerings
@@ -181,14 +178,17 @@ pub async fn peer_catalogue(
     Query(query): Query<CatalogueQuery>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     // Verify peer is active
+    if state
+        .stream
+        .tracker()
+        .find_peer(&peer_id)
+        .await
+        .is_none()
     {
-        let active = state.active_peers.read().await;
-        if !active.contains_key(&peer_id) {
-            return Err((
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({ "error": "peer not active" })),
-            ));
-        }
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "peer not active" })),
+        ));
     }
 
     let cursor = query.cursor.unwrap_or(0);

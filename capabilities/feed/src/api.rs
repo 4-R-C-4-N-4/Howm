@@ -6,10 +6,7 @@ use axum::{
     Json,
 };
 use p2pcd::bridge_client::BridgeClient;
-use p2pcd::capability_sdk::{
-    ActivePeer, CapabilityRuntime, InboundMessage, PeerActivePayload, PeerInactivePayload,
-    PeerTracker,
-};
+use p2pcd::capability_sdk::{ActivePeer, CapabilityRuntime, InboundMessage, PeerTracker};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -459,41 +456,6 @@ pub async fn health() -> Json<Value> {
     Json(json!({ "status": "ok" }))
 }
 
-// ── P2P-CD peer notification handlers ───────────────────────────────────────
-//
-// These use the SDK's PeerTracker for lifecycle management.
-// The daemon POSTs to these when peers come and go.
-
-/// Called by the daemon when a peer negotiates our feed capability.
-pub async fn p2pcd_peer_active(
-    State(state): State<FeedState>,
-    Json(body): Json<PeerActivePayload>,
-) -> StatusCode {
-    let peer_id_short = body.peer_id[..8.min(body.peer_id.len())].to_string();
-    let was_new = state.peers().on_peer_active(body).await;
-    if was_new {
-        info!("p2pcd: new feed peer {}", peer_id_short);
-    }
-    StatusCode::OK
-}
-
-/// Called by the daemon when a peer session ends.
-pub async fn p2pcd_peer_inactive(
-    State(state): State<FeedState>,
-    Json(body): Json<PeerInactivePayload>,
-) -> StatusCode {
-    if body.capability != FEED_CAP {
-        return StatusCode::OK;
-    }
-    info!(
-        "p2pcd: peer {} inactive ({})",
-        &body.peer_id[..8.min(body.peer_id.len())],
-        body.reason,
-    );
-    state.peers().on_peer_inactive(&body.peer_id).await;
-    StatusCode::OK
-}
-
 // ── Inbound capability message handler ───────────────────────────────────────
 
 /// Called by the daemon when it forwards an inbound capability message to us.
@@ -572,16 +534,10 @@ pub async fn p2pcd_inbound(
     }
 }
 
-/// List current active feed peers (read by the feed UI / aggregation logic).
+/// GET /peers — list current active feed peers.
 pub async fn list_peers(State(state): State<FeedState>) -> Json<Value> {
     let peers: Vec<ActivePeer> = state.peers().peers().await;
     Json(json!({ "peers": peers }))
 }
 
-// ── Startup: restore active peers from daemon ────────────────────────────────
 
-/// On startup, ask the daemon for peers that are already active for our capability.
-/// This rebuilds the peer list after a capability restart.
-pub async fn init_peers_from_daemon(state: FeedState) {
-    state.runtime.init_from_daemon().await;
-}

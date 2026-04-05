@@ -20,14 +20,14 @@ Good decisions:
 
 ## 2. Critical Issues (Must Fix)
 
-### 2.1 Capability name mismatch — `howm.feed.1` should be `howm.social.feed.1`
+### 2.1 Capability name mismatch — `howm.social.feed.1` should be `howm.social.feed.1`
 
-Three places in the UI hardcode `howm.feed.1` but the p2pcd capability name is now `howm.social.feed.1`:
+Three places in the UI hardcode `howm.social.feed.1` but the p2pcd capability name is now `howm.social.feed.1`:
 
 - `src/api/access.ts` lines 52, 64 (TIER_CAPABILITIES for Friends and Trusted)
 - `src/lib/access.ts` line 57 (ALL_CAPABILITIES array)
 
-This means the access group UI presets create rules for a capability name that doesn't exist on the wire. Groups created from the UI will have a dead `howm.feed.1` rule instead of `howm.social.feed.1`.
+This means the access group UI presets create rules for a capability name that doesn't exist on the wire. Groups created from the UI will have a dead `howm.social.feed.1` rule instead of `howm.social.feed.1`.
 
 The bundled `dist/assets/index-*.js` has the same stale values baked in.
 
@@ -152,7 +152,7 @@ Note: Item 4 (unread count in navbar) was listed as missing in the enhancement d
 
 ## 7. Rename Residue
 
-Beyond the `howm.feed.1` → `howm.social.feed.1` issue in section 2.1:
+Beyond the `howm.social.feed.1` → `howm.social.feed.1` issue in section 2.1:
 
 - `capability.yaml` description still says "Distributed social feed"
 - `posts.rs` line 65: "Configurable media limits for the social feed"
@@ -163,7 +163,7 @@ Beyond the `howm.feed.1` → `howm.social.feed.1` issue in section 2.1:
 ## 8. Priority Recommendations
 
 **P0 (blocking):**
-1. Fix `howm.feed.1` → `howm.social.feed.1` in UI source (3 files)
+1. Fix `howm.social.feed.1` → `howm.social.feed.1` in UI source (3 files)
 2. Rebuild dist bundle
 3. Fix GroupDetail member list (currently shows all peers)
 

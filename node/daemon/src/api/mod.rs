@@ -162,7 +162,11 @@ pub fn build_router(state: AppState, ui_dir: Option<PathBuf>) -> Router {
     let local_or_wg = if let Some(ref engine) = state.p2pcd_engine {
         let callback_registry = crate::p2pcd::bridge::TransferCallbackRegistry::new();
         crate::p2pcd::bridge::spawn_transfer_watcher(engine, Arc::clone(&callback_registry));
-        let bridge = crate::p2pcd::bridge::bridge_routes(Arc::clone(engine), callback_registry);
+        let bridge = crate::p2pcd::bridge::bridge_routes(
+            Arc::clone(engine),
+            callback_registry,
+            Arc::clone(&state.event_bus),
+        );
         local_or_wg.nest_service("/p2pcd/bridge", bridge)
     } else {
         local_or_wg

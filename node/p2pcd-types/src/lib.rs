@@ -830,13 +830,13 @@ mod tests {
         }
     }
 
-    /// Normal peer: heartbeat + howm.feed.1 (Both/mutual — direction is app-layer)
+    /// Normal peer: heartbeat + howm.social.feed.1 (Both/mutual — direction is app-layer)
     fn social_peer(id: u8) -> DiscoveryManifest {
         manifest(
             id,
             vec![
                 cap("core.session.heartbeat.1", Role::Both, true),
-                cap("howm.feed.1", Role::Both, true),
+                cap("howm.social.feed.1", Role::Both, true),
             ],
         )
     }
@@ -853,7 +853,10 @@ mod tests {
         let bob = social_peer(0xB0);
         let allow_all = |_: &str, _: &PeerId| true;
         let active = compute_intersection(&alice, &bob, &allow_all);
-        assert_eq!(active, vec!["core.session.heartbeat.1", "howm.feed.1"]);
+        assert_eq!(
+            active,
+            vec!["core.session.heartbeat.1", "howm.social.feed.1"]
+        );
     }
 
     /// §9.2: Social ↔ No-Social → heartbeat only
@@ -879,7 +882,7 @@ mod tests {
 
         // Trust gate: only friend_id is allowed social access
         let gate = |cap: &str, pid: &PeerId| -> bool {
-            if cap == "howm.feed.1" {
+            if cap == "howm.social.feed.1" {
                 *pid == friend_id
             } else {
                 true
@@ -903,7 +906,7 @@ mod tests {
 
         // Trust gate: only friend_id is allowed social access
         let gate = |cap: &str, pid: &PeerId| -> bool {
-            if cap == "howm.feed.1" {
+            if cap == "howm.social.feed.1" {
                 *pid == friend_id
             } else {
                 true
@@ -911,7 +914,10 @@ mod tests {
         };
 
         let active = compute_intersection(&private_user, &friend, &gate);
-        assert_eq!(active, vec!["core.session.heartbeat.1", "howm.feed.1"]);
+        assert_eq!(
+            active,
+            vec!["core.session.heartbeat.1", "howm.social.feed.1"]
+        );
     }
 
     /// §9.5: No-Social ↔ No-Social → heartbeat only
@@ -1074,7 +1080,7 @@ mod tests {
     #[test]
     fn applicable_scope_keys_none_means_spec_fallback() {
         let cap = CapabilityDeclaration {
-            name: "howm.feed.1".to_string(),
+            name: "howm.social.feed.1".to_string(),
             role: Role::Both,
             mutual: true,
             scope: None,

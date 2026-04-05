@@ -5,15 +5,14 @@ use axum::{
     Json,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::RwLock;
 use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::db::{self, MessageDb};
 use crate::notifier::DaemonNotifier;
 use p2pcd::bridge_client::BridgeClient;
+use p2pcd::capability_sdk::PeerStream;
 
 // ── Shared state ─────────────────────────────────────────────────────────────
 
@@ -23,17 +22,23 @@ pub struct AppState {
     pub bridge: BridgeClient,
     #[allow(dead_code)]
     pub daemon_port: u16,
-    /// Active peers with messaging capability: peer_id_b64 → wg_address.
-    pub active_peers: Arc<RwLock<HashMap<String, String>>>,
-    /// Our own peer ID (base64), learned from X-Node-Id header or daemon.
-    pub local_peer_id: Arc<RwLock<Option<String>>>,
+    /// SSE-backed peer tracker for "howm.social.messaging.1".
+    pub stream: Arc<PeerStream>,
+    /// Our own peer ID (base64), learned once at startup.
+    pub local_peer_id: Arc<String>,
     /// Fire-and-forget notifier for badge/toast events to the daemon.
     pub notifier: DaemonNotifier,
 }
 
 impl AppState {
     #[allow(dead_code)]
-    pub fn new(db: MessageDb, bridge: BridgeClient, daemon_port: u16) -> Self {
+    pub fn new(
+        db: MessageDb,
+        bridge: BridgeClient,
+        daemon_port: u16,
+        stream: Arc<PeerStream>,
+        local_peer_id: Arc<String>,
+    ) -> Self {
         let db = Arc::new(db);
         let notifier = DaemonNotifier::new(
             reqwest::Client::new(),
@@ -44,8 +49,8 @@ impl AppState {
             db,
             bridge,
             daemon_port,
-            active_peers: Arc::new(RwLock::new(HashMap::new())),
-            local_peer_id: Arc::new(RwLock::new(None)),
+            stream,
+            local_peer_id,
             notifier,
         }
     }
@@ -55,40 +60,21 @@ impl AppState {
         bridge: BridgeClient,
         daemon_port: u16,
         notifier: DaemonNotifier,
+        stream: Arc<PeerStream>,
+        local_peer_id: Arc<String>,
     ) -> Self {
         Self {
             db,
             bridge,
             daemon_port,
-            active_peers: Arc::new(RwLock::new(HashMap::new())),
-            local_peer_id: Arc::new(RwLock::new(None)),
+            stream,
+            local_peer_id,
             notifier,
         }
     }
 }
 
-/// Initialise active peers from the daemon on startup.
-pub async fn init_peers_from_daemon(state: AppState) {
-    match state
-        .bridge
-        .list_peers(Some("howm.social.messaging.1"))
-        .await
-    {
-        Ok(peers) => {
-            let mut active = state.active_peers.write().await;
-            for p in peers {
-                active.insert(p.peer_id.clone(), String::new());
-            }
-            info!(
-                "Initialised {} active messaging peers from daemon",
-                active.len()
-            );
-        }
-        Err(e) => {
-            warn!("Failed to fetch initial peers from daemon: {}", e);
-        }
-    }
-}
+
 
 // ── CBOR envelope helpers ────────────────────────────────────────────────────
 
@@ -237,36 +223,11 @@ pub struct ConversationResponse {
     pub next_cursor: Option<i64>,
 }
 
-// ── P2P-CD lifecycle payloads (from cap_notify) ──────────────────────────────
+// ── P2P-CD lifecycle payloads (from capability_sdk) ─────────────────────────
 
-#[derive(Deserialize)]
-#[allow(dead_code)]
-pub struct PeerActivePayload {
-    pub peer_id: String,
-    pub wg_address: String,
-    pub capability: String,
-    #[serde(default)]
-    pub scope: serde_json::Value,
-    #[serde(default)]
-    pub active_since: u64,
-}
-
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)]
-pub struct PeerInactivePayload {
-    pub peer_id: String,
-    pub capability: String,
-    pub reason: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)]
-pub struct InboundMessage {
-    pub peer_id: String,
-    pub message_type: u64,
-    pub payload: String,
-    pub capability: String,
-}
+// PeerActivePayload, PeerInactivePayload, and InboundMessage are re-exported
+// from p2pcd::capability_sdk. Use those directly.
+use p2pcd::capability_sdk::InboundMessage;
 
 // ── Handlers ─────────────────────────────────────────────────────────────────
 
@@ -297,52 +258,33 @@ pub async fn send_message(
     }
 
     // Check peer is online with messaging capability
-    {
-        let active = state.active_peers.read().await;
-        if !active.contains_key(&req.to) {
-            // Also try checking the bridge directly
-            match state
-                .bridge
-                .list_peers(Some("howm.social.messaging.1"))
-                .await
-            {
-                Ok(peers) => {
-                    if !peers.iter().any(|p| p.peer_id == req.to) {
-                        return (
-                            StatusCode::BAD_REQUEST,
-                            Json(serde_json::json!({
-                                "error": "capability_unsupported",
-                                "capability": "howm.social.messaging.1",
-                            })),
-                        );
-                    }
-                }
-                Err(_) => {
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        Json(serde_json::json!({
-                            "error": "capability_unsupported",
-                            "capability": "howm.social.messaging.1",
-                        })),
-                    );
-                }
-            }
+    if state.stream.tracker().find_peer(&req.to).await.is_none() {
+        // Fallback for the ~1ms startup window before first snapshot.
+        let is_reachable = state
+            .bridge
+            .list_peers(Some("howm.social.messaging.1"))
+            .await
+            .map(|ps| ps.iter().any(|p| p.peer_id == req.to))
+            .unwrap_or(false);
+        if !is_reachable {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": "capability_unsupported",
+                    "capability": "howm.social.messaging.1",
+                })),
+            );
         }
     }
 
     // Get local peer ID
-    let local_peer_id = {
-        let local = state.local_peer_id.read().await;
-        match local.clone() {
-            Some(id) => id,
-            None => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({ "error": "local peer ID not available" })),
-                );
-            }
-        }
-    };
+    let local_peer_id = (*state.local_peer_id).clone();
+    if local_peer_id.is_empty() {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": "local peer ID not available" })),
+        );
+    }
 
     // Generate UUIDv7
     let uuid = Uuid::now_v7();
@@ -454,10 +396,7 @@ pub async fn send_message(
 
 /// GET /conversations — list all conversations.
 pub async fn list_conversations(State(state): State<AppState>) -> impl IntoResponse {
-    let local_peer_id = {
-        let local = state.local_peer_id.read().await;
-        local.clone().unwrap_or_default()
-    };
+    let local_peer_id = (*state.local_peer_id).clone();
 
     match state.db.list_conversations(&local_peer_id) {
         Ok(convs) => (StatusCode::OK, Json(serde_json::json!(convs))),
@@ -474,10 +413,7 @@ pub async fn get_conversation(
     Path(peer_id): Path<String>,
     Query(params): Query<PaginationParams>,
 ) -> impl IntoResponse {
-    let local_peer_id = {
-        let local = state.local_peer_id.read().await;
-        local.clone().unwrap_or_default()
-    };
+    let local_peer_id = (*state.local_peer_id).clone();
 
     let conversation_id = MessageDb::conversation_id(&local_peer_id, &peer_id);
     let limit = params.limit.clamp(1, 100);
@@ -505,10 +441,7 @@ pub async fn mark_read(
     State(state): State<AppState>,
     Path(peer_id): Path<String>,
 ) -> impl IntoResponse {
-    let local_peer_id = {
-        let local = state.local_peer_id.read().await;
-        local.clone().unwrap_or_default()
-    };
+    let local_peer_id = (*state.local_peer_id).clone();
 
     let conversation_id = MessageDb::conversation_id(&local_peer_id, &peer_id);
 
@@ -527,73 +460,13 @@ pub async fn delete_message(
     State(state): State<AppState>,
     Path((_peer_id, msg_id)): Path<(String, String)>,
 ) -> impl IntoResponse {
-    let local_peer_id = {
-        let local = state.local_peer_id.read().await;
-        local.clone().unwrap_or_default()
-    };
+    let local_peer_id = (*state.local_peer_id).clone();
 
     match state.db.delete_message(&msg_id, &local_peer_id) {
         Ok(true) => StatusCode::NO_CONTENT,
         Ok(false) => StatusCode::FORBIDDEN,
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
     }
-}
-
-// ── P2P-CD lifecycle handlers ────────────────────────────────────────────────
-
-/// POST /p2pcd/peer-active — a peer with messaging capability came online.
-pub async fn peer_active(
-    State(state): State<AppState>,
-    Json(payload): Json<PeerActivePayload>,
-) -> impl IntoResponse {
-    info!(
-        "Peer active: {} ({}) for {}",
-        &payload.peer_id[..8.min(payload.peer_id.len())],
-        payload.wg_address,
-        payload.capability
-    );
-
-    state
-        .active_peers
-        .write()
-        .await
-        .insert(payload.peer_id, payload.wg_address);
-
-    StatusCode::OK
-}
-
-/// POST /p2pcd/peer-inactive — a peer went offline.
-pub async fn peer_inactive(
-    State(state): State<AppState>,
-    Json(payload): Json<PeerInactivePayload>,
-) -> impl IntoResponse {
-    info!(
-        "Peer inactive: {} ({})",
-        &payload.peer_id[..8.min(payload.peer_id.len())],
-        payload.reason
-    );
-
-    state.active_peers.write().await.remove(&payload.peer_id);
-
-    // Fail any pending messages to this peer (FEAT-002-C)
-    let local_peer_id = {
-        let local = state.local_peer_id.read().await;
-        local.clone().unwrap_or_default()
-    };
-
-    if !local_peer_id.is_empty() {
-        let conv_id = MessageDb::conversation_id(&local_peer_id, &payload.peer_id);
-        if let Ok(failed) = state.db.fail_pending_to_peer(&conv_id, "peer_offline") {
-            if failed > 0 {
-                info!(
-                    "Marked {} pending messages as failed (peer_offline)",
-                    failed
-                );
-            }
-        }
-    }
-
-    StatusCode::OK
 }
 
 /// POST /p2pcd/inbound — receive a forwarded capability message from the daemon.
@@ -632,11 +505,12 @@ pub async fn inbound_message(
         return StatusCode::BAD_REQUEST;
     }
 
-    // Get local peer ID
-    let local_peer_id = {
-        let local = state.local_peer_id.read().await;
-        local.clone().unwrap_or_default()
-    };
+    // Get local peer ID — required for a stable conversation key
+    let local_peer_id = (*state.local_peer_id).clone();
+    if local_peer_id.is_empty() {
+        warn!("Inbound message dropped: local peer ID not available");
+        return StatusCode::SERVICE_UNAVAILABLE;
+    }
 
     let conversation_id = MessageDb::conversation_id(&local_peer_id, &payload.peer_id);
     let msg_id_hex = hex::encode(envelope.msg_id);
@@ -665,10 +539,13 @@ pub async fn inbound_message(
 
     // Notify daemon: toast + badge update (fire-and-forget)
     {
-        let preview = if envelope.body.len() > 128 {
-            format!("{}…", &envelope.body[..128])
-        } else {
-            envelope.body.clone()
+        let preview = {
+            // Safe: find the byte boundary of the 128th char (avoids mid-codepoint slice panic).
+            let truncated = envelope.body.char_indices().nth(128).map(|(i, _)| &envelope.body[..i]);
+            match truncated {
+                Some(s) => format!("{}…", s),
+                None => envelope.body.clone(),
+            }
         };
         let short_sender = &payload.peer_id[..8.min(payload.peer_id.len())];
         state.notifier.notify_new_message(short_sender, &preview);
@@ -677,10 +554,13 @@ pub async fn inbound_message(
     // FEAT-002-G: Emit event notification (fire-and-forget)
     let bridge = state.bridge.clone();
     let peer_id_clone = payload.peer_id.clone();
-    let body_preview = if envelope.body.len() > 128 {
-        format!("{}…", &envelope.body[..128])
-    } else {
-        envelope.body.clone()
+    let body_preview = {
+        // Safe: find the byte boundary of the 128th char (avoids mid-codepoint slice panic).
+        let truncated = envelope.body.char_indices().nth(128).map(|(i, _)| &envelope.body[..i]);
+        match truncated {
+            Some(s) => format!("{}…", s),
+            None => envelope.body.clone(),
+        }
     };
 
     tokio::spawn(async move {

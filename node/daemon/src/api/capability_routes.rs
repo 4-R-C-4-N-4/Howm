@@ -166,10 +166,24 @@ pub async fn install_capability(
 
     // route_name already derived above (before duplicate check).
 
-    // Derive P2P-CD fully-qualified name: howm.{manifest.name}.{major_version}
-    // e.g. manifest.name="social.feed", version="0.1.0" → "howm.social.feed.0"
-    let major_version = manifest.version.split('.').next().unwrap_or("1");
-    let p2pcd_name = Some(format!("howm.{}.{}", manifest.name, major_version));
+    // Derive P2P-CD fully-qualified name: howm.{manifest.name}.{protocol_version}
+    //
+    // The manifest `version` field is the *software* version (e.g. "0.1.0").
+    // The P2P-CD protocol version is declared in p2pcd-peer.toml separately and
+    // is always "1" for all current capabilities — the protocol is stable even
+    // when the software is pre-1.0. Using the software major ("0") would produce
+    // "howm.social.messaging.0" which never matches the negotiated "howm.social.messaging.1"
+    // in active_sets, breaking capability notifications and online detection.
+    //
+    // Rule: protocol version = max(software_major, 1) — pre-1.0 software still speaks v1.
+    let protocol_version = manifest
+        .version
+        .split('.')
+        .next()
+        .and_then(|m| m.parse::<u32>().ok())
+        .map(|m| m.max(1))
+        .unwrap_or(1);
+    let p2pcd_name = Some(format!("howm.{}.{}", manifest.name, protocol_version));
 
     let entry = CapabilityEntry {
         name: manifest.name.clone(),
@@ -192,6 +206,16 @@ pub async fn install_capability(
         caps.push(entry.clone());
         capabilities::save(&state.config.data_dir, &caps)
             .map_err(|e| AppError::Internal(e.to_string()))?;
+    }
+
+    // 8. Register with the capability notifier under the p2pcd name so
+    //    peer-active / peer-inactive callbacks reach this newly installed cap.
+    if let Some(ref p2pcd_name) = entry.p2pcd_name {
+        if let Some(ref engine) = state.p2pcd_engine {
+            engine
+                .register_capability(p2pcd_name.clone(), host_port)
+                .await;
+        }
     }
 
     info!(
@@ -242,13 +266,18 @@ pub async fn start_capability(
     State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> Result<Json<Value>, AppError> {
-    let (binary_path, port, data_dir) = {
+    let (binary_path, port, data_dir, p2pcd_name) = {
         let caps = state.capabilities.read().await;
         let cap = caps
             .iter()
             .find(|c| c.name == name)
             .ok_or_else(|| AppError::NotFound(format!("capability '{}' not found", name)))?;
-        (cap.binary_path.clone(), cap.port, cap.data_dir.clone())
+        (
+            cap.binary_path.clone(),
+            cap.port,
+            cap.data_dir.clone(),
+            cap.p2pcd_name.clone(),
+        )
     };
 
     let pid = executor::start_capability(&binary_path, &name, port, &data_dir, HashMap::new())
@@ -265,6 +294,13 @@ pub async fn start_capability(
             .map_err(|e| AppError::Internal(e.to_string()))?;
     }
 
+    // Re-register with the notifier under the p2pcd name after (re)start.
+    if let Some(ref p2pcd_name) = p2pcd_name {
+        if let Some(ref engine) = state.p2pcd_engine {
+            engine.register_capability(p2pcd_name.clone(), port).await;
+        }
+    }
+
     info!("Started capability '{}' (pid={})", name, pid);
     Ok(Json(
         json!({ "status": "started", "name": name, "pid": pid }),
@@ -277,19 +313,27 @@ pub async fn uninstall_capability(
     State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> Result<Json<Value>, AppError> {
-    let pid = {
+    let (pid, p2pcd_name) = {
         let caps = state.capabilities.read().await;
         let cap = caps
             .iter()
             .find(|c| c.name == name)
             .ok_or_else(|| AppError::NotFound(format!("capability '{}' not found", name)))?;
-        cap.pid
+        (cap.pid, cap.p2pcd_name.clone())
     };
 
     // Best-effort stop
     if let Some(pid) = pid {
         if let Err(e) = executor::stop_capability(pid).await {
             warn!("Stop before uninstall failed (ignoring): {}", e);
+        }
+    }
+
+    // Unregister from notifier so no further peer-active/inactive calls are sent
+    // to a now-dead process.
+    if let Some(ref p2pcd_name) = p2pcd_name {
+        if let Some(ref engine) = state.p2pcd_engine {
+            engine.unregister_capability(p2pcd_name).await;
         }
     }
 

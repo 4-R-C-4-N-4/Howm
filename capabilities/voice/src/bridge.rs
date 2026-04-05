@@ -20,19 +20,6 @@ use crate::AppState;
 // ── Inbound payloads (from daemon cap_notify) ────────────────────────────────
 
 #[derive(Deserialize)]
-pub struct PeerActivePayload {
-    pub peer_id: String,
-    pub wg_address: String,
-    pub capability: String,
-}
-
-#[derive(Deserialize)]
-pub struct PeerInactivePayload {
-    pub peer_id: String,
-    pub reason: String,
-}
-
-#[derive(Deserialize)]
 pub struct InboundMessage {
     pub peer_id: String,
     pub method: String,
@@ -69,52 +56,10 @@ pub struct VoiceSignalPayload {
 }
 
 // ── Lifecycle handlers ───────────────────────────────────────────────────────
-
-/// POST /p2pcd/peer-active — a peer with voice capability came online.
-pub async fn peer_active(
-    State(_state): State<AppState>,
-    Json(payload): Json<PeerActivePayload>,
-) -> impl IntoResponse {
-    info!(
-        "Peer active: {} ({}) for {}",
-        &payload.peer_id[..8.min(payload.peer_id.len())],
-        payload.wg_address,
-        payload.capability
-    );
-    StatusCode::OK
-}
-
-/// POST /p2pcd/peer-inactive — a peer went offline.
-pub async fn peer_inactive(
-    State(state): State<AppState>,
-    Json(payload): Json<PeerInactivePayload>,
-) -> impl IntoResponse {
-    info!(
-        "Peer inactive: {} ({})",
-        &payload.peer_id[..8.min(payload.peer_id.len())],
-        payload.reason
-    );
-
-    // Auto-remove the peer from any rooms they're in
-    let rooms_affected = state.rooms.remove_peer_from_all(&payload.peer_id);
-    for (room_id, destroyed) in &rooms_affected {
-        if *destroyed {
-            info!("Room {} destroyed (last member went offline)", room_id);
-            state.signal_hub.close_room(room_id);
-        } else {
-            // Broadcast peer-left via signaling
-            let msg = serde_json::to_string(&crate::signal::SignalMessage {
-                msg_type: "peer-left".to_string(),
-                peer_id: Some(payload.peer_id.clone()),
-                ..Default::default()
-            })
-            .unwrap_or_default();
-            state.signal_hub.broadcast_all(room_id, &msg);
-        }
-    }
-
-    StatusCode::OK
-}
+//
+// peer-active and peer-inactive are now handled by the PeerStream SSE
+// connection started in main.rs. The on_inactive hook performs room teardown
+// with a generation guard to prevent double-fire on session flaps.
 
 /// POST /p2pcd/inbound — receive a forwarded capability message from the daemon.
 pub async fn inbound_message(
@@ -312,6 +257,7 @@ pub async fn send_leave_notify(
 }
 
 /// Relay a signaling message to a remote peer via bridge RPC.
+#[allow(dead_code)]
 pub async fn send_signal_relay(
     state: &AppState,
     target_peer_id_b64: &str,

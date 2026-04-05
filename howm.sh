@@ -12,8 +12,8 @@
 #   --wg-endpoint HOST:PORT Public WireGuard endpoint for peers
 #   --no-ui                 Skip the web UI
 #   --dev                   Pass --dev flag to daemon (enables CORS for Vite proxy)
-#   --debug                 Show daemon logs in the foreground
-#   --release               Build in release mode (default: debug)
+#   --debug-log             Show daemon logs in the foreground
+#   --debug                 Build in debug mode instead of release (default: release)
 #   --help                  Show this help
 #
 # Examples:
@@ -35,7 +35,7 @@ WG_ENDPOINT=""
 NO_UI=0
 DEV_FLAG=""
 DEBUG_FLAG=""
-RELEASE_MODE=0
+RELEASE_MODE=1
 
 # ── Parse args ──────────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -47,8 +47,8 @@ while [[ $# -gt 0 ]]; do
         --wg-endpoint)       WG_ENDPOINT="$2";    shift 2 ;;
         --no-ui)             NO_UI=1;             shift   ;;
         --dev)               DEV_FLAG="--dev";    shift   ;;
-        --debug)             DEBUG_FLAG="--debug"; shift  ;;
-        --release)           RELEASE_MODE=1;      shift   ;;
+        --debug-log)         DEBUG_FLAG="--debug"; shift  ;;
+        --debug)             RELEASE_MODE=0;      shift   ;;
         --help|-h)
             grep '^#' "$0" | sed 's/^# \{0,2\}//'
             exit 0
@@ -122,6 +122,13 @@ else
     info "Building howm (debug)..."
     BUILD_OUT=$(cd "$ROOT_DIR/node" && cargo build 2>&1) || BUILD_EXIT=$?
     HOWM_BIN="$ROOT_DIR/node/target/debug/howm"
+    # Remove stale release binaries for each capability so the daemon install
+    # logic falls through to the freshly-built debug binary instead of the old release.
+    for cap in "$ROOT_DIR/capabilities"/*/; do
+        cap_name="$(basename "$cap")"
+        stale_release="$cap/target/release/$cap_name"
+        [[ -f "$stale_release" ]] && rm -f "$stale_release"
+    done
 fi
 
 if [[ $BUILD_EXIT -ne 0 ]]; then
@@ -146,14 +153,22 @@ DAEMON_ARGS=(--port "$PORT")
 DAEMON_ARGS+=(--wg-port "$WG_PORT")
 [[ -n "$WG_ENDPOINT" ]] && DAEMON_ARGS+=(--wg-endpoint "$WG_ENDPOINT")
 
-# Kill any stale howm process on this port
-STALE_PID=$(lsof -ti "tcp:$PORT" 2>/dev/null || true)
-if [[ -n "$STALE_PID" ]]; then
-    warn "Port $PORT already in use (PID $STALE_PID) — killing stale process"
-    kill "$STALE_PID" 2>/dev/null || true
+# Kill any stale howm process.
+# Must check BOTH the HTTP port and the P2P-CD listener port (7654) because the
+# old daemon holds both.  Killing only the HTTP port leaves port 7654 occupied,
+# which causes the new P2P-CD engine to fail on bind and the peer sessions to drop.
+P2PCD_PORT=7654
+STALE_PIDS=$(lsof -t -i "tcp:$PORT" -i "tcp:$P2PCD_PORT" 2>/dev/null | sort -u || true)
+if [[ -n "$STALE_PIDS" ]]; then
+    for _pid in $STALE_PIDS; do
+        warn "Port $PORT/$P2PCD_PORT already in use (PID $_pid) — killing stale process"
+        kill "$_pid" 2>/dev/null || true
+    done
     sleep 1
     # Force-kill if still alive
-    kill -9 "$STALE_PID" 2>/dev/null || true
+    for _pid in $STALE_PIDS; do
+        kill -9 "$_pid" 2>/dev/null || true
+    done
     sleep 0.5
 fi
 
