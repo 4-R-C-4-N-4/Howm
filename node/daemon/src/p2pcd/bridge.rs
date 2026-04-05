@@ -486,6 +486,7 @@ async fn handle_rpc(
 
     // Generate a unique request_id (integer, matching the wire format)
     let request_id = RPC_REQUEST_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let method_name = req.method.clone();
 
     // Build CBOR RPC_REQ: { 1: method, 2: request_id, 3: payload }
     use p2pcd::cbor_helpers::{cbor_encode_map, make_capability_msg};
@@ -532,8 +533,23 @@ async fn handle_rpc(
     }
 
     // Send RPC_REQ (message_type 22)
+    let peer_short = encode_b64(&peer_id)[..8].to_string();
+    tracing::info!(
+        "rpc: sending REQ method={} id={} to peer={} timeout={}ms",
+        method_name,
+        request_id,
+        peer_short,
+        req.timeout_ms,
+    );
     let msg = make_capability_msg(p2pcd_types::message_types::RPC_REQ, cbor_buf);
     if let Err(e) = engine.send_to_peer(&peer_id, msg).await {
+        tracing::warn!(
+            "rpc: send_to_peer FAILED method={} id={} peer={}: {}",
+            method_name,
+            request_id,
+            peer_short,
+            e,
+        );
         return (
             StatusCode::NOT_FOUND,
             Json(RpcResponse {
@@ -543,34 +559,67 @@ async fn handle_rpc(
             }),
         );
     }
+    tracing::info!(
+        "rpc: REQ sent ok method={} id={} peer={}, waiting {}ms",
+        method_name,
+        request_id,
+        peer_short,
+        req.timeout_ms,
+    );
 
     // Wait for the response with timeout
     let timeout_dur = tokio::time::Duration::from_millis(req.timeout_ms);
     match tokio::time::timeout(timeout_dur, resp_rx).await {
-        Ok(Ok(response_bytes)) => (
-            StatusCode::OK,
-            Json(RpcResponse {
-                ok: true,
-                payload: Some(encode_b64(&response_bytes)),
-                error: None,
-            }),
-        ),
-        Ok(Err(_)) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(RpcResponse {
-                ok: false,
-                payload: None,
-                error: Some("RPC response channel dropped".into()),
-            }),
-        ),
-        Err(_) => (
-            StatusCode::GATEWAY_TIMEOUT,
-            Json(RpcResponse {
-                ok: false,
-                payload: None,
-                error: Some(format!("RPC timed out after {}ms", req.timeout_ms)),
-            }),
-        ),
+        Ok(Ok(response_bytes)) => {
+            tracing::info!(
+                "rpc: RESP ok method={} id={} peer={} payload_bytes={}",
+                method_name,
+                request_id,
+                peer_short,
+                response_bytes.len(),
+            );
+            (
+                StatusCode::OK,
+                Json(RpcResponse {
+                    ok: true,
+                    payload: Some(encode_b64(&response_bytes)),
+                    error: None,
+                }),
+            )
+        }
+        Ok(Err(_)) => {
+            tracing::warn!(
+                "rpc: waiter channel dropped method={} id={} peer={} (engine restarted?)",
+                method_name,
+                request_id,
+                peer_short,
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(RpcResponse {
+                    ok: false,
+                    payload: None,
+                    error: Some("RPC response channel dropped".into()),
+                }),
+            )
+        }
+        Err(_) => {
+            tracing::warn!(
+                "rpc: TIMEOUT method={} id={} peer={} after {}ms — no RESP received",
+                method_name,
+                request_id,
+                peer_short,
+                req.timeout_ms,
+            );
+            (
+                StatusCode::GATEWAY_TIMEOUT,
+                Json(RpcResponse {
+                    ok: false,
+                    payload: None,
+                    error: Some(format!("RPC timed out after {}ms", req.timeout_ms)),
+                }),
+            )
+        }
     }
 }
 

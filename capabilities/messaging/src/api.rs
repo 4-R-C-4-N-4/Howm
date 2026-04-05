@@ -353,6 +353,12 @@ pub async fn send_message(
     };
 
     // Send via bridge RPC with 4s timeout
+    info!(
+        "send_message: RPC dm.send → peer={} msg_id={} body_len={}",
+        &req.to[..8.min(req.to.len())],
+        msg_id_hex,
+        req.body.len(),
+    );
     match state
         .bridge
         .rpc_call(&target_peer_id, "dm.send", &cbor, Some(4000))

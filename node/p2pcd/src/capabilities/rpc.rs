@@ -106,17 +106,24 @@ impl CapabilityHandler for RpcHandler {
                     let req_id = cbor_get_int(&map, keys::REQUEST_ID).unwrap_or(0);
                     let req_payload = cbor_get_bytes(&map, keys::PAYLOAD).unwrap_or_default();
 
-                    tracing::debug!(
-                        "rpc: REQ method={} id={} from {}",
+                    tracing::info!(
+                        "rpc: REQ method={} id={} from {} payload_bytes={}",
                         method,
                         req_id,
-                        hex::encode(&peer_id[..4])
+                        hex::encode(&peer_id[..4]),
+                        req_payload.len(),
                     );
 
                     let methods = self.methods.read().await;
                     let result = if let Some(handler) = methods.get(&method) {
                         handler.handle(&req_payload, &ctx_clone).await
                     } else {
+                        tracing::warn!(
+                            "rpc: REQ id={} unknown method '{}' from {} — sending error RESP",
+                            req_id,
+                            method,
+                            hex::encode(&peer_id[..4]),
+                        );
                         Err(anyhow::anyhow!("unknown method: {}", method))
                     };
 
@@ -149,14 +156,30 @@ impl CapabilityHandler for RpcHandler {
                 message_types::RPC_RESP => {
                     let req_id = cbor_get_int(&map, keys::REQUEST_ID).unwrap_or(0);
                     if let Some(err) = cbor_get_text(&map, keys::ERROR) {
-                        tracing::warn!("rpc: RESP id={} error={}", req_id, err);
+                        tracing::warn!(
+                            "rpc: RESP id={} from {} ERROR: {}",
+                            req_id,
+                            hex::encode(&peer_id[..4]),
+                            err,
+                        );
                     } else {
-                        tracing::debug!("rpc: RESP id={} ok", req_id);
+                        tracing::info!(
+                            "rpc: RESP id={} from {} ok",
+                            req_id,
+                            hex::encode(&peer_id[..4]),
+                        );
                     }
                     // Deliver to bridge waiter if one is registered
-                    if let Some(waiter) = self.rpc_waiters.write().await.remove(&req_id) {
+                    let mut waiters = self.rpc_waiters.write().await;
+                    if let Some(waiter) = waiters.remove(&req_id) {
                         let resp_payload = cbor_get_bytes(&map, keys::PAYLOAD).unwrap_or_default();
                         let _ = waiter.send(resp_payload);
+                    } else {
+                        tracing::warn!(
+                            "rpc: RESP id={} from {} has no waiter (already timed out?)",
+                            req_id,
+                            hex::encode(&peer_id[..4]),
+                        );
                     }
                 }
                 _ => {}
