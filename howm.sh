@@ -153,14 +153,22 @@ DAEMON_ARGS=(--port "$PORT")
 DAEMON_ARGS+=(--wg-port "$WG_PORT")
 [[ -n "$WG_ENDPOINT" ]] && DAEMON_ARGS+=(--wg-endpoint "$WG_ENDPOINT")
 
-# Kill any stale howm process on this port
-STALE_PID=$(lsof -ti "tcp:$PORT" 2>/dev/null || true)
-if [[ -n "$STALE_PID" ]]; then
-    warn "Port $PORT already in use (PID $STALE_PID) — killing stale process"
-    kill "$STALE_PID" 2>/dev/null || true
+# Kill any stale howm process.
+# Must check BOTH the HTTP port and the P2P-CD listener port (7654) because the
+# old daemon holds both.  Killing only the HTTP port leaves port 7654 occupied,
+# which causes the new P2P-CD engine to fail on bind and the peer sessions to drop.
+P2PCD_PORT=7654
+STALE_PIDS=$(lsof -t -i "tcp:$PORT" -i "tcp:$P2PCD_PORT" 2>/dev/null | sort -u || true)
+if [[ -n "$STALE_PIDS" ]]; then
+    for _pid in $STALE_PIDS; do
+        warn "Port $PORT/$P2PCD_PORT already in use (PID $_pid) — killing stale process"
+        kill "$_pid" 2>/dev/null || true
+    done
     sleep 1
     # Force-kill if still alive
-    kill -9 "$STALE_PID" 2>/dev/null || true
+    for _pid in $STALE_PIDS; do
+        kill -9 "$_pid" 2>/dev/null || true
+    done
     sleep 0.5
 fi
 
