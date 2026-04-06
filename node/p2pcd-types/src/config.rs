@@ -327,7 +327,7 @@ impl PeerConfig {
             capabilities: {
                 let mut m = HashMap::new();
 
-                // ── Core protocol capabilities ──────────────────────────
+                // ── Core session capabilities ────────────────────────────
                 m.insert(
                     "heartbeat".to_string(),
                     CapabilityConfig {
@@ -340,6 +340,109 @@ impl PeerConfig {
                             interval_ms: 5000,
                             timeout_ms: 15000,
                         }),
+                    },
+                );
+                m.insert(
+                    "attest".to_string(),
+                    CapabilityConfig {
+                        name: "core.session.attest.1".to_string(),
+                        role: RoleConfig::Both,
+                        mutual: true,
+                        scope: None,
+                        classification: None,
+                        params: None,
+                    },
+                );
+                m.insert(
+                    "timesync".to_string(),
+                    CapabilityConfig {
+                        name: "core.session.timesync.1".to_string(),
+                        role: RoleConfig::Both,
+                        mutual: true,
+                        scope: None,
+                        classification: None,
+                        params: None,
+                    },
+                );
+                m.insert(
+                    "latency".to_string(),
+                    CapabilityConfig {
+                        name: "core.session.latency.1".to_string(),
+                        role: RoleConfig::Both,
+                        mutual: true,
+                        scope: None,
+                        classification: None,
+                        params: None,
+                    },
+                );
+
+                // ── Core network capabilities ────────────────────────────
+                m.insert(
+                    "endpoint".to_string(),
+                    CapabilityConfig {
+                        name: "core.network.endpoint.1".to_string(),
+                        role: RoleConfig::Both,
+                        mutual: true,
+                        scope: None,
+                        classification: None,
+                        params: None,
+                    },
+                );
+                m.insert(
+                    "peerexchange".to_string(),
+                    CapabilityConfig {
+                        name: "core.network.peerexchange.1".to_string(),
+                        role: RoleConfig::Both,
+                        mutual: true,
+                        scope: None,
+                        classification: None,
+                        params: None,
+                    },
+                );
+
+                // ── Core data capabilities ───────────────────────────────
+                m.insert(
+                    "rpc".to_string(),
+                    CapabilityConfig {
+                        name: "core.data.rpc.1".to_string(),
+                        role: RoleConfig::Both,
+                        mutual: true,
+                        scope: None,
+                        classification: None,
+                        params: None,
+                    },
+                );
+                m.insert(
+                    "blob".to_string(),
+                    CapabilityConfig {
+                        name: "core.data.blob.1".to_string(),
+                        role: RoleConfig::Both,
+                        mutual: true,
+                        scope: None,
+                        classification: None,
+                        params: None,
+                    },
+                );
+                m.insert(
+                    "event".to_string(),
+                    CapabilityConfig {
+                        name: "core.data.event.1".to_string(),
+                        role: RoleConfig::Both,
+                        mutual: true,
+                        scope: None,
+                        classification: None,
+                        params: None,
+                    },
+                );
+                m.insert(
+                    "stream".to_string(),
+                    CapabilityConfig {
+                        name: "core.data.stream.1".to_string(),
+                        role: RoleConfig::Both,
+                        mutual: true,
+                        scope: None,
+                        classification: None,
+                        params: None,
                     },
                 );
 
@@ -588,9 +691,12 @@ list = []
         let cfg = PeerConfig::generate_default(&data_dir);
         let peer_id = [0xA1u8; 32];
         let manifest = cfg.to_manifest(peer_id, 1);
-        // 6 capabilities: heartbeat + feed + messaging + files + presence + voice
-        // (world.generation is WIP on a separate branch)
-        assert_eq!(manifest.capabilities.len(), 6);
+        // 15 capabilities:
+        //   core.session: heartbeat, attest, timesync, latency
+        //   core.network: endpoint, peerexchange
+        //   core.data:    rpc, blob, event, stream
+        //   howm.social:  feed, messaging, files, presence, voice
+        assert_eq!(manifest.capabilities.len(), 15);
         // Capabilities must be sorted
         let names: Vec<_> = manifest
             .capabilities

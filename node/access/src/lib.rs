@@ -168,6 +168,17 @@ mod tests {
         assert!(db
             .resolve_permission(&peer, "core.network.peerexchange.1")
             .is_allowed());
+        // Data transport caps (rpc, blob, event, stream) granted at friends tier
+        assert!(db.resolve_permission(&peer, "core.data.rpc.1").is_allowed());
+        assert!(db
+            .resolve_permission(&peer, "core.data.blob.1")
+            .is_allowed());
+        assert!(db
+            .resolve_permission(&peer, "core.data.event.1")
+            .is_allowed());
+        assert!(db
+            .resolve_permission(&peer, "core.data.stream.1")
+            .is_allowed());
 
         // Relay still denied
         assert!(!db
@@ -201,6 +212,11 @@ mod tests {
             .is_allowed());
         assert!(db
             .resolve_permission(&peer, "core.network.peerexchange.1")
+            .is_allowed());
+        // Data caps inherited via friends
+        assert!(db.resolve_permission(&peer, "core.data.rpc.1").is_allowed());
+        assert!(db
+            .resolve_permission(&peer, "core.data.blob.1")
             .is_allowed());
     }
 
