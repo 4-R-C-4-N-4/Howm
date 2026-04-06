@@ -333,6 +333,16 @@ impl ProtocolEngine {
         }
         // Clean up mux resources
         self.peer_senders.lock().await.remove(&peer_id);
+        // Remove the per-peer sender from the RPC handler so no stale replies
+        // are attempted on a dead session.
+        if let Some(handler) = self.cap_router.handler_by_name("core.data.rpc.1") {
+            if let Some(rpc) = handler
+                .as_any()
+                .downcast_ref::<p2pcd::capabilities::rpc::RpcHandler>()
+            {
+                rpc.remove_peer_sender(&peer_id).await;
+            }
+        }
         if let Some(handle) = self.mux_handles.lock().await.remove(&peer_id) {
             handle.abort();
         }
@@ -571,6 +581,10 @@ impl ProtocolEngine {
             let (transport_send_tx, transport_recv_rx) = transport.into_channels();
             let session_mux = mux::build_session_mux(transport_send_tx, transport_recv_rx);
 
+            // Clone send_tx for RPC handler registration before heartbeat can move it.
+            // Done here (before the heartbeat block) to avoid borrow-after-move.
+            let rpc_send_tx = session_mux.send_tx.clone();
+
             // Store the shared sender so the bridge can send cap messages to this peer
             self.peer_senders
                 .lock()
@@ -602,6 +616,16 @@ impl ProtocolEngine {
                 let handle = hb.spawn(session_mux.send_tx, session_mux.heartbeat_rx);
                 self.heartbeat_handles.lock().await.insert(peer_id, handle);
                 tracing::info!("engine: heartbeat started for {}", short(peer_id));
+            }
+
+            if let Some(handler) = self.cap_router.handler_by_name("core.data.rpc.1") {
+                if let Some(rpc) = handler
+                    .as_any()
+                    .downcast_ref::<p2pcd::capabilities::rpc::RpcHandler>()
+                {
+                    rpc.add_peer_sender(peer_id, rpc_send_tx).await;
+                    tracing::debug!("engine: registered RPC sender for {}", short(peer_id));
+                }
             }
 
             // Spawn capability message dispatch loop (routes inbound cap msgs to handlers)

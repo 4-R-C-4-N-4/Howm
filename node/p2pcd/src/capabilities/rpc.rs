@@ -36,7 +36,12 @@ pub trait RpcMethodHandler: Send + Sync {
 #[allow(dead_code)]
 pub struct RpcHandler {
     methods: Arc<RwLock<HashMap<String, Box<dyn RpcMethodHandler>>>>,
-    send_tx: RwLock<Option<tokio::sync::mpsc::Sender<ProtocolMessage>>>,
+    /// Per-peer send channels — keyed by peer_id so replies go back through
+    /// the right session.  Populated by the engine on session activation,
+    /// removed on teardown.  The old global `set_sender` was never called,
+    /// so send_tx was always None and every RPC_RESP was silently dropped.
+    peer_senders:
+        Arc<RwLock<HashMap<p2pcd_types::PeerId, tokio::sync::mpsc::Sender<ProtocolMessage>>>>,
     /// Pending RPC waiters: request_id → oneshot sender for the response payload.
     /// Used by the bridge to await RPC responses from peers.
     rpc_waiters: Arc<RwLock<HashMap<u64, tokio::sync::oneshot::Sender<Vec<u8>>>>>,
@@ -52,13 +57,24 @@ impl RpcHandler {
     pub fn new() -> Self {
         Self {
             methods: Arc::new(RwLock::new(HashMap::new())),
-            send_tx: RwLock::new(None),
+            peer_senders: Arc::new(RwLock::new(HashMap::new())),
             rpc_waiters: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
-    pub async fn set_sender(&self, tx: tokio::sync::mpsc::Sender<ProtocolMessage>) {
-        *self.send_tx.write().await = Some(tx);
+    /// Register the send channel for an active peer session.
+    /// Called by the engine when a session reaches Active.
+    pub async fn add_peer_sender(
+        &self,
+        peer_id: p2pcd_types::PeerId,
+        tx: tokio::sync::mpsc::Sender<ProtocolMessage>,
+    ) {
+        self.peer_senders.write().await.insert(peer_id, tx);
+    }
+
+    /// Remove a peer's send channel on session teardown.
+    pub async fn remove_peer_sender(&self, peer_id: &p2pcd_types::PeerId) {
+        self.peer_senders.write().await.remove(peer_id);
     }
 
     pub async fn register_method(&self, name: String, handler: Box<dyn RpcMethodHandler>) {
@@ -149,8 +165,13 @@ impl CapabilityHandler for RpcHandler {
                     };
 
                     let msg = make_capability_msg(message_types::RPC_RESP, resp);
-                    if let Some(tx) = self.send_tx.read().await.as_ref() {
+                    if let Some(tx) = self.peer_senders.read().await.get(&peer_id) {
                         let _ = tx.send(msg).await;
+                    } else {
+                        tracing::warn!(
+                            "rpc: no sender for peer {} — RPC_RESP dropped (session not registered?)",
+                            hex::encode(&peer_id[..4]),
+                        );
                     }
                 }
                 message_types::RPC_RESP => {
