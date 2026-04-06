@@ -324,7 +324,7 @@ impl ProtocolEngine {
         });
     }
 
-    async fn on_peer_unreachable(&self, peer_id: PeerId, reason: CloseReason) {
+    pub(crate) async fn on_peer_unreachable(&self, peer_id: PeerId, reason: CloseReason) {
         tracing::info!("engine: PEER_UNREACHABLE {}", short(peer_id));
 
         // Abort heartbeat task for this peer
@@ -1697,11 +1697,17 @@ mod tests {
             }
         }
 
-        // Kill Bob's engine — he can no longer send PONGs
+        // Tear down Bob's session (closes mux + transport), then abort the engine.
+        // Just aborting the engine handle is not enough — the transport reader/writer
+        // tasks are independently spawned and would keep the TCP connection alive,
+        // causing Alice's heartbeat to keep receiving auto-PONGs indefinitely.
+        bob_engine
+            .on_peer_unreachable(alice_id, CloseReason::Normal)
+            .await;
         bob_handle.abort();
 
-        // Alice's heartbeat (150ms timeout) should fire within ~500ms
-        let deadline = tokio::time::Instant::now() + Duration::from_millis(800);
+        // Alice's heartbeat (150ms timeout × 3 missed) should fire within ~600ms.
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(2000);
         loop {
             sleep(Duration::from_millis(30)).await;
             let still_active = alice_engine
