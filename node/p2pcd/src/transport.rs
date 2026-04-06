@@ -139,15 +139,25 @@ impl P2pcdTransport {
         tokio::spawn(async move {
             while let Some(msg) = send_rx.recv().await {
                 let encoded = msg.encode();
-                if let Err(e) = tokio::time::timeout(io_timeout, async {
+                match tokio::time::timeout(io_timeout, async {
                     write_half.write_all(&encoded).await?;
                     write_half.flush().await?;
                     Ok::<(), std::io::Error>(())
                 })
                 .await
                 {
-                    tracing::debug!("p2pcd channel write error: {:?}", e);
-                    break;
+                    Ok(Ok(())) => {} // success, continue
+                    Ok(Err(e)) => {
+                        // TCP I/O error (broken pipe, connection reset, etc.)
+                        // Previously this was silently swallowed because `if let Err`
+                        // only matched the outer timeout Elapsed, not Ok(Err(io)).
+                        tracing::warn!("p2pcd transport write error: {}", e);
+                        break;
+                    }
+                    Err(_elapsed) => {
+                        tracing::warn!("p2pcd transport write timeout ({}s)", io_timeout.as_secs());
+                        break;
+                    }
                 }
             }
         });

@@ -664,19 +664,14 @@ impl ProtocolEngine {
                 payload,
             } = msg
             {
-                // Find the matching capability name for this message type
-                let cap_name = active_set
-                    .iter()
-                    .find(|name| {
-                        cap_router
-                            .handler_by_name(name)
-                            .map(|h| h.handled_message_types().contains(&message_type))
-                            .unwrap_or(false)
-                    })
-                    .cloned();
-
-                if let Some(cap_name) = cap_name {
-                    // In-process handler found — dispatch directly
+                // Check for a registered in-process handler by message type first.
+                // Core data capabilities (rpc, blob, event, stream) are wired into the
+                // cap_router regardless of what was negotiated in the active_set — they
+                // are transport-layer facilities, not user-configurable capabilities.
+                // Searching only through active_set caused RPC_REQ/RESP (type 22/23) to
+                // fall through to the out-of-process notifier and get silently dropped.
+                if let Some(handler) = cap_router.handler_for_type(message_type) {
+                    let cap_name = handler.capability_name().to_string();
                     let params = accepted_params.get(&cap_name).cloned().unwrap_or_default();
                     if let Err(e) = cap_router
                         .dispatch(message_type, &payload, peer_id, &params, &cap_name)
