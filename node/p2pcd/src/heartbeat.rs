@@ -78,7 +78,13 @@ impl HeartbeatManager {
             let ping = ProtocolMessage::Ping { timestamp: ts };
 
             if send_tx.send(ping).await.is_err() {
-                // Transport closed
+                // Transport closed — peer is gone, notify engine
+                let _ = self
+                    .event_tx
+                    .send(HeartbeatEvent::Timeout {
+                        peer_id: self.peer_id,
+                    })
+                    .await;
                 return;
             }
 
@@ -95,7 +101,13 @@ impl HeartbeatManager {
                         .await;
                 }
                 Ok(Err(())) => {
-                    // Channel closed
+                    // Channel closed — peer is gone, notify engine
+                    let _ = self
+                        .event_tx
+                        .send(HeartbeatEvent::Timeout {
+                            peer_id: self.peer_id,
+                        })
+                        .await;
                     return;
                 }
                 Err(_) => {

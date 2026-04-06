@@ -14,6 +14,9 @@
 #   --dev                   Pass --dev flag to daemon (enables CORS for Vite proxy)
 #   --debug-log             Show daemon logs in the foreground
 #   --debug                 Build in debug mode instead of release (default: release)
+#   --cap NAME              Only build/install the named capability (matches
+#                           directory name or manifest "name" field, e.g.
+#                           --cap messaging matches "social.messaging")
 #   --help                  Show this help
 #
 # Examples:
@@ -36,6 +39,7 @@ NO_UI=0
 DEV_FLAG=""
 DEBUG_FLAG=""
 RELEASE_MODE=1
+CAP_FILTER=""
 
 # ── Parse args ──────────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -48,6 +52,7 @@ while [[ $# -gt 0 ]]; do
         --no-ui)             NO_UI=1;             shift   ;;
         --dev)               DEV_FLAG="--dev";    shift   ;;
         --debug-log)         DEBUG_FLAG="--debug"; shift  ;;
+        --cap)               CAP_FILTER="$2";     shift 2 ;;
         --debug)             RELEASE_MODE=0;      shift   ;;
         --help|-h)
             grep '^#' "$0" | sed 's/^# \{0,2\}//'
@@ -220,6 +225,16 @@ if [[ -d "$CAP_DIR" ]] && [[ -n "$API_TOKEN" ]]; then
         # The daemon uses the manifest "name" field (e.g. "social.feed"),
         # not the directory name (e.g. "feed"), for API routes.
         cap_api_name=$(grep -o '"name"[[:space:]]*:[[:space:]]*"[^"]*"' "$cap" | head -1 | sed 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+
+        # If --cap was given, skip capabilities that don't match.
+        # Matches against dir name (e.g. "messaging") or manifest name (e.g. "social.messaging")
+        # or the suffix after the last dot (e.g. "messaging" matches "social.messaging").
+        if [[ -n "$CAP_FILTER" ]]; then
+            cap_api_suffix="${cap_api_name##*.}"
+            if [[ "$cap_name" != "$CAP_FILTER" && "$cap_api_name" != "$CAP_FILTER" && "$cap_api_suffix" != "$CAP_FILTER" ]]; then
+                continue
+            fi
+        fi
 
         # Build the capability (Cargo project).
         # Always run cargo build — it's incremental and a no-op when unchanged.
