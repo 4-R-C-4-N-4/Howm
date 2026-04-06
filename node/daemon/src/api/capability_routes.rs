@@ -240,12 +240,8 @@ pub async fn stop_capability(
         cap.pid
     };
 
-    if let Some(pid) = pid {
-        executor::stop_capability(pid)
-            .await
-            .map_err(|e| AppError::Internal(e.to_string()))?;
-    }
-
+    // Mark Stopped BEFORE sending SIGTERM so the PID health check loop cannot
+    // race-restart the capability in the window between kill() and process exit.
     {
         let mut caps = state.capabilities.write().await;
         if let Some(cap) = caps.iter_mut().find(|c| c.name == name) {
@@ -253,6 +249,12 @@ pub async fn stop_capability(
             cap.pid = None;
         }
         capabilities::save(&state.config.data_dir, &caps)
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+    }
+
+    if let Some(pid) = pid {
+        executor::stop_capability(pid)
+            .await
             .map_err(|e| AppError::Internal(e.to_string()))?;
     }
 
@@ -321,6 +323,19 @@ pub async fn uninstall_capability(
             .ok_or_else(|| AppError::NotFound(format!("capability '{}' not found", name)))?;
         (cap.pid, cap.p2pcd_name.clone())
     };
+
+    // Mark Stopped BEFORE sending SIGTERM so the PID health check loop cannot
+    // race-restart the capability in the window between kill() and process exit.
+    // Without this, the health check sees the pid go dead and spawns a new process
+    // on the same port; the subsequent install attempt then hits EADDRINUSE.
+    {
+        let mut caps = state.capabilities.write().await;
+        if let Some(cap) = caps.iter_mut().find(|c| c.name == name) {
+            cap.status = CapStatus::Stopped;
+            cap.pid = None;
+        }
+        // Don't persist yet — uninstall will remove the entry below.
+    }
 
     // Best-effort stop
     if let Some(pid) = pid {
