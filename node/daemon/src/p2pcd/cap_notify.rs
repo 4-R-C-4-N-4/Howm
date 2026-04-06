@@ -215,6 +215,79 @@ impl CapabilityNotifier {
         false
     }
 
+    /// Forward an RPC request to a capability and **await** the response.
+    ///
+    /// Unlike `forward_to_capability()` (fire-and-forget), this waits for the
+    /// HTTP response so the caller can build an RPC_RESP with the result.
+    /// The capability returns `{ "response": "<base64-encoded CBOR>" }` on
+    /// success.
+    pub async fn forward_rpc_to_capability(
+        &self,
+        peer_id: PeerId,
+        method: &str,
+        payload: &[u8],
+        active_set: &[String],
+    ) -> anyhow::Result<Vec<u8>> {
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
+
+        let endpoints = self.endpoints.read().await;
+
+        for cap_name in active_set {
+            if let Some(ep) = endpoints.get(cap_name) {
+                let base = ep
+                    .url_override
+                    .clone()
+                    .unwrap_or_else(|| format!("http://127.0.0.1:{}", ep.port));
+                let url = format!("{}/p2pcd/inbound", base);
+
+                let peer_id_b64 = STANDARD.encode(peer_id);
+                let payload_b64 = STANDARD.encode(payload);
+
+                let body = InboundMessage {
+                    peer_id: peer_id_b64,
+                    message_type: p2pcd_types::message_types::RPC_REQ,
+                    payload: payload_b64,
+                    capability: cap_name.clone(),
+                };
+
+                let client = reqwest::Client::builder()
+                    .timeout(Duration::from_secs(10))
+                    .build()
+                    .unwrap_or_default();
+
+                let resp = client
+                    .post(&url)
+                    .json(&body)
+                    .send()
+                    .await
+                    .map_err(|e| anyhow::anyhow!("RPC forward to {}: {}", cap_name, e))?;
+
+                if !resp.status().is_success() {
+                    anyhow::bail!("RPC forward to {} returned {}", cap_name, resp.status());
+                }
+
+                // Parse the response JSON for { "response": "<base64>" }
+                let resp_json: serde_json::Value = resp
+                    .json()
+                    .await
+                    .map_err(|e| anyhow::anyhow!("RPC forward response parse: {}", e))?;
+
+                if let Some(resp_b64) = resp_json.get("response").and_then(|v| v.as_str()) {
+                    let decoded = STANDARD
+                        .decode(resp_b64)
+                        .map_err(|e| anyhow::anyhow!("RPC forward response decode: {}", e))?;
+                    return Ok(decoded);
+                }
+
+                // No "response" field — capability handled it but returned no payload.
+                // Return empty success.
+                return Ok(vec![]);
+            }
+        }
+
+        anyhow::bail!("no capability endpoint for RPC method '{}'", method)
+    }
+
     /// Notify all capabilities that a peer is no longer available.
     pub async fn notify_peer_inactive(&self, peer_id: PeerId, active_set: &[String], reason: &str) {
         use base64::{engine::general_purpose::STANDARD, Engine as _};
@@ -338,6 +411,27 @@ async fn post_inactive_notification(url: String, payload: PeerInactivePayload) {
                 e
             );
         }
+    }
+}
+
+// ── RpcForwarder impl ────────────────────────────────────────────────────────
+
+impl p2pcd::capabilities::rpc::RpcForwarder for CapabilityNotifier {
+    fn forward_rpc(
+        &self,
+        peer_id: PeerId,
+        method: &str,
+        payload: &[u8],
+        active_set: &[String],
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<Vec<u8>>> + Send + '_>>
+    {
+        let method = method.to_string();
+        let payload = payload.to_vec();
+        let active_set = active_set.to_vec();
+        Box::pin(async move {
+            self.forward_rpc_to_capability(peer_id, &method, &payload, &active_set)
+                .await
+        })
     }
 }
 

@@ -67,10 +67,10 @@ async fn main() -> anyhow::Result<()> {
         if id.is_empty() {
             tracing::warn!(
                 "messaging: could not fetch local peer ID from daemon; \
-                 inbound messages will be rejected until daemon is reachable"
+                 will retry lazily on first request"
             );
         }
-        std::sync::Arc::new(id)
+        std::sync::Arc::new(tokio::sync::RwLock::new(id))
     };
 
     // Start SSE stream — no hooks needed for messaging (Type 1 pure presence)

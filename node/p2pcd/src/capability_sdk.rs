@@ -88,6 +88,7 @@ pub struct InboundMessage {
     /// Base64-encoded payload bytes.
     pub payload: String,
     /// Capability name this message belongs to.
+    #[serde(default)]
     pub capability: String,
 }
 

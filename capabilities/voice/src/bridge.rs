@@ -17,14 +17,7 @@ use tracing::{info, warn};
 
 use crate::AppState;
 
-// ── Inbound payloads (from daemon cap_notify) ────────────────────────────────
-
-#[derive(Deserialize)]
-pub struct InboundMessage {
-    pub peer_id: String,
-    pub method: String,
-    pub payload: String,
-}
+use p2pcd::capability_sdk::InboundMessage;
 
 // ── RPC payload types (CBOR-encoded over bridge) ─────────────────────────────
 
@@ -61,6 +54,48 @@ pub struct VoiceSignalPayload {
 // connection started in main.rs. The on_inactive hook performs room teardown
 // with a generation guard to prevent double-fire on session flaps.
 
+/// Extract RPC method name from a CBOR payload (key 1 = method name).
+fn extract_rpc_method(data: &[u8]) -> Option<String> {
+    use ciborium::value::Value;
+    let value: Value = ciborium::from_reader(data).ok()?;
+    let map = match value {
+        Value::Map(m) => m,
+        _ => return None,
+    };
+    for (k, v) in map {
+        if let Value::Integer(i) = k {
+            let key: i128 = i.into();
+            if key == 1 {
+                if let Value::Text(t) = v {
+                    return Some(t);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Extract inner payload bytes from a CBOR RPC envelope (key 3 = payload).
+fn extract_rpc_payload(data: &[u8]) -> Option<Vec<u8>> {
+    use ciborium::value::Value;
+    let value: Value = ciborium::from_reader(data).ok()?;
+    let map = match value {
+        Value::Map(m) => m,
+        _ => return None,
+    };
+    for (k, v) in map {
+        if let Value::Integer(i) = k {
+            let key: i128 = i.into();
+            if key == 3 {
+                if let Value::Bytes(b) = v {
+                    return Some(b);
+                }
+            }
+        }
+    }
+    None
+}
+
 /// POST /p2pcd/inbound — receive a forwarded capability message from the daemon.
 pub async fn inbound_message(
     State(state): State<AppState>,
@@ -74,11 +109,29 @@ pub async fn inbound_message(
         }
     };
 
-    match payload.method.as_str() {
-        "voice.invite" => handle_invite(&state, &payload.peer_id, &raw),
-        "voice.join" => handle_join_notify(&state, &raw),
-        "voice.leave" => handle_leave_notify(&state, &raw),
-        "voice.signal" => handle_signal_relay(&state, &raw),
+    // Extract method from CBOR RPC envelope (key 1).
+    // For RPC_REQ (message_type 22) the inner payload is in key 3.
+    // For direct forwarding the payload may already be the CBOR body.
+    let method = match extract_rpc_method(&raw) {
+        Some(m) => m,
+        None => {
+            warn!("No RPC method in inbound payload");
+            return StatusCode::BAD_REQUEST;
+        }
+    };
+
+    // For RPC_REQ forwarding, the actual payload is nested in CBOR key 3.
+    let body = if payload.message_type == 22 {
+        extract_rpc_payload(&raw).unwrap_or(raw)
+    } else {
+        raw
+    };
+
+    match method.as_str() {
+        "voice.invite" => handle_invite(&state, &payload.peer_id, &body),
+        "voice.join" => handle_join_notify(&state, &body),
+        "voice.leave" => handle_leave_notify(&state, &body),
+        "voice.signal" => handle_signal_relay(&state, &body),
         other => {
             warn!("Unknown voice RPC method: {}", other);
             StatusCode::BAD_REQUEST

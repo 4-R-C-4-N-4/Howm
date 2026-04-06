@@ -33,6 +33,18 @@ pub trait RpcMethodHandler: Send + Sync {
     ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<Vec<u8>>> + Send + '_>>;
 }
 
+/// Trait for forwarding RPC requests to out-of-process capabilities.
+/// Implemented by the daemon to bridge RPC_REQ → HTTP POST → capability.
+pub trait RpcForwarder: Send + Sync {
+    fn forward_rpc(
+        &self,
+        peer_id: p2pcd_types::PeerId,
+        method: &str,
+        payload: &[u8],
+        active_set: &[String],
+    ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<Vec<u8>>> + Send + '_>>;
+}
+
 #[allow(dead_code)]
 pub struct RpcHandler {
     methods: Arc<RwLock<HashMap<String, Box<dyn RpcMethodHandler>>>>,
@@ -45,6 +57,11 @@ pub struct RpcHandler {
     /// Pending RPC waiters: request_id → oneshot sender for the response payload.
     /// Used by the bridge to await RPC responses from peers.
     rpc_waiters: Arc<RwLock<HashMap<u64, tokio::sync::oneshot::Sender<Vec<u8>>>>>,
+    /// Forwards unregistered RPC methods to out-of-process capabilities.
+    /// Set by the engine after creation via `set_forwarder`.
+    cap_forwarder: Arc<RwLock<Option<Arc<dyn RpcForwarder>>>>,
+    /// Per-peer active_set cache so the forwarder knows which capability to target.
+    peer_active_sets: Arc<RwLock<HashMap<p2pcd_types::PeerId, Vec<String>>>>,
 }
 
 impl Default for RpcHandler {
@@ -59,7 +76,27 @@ impl RpcHandler {
             methods: Arc::new(RwLock::new(HashMap::new())),
             peer_senders: Arc::new(RwLock::new(HashMap::new())),
             rpc_waiters: Arc::new(RwLock::new(HashMap::new())),
+            cap_forwarder: Arc::new(RwLock::new(None)),
+            peer_active_sets: Arc::new(RwLock::new(HashMap::new())),
         }
+    }
+
+    /// Set the forwarder used to dispatch unknown RPC methods to capabilities.
+    pub async fn set_forwarder(&self, forwarder: Arc<dyn RpcForwarder>) {
+        *self.cap_forwarder.write().await = Some(forwarder);
+    }
+
+    /// Store a peer's active_set so forwarded RPCs can resolve the target capability.
+    pub async fn set_peer_active_set(&self, peer_id: p2pcd_types::PeerId, active_set: Vec<String>) {
+        self.peer_active_sets
+            .write()
+            .await
+            .insert(peer_id, active_set);
+    }
+
+    /// Remove a peer's cached active_set on session teardown.
+    pub async fn remove_peer_active_set(&self, peer_id: &p2pcd_types::PeerId) {
+        self.peer_active_sets.write().await.remove(peer_id);
     }
 
     /// Register the send channel for an active peer session.
@@ -134,13 +171,33 @@ impl CapabilityHandler for RpcHandler {
                     let result = if let Some(handler) = methods.get(&method) {
                         handler.handle(&req_payload, &ctx_clone).await
                     } else {
-                        tracing::warn!(
-                            "rpc: REQ id={} unknown method '{}' from {} — sending error RESP",
-                            req_id,
-                            method,
-                            hex::encode(&peer_id[..4]),
-                        );
-                        Err(anyhow::anyhow!("unknown method: {}", method))
+                        drop(methods);
+                        // Forward to out-of-process capability via HTTP.
+                        let fwd_guard = self.cap_forwarder.read().await;
+                        if let Some(fwd) = fwd_guard.as_ref() {
+                            let active_set = self
+                                .peer_active_sets
+                                .read()
+                                .await
+                                .get(&peer_id)
+                                .cloned()
+                                .unwrap_or_default();
+                            tracing::info!(
+                                "rpc: REQ id={} forwarding method '{}' to capability",
+                                req_id,
+                                method,
+                            );
+                            fwd.forward_rpc(peer_id, &method, &payload, &active_set)
+                                .await
+                        } else {
+                            tracing::warn!(
+                                "rpc: REQ id={} unknown method '{}' from {} — no forwarder, sending error RESP",
+                                req_id,
+                                method,
+                                hex::encode(&peer_id[..4]),
+                            );
+                            Err(anyhow::anyhow!("unknown method: {}", method))
+                        }
                     };
 
                     let resp = match result {

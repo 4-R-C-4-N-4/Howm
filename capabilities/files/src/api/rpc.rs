@@ -8,17 +8,7 @@ use serde::Deserialize;
 use tracing::{info, warn};
 
 use super::{bad_request, base64_decode, base64_encode, hex_to_hash, AppState};
-
-// ── Inbound RPC messages ─────────────────────────────────────────────────────
-
-#[derive(Debug, Deserialize)]
-pub struct InboundMessage {
-    pub peer_id: String,
-    pub message_type: u64,
-    pub payload: String,
-    #[serde(default)]
-    pub capability: String,
-}
+use p2pcd::capability_sdk::InboundMessage;
 
 // CBOR keys for catalogue RPC envelopes
 pub(crate) const CBOR_KEY_METHOD: u64 = 1;

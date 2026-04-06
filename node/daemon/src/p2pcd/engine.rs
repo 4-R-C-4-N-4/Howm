@@ -341,6 +341,7 @@ impl ProtocolEngine {
                 .downcast_ref::<p2pcd::capabilities::rpc::RpcHandler>()
             {
                 rpc.remove_peer_sender(&peer_id).await;
+                rpc.remove_peer_active_set(&peer_id).await;
             }
         }
         if let Some(handle) = self.mux_handles.lock().await.remove(&peer_id) {
@@ -356,14 +357,17 @@ impl ProtocolEngine {
 
         let active_set = {
             let mut sessions = self.sessions.write().await;
-            if let Some(s) = sessions.get_mut(&peer_id) {
+            let set = if let Some(s) = sessions.get_mut(&peer_id) {
                 if s.state == SessionState::Active {
                     let _ = session::send_close(s, reason).await;
                 }
                 s.active_set.clone()
             } else {
                 vec![]
-            }
+            };
+            // Remove the stale session so reconnects start clean.
+            sessions.remove(&peer_id);
+            set
         };
 
         if !active_set.is_empty() {
@@ -444,18 +448,40 @@ impl ProtocolEngine {
         s.transport = Some(transport);
         session::run_initiator_exchange(&mut s, &trust_gate).await?;
 
-        // §4.1 replay detection: reject stale sequence_num
+        // §4.1 replay detection: reject stale sequence_num.
+        // Use strict less-than so simultaneous connections with the same seq are
+        // not falsely rejected.  When the peer is already active with a live
+        // transport we skip redundant setup to avoid the session cycling storm.
         if let Some(remote) = &s.remote_manifest {
             let mut seen = self.last_seen_sequence.lock().await;
             let last = seen.get(&peer_id).copied().unwrap_or(0);
-            if remote.sequence_num <= last && remote.sequence_num > 0 {
+            if remote.sequence_num < last && remote.sequence_num > 0 {
                 tracing::warn!(
-                    "engine: replay detected for {} (seq {} <= {}), dropping",
+                    "engine: replay detected for {} (seq {} < {}), dropping",
                     short(peer_id),
                     remote.sequence_num,
                     last
                 );
                 return Ok(());
+            }
+            // Duplicate seq (simultaneous connect): keep the existing live session.
+            if remote.sequence_num == last && remote.sequence_num > 0 {
+                let already_alive = self
+                    .peer_senders
+                    .lock()
+                    .await
+                    .get(&peer_id)
+                    .map(|tx| !tx.is_closed())
+                    .unwrap_or(false);
+                if already_alive {
+                    tracing::debug!(
+                        "engine: duplicate seq {} for {} but session already live, skipping",
+                        remote.sequence_num,
+                        short(peer_id),
+                    );
+                    self.sessions.write().await.insert(peer_id, s);
+                    return Ok(());
+                }
             }
             seen.insert(peer_id, remote.sequence_num);
         }
@@ -519,18 +545,40 @@ impl ProtocolEngine {
         s.transport = Some(transport);
         session::run_responder_exchange(&mut s, &trust_gate).await?;
 
-        // §4.1 replay detection: reject stale sequence_num
+        // §4.1 replay detection: reject stale sequence_num.
+        // Use strict less-than so simultaneous connections with the same seq are
+        // not falsely rejected.  When the peer is already active with a live
+        // transport we skip redundant setup to avoid the session cycling storm.
         if let Some(remote) = &s.remote_manifest {
             let mut seen = self.last_seen_sequence.lock().await;
             let last = seen.get(&peer_id).copied().unwrap_or(0);
-            if remote.sequence_num <= last && remote.sequence_num > 0 {
+            if remote.sequence_num < last && remote.sequence_num > 0 {
                 tracing::warn!(
-                    "engine: replay detected for {} (seq {} <= {}), dropping",
+                    "engine: replay detected for {} (seq {} < {}), dropping",
                     short(peer_id),
                     remote.sequence_num,
                     last
                 );
                 return Ok(());
+            }
+            // Duplicate seq (simultaneous connect): keep the existing live session.
+            if remote.sequence_num == last && remote.sequence_num > 0 {
+                let already_alive = self
+                    .peer_senders
+                    .lock()
+                    .await
+                    .get(&peer_id)
+                    .map(|tx| !tx.is_closed())
+                    .unwrap_or(false);
+                if already_alive {
+                    tracing::debug!(
+                        "engine: duplicate seq {} for {} but session already live, skipping",
+                        remote.sequence_num,
+                        short(peer_id),
+                    );
+                    self.sessions.write().await.insert(peer_id, s);
+                    return Ok(());
+                }
             }
             seen.insert(peer_id, remote.sequence_num);
         }
@@ -624,6 +672,12 @@ impl ProtocolEngine {
                     .downcast_ref::<p2pcd::capabilities::rpc::RpcHandler>()
                 {
                     rpc.add_peer_sender(peer_id, rpc_send_tx).await;
+                    rpc.set_peer_active_set(peer_id, s.active_set.clone()).await;
+                    // Wire the forwarder once (idempotent — subsequent calls are no-ops
+                    // since the Arc<CapabilityNotifier> is the same).
+                    rpc.set_forwarder(Arc::clone(&self.notifier)
+                        as Arc<dyn p2pcd::capabilities::rpc::RpcForwarder>)
+                        .await;
                     tracing::debug!("engine: registered RPC sender for {}", short(peer_id));
                 }
             }
@@ -735,10 +789,17 @@ impl ProtocolEngine {
     ) -> Result<()> {
         let senders = self.peer_senders.lock().await;
         match senders.get(peer_id) {
-            Some(tx) => tx
+            Some(tx) if !tx.is_closed() => tx
                 .send(msg)
                 .await
                 .map_err(|_| anyhow::anyhow!("peer transport closed")),
+            Some(_) => {
+                // Channel exists but transport is dead — report immediately
+                // instead of letting the caller wait for a 4s timeout.
+                drop(senders);
+                self.peer_senders.lock().await.remove(peer_id);
+                anyhow::bail!("peer transport closed")
+            }
             None => anyhow::bail!("no active session for peer"),
         }
     }
@@ -934,6 +995,23 @@ impl ProtocolEngine {
         let manifest = self.local_manifest.read().await.clone();
 
         for peer_id in active_peers {
+            // Skip peers whose existing transport is still alive — renegotiating
+            // creates new TCP connections that cause session cycling storms.
+            let sender_alive = self
+                .peer_senders
+                .lock()
+                .await
+                .get(&peer_id)
+                .map(|tx| !tx.is_closed())
+                .unwrap_or(false);
+            if sender_alive {
+                tracing::debug!(
+                    "engine: rebroadcast skipping {} — transport still alive",
+                    short(peer_id),
+                );
+                continue;
+            }
+
             // §8.4 Active-set continuity: keep old active set alive during re-exchange.
             // Only capabilities removed from the new set are deactivated.
             let old_active_set = {

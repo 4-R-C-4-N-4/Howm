@@ -4,20 +4,11 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use serde::Deserialize;
 use tracing::info;
 
 use crate::gossip;
 use crate::state::{now_secs, Activity, AppState, StatusUpdate};
-
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)]
-pub struct InboundMessage {
-    pub peer_id: String,
-    pub message_type: u64,
-    pub payload: String,
-    pub capability: String,
-}
+use p2pcd::capability_sdk::InboundMessage;
 
 // ── Handlers ─────────────────────────────────────────────────────────────────
 
