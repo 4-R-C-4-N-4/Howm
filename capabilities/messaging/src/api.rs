@@ -550,6 +550,13 @@ pub async fn inbound_message(
 ) -> axum::response::Response {
     use base64::{engine::general_purpose::STANDARD, Engine as _};
 
+    info!(
+        "inbound_message: type={} from {} payload_b64_len={}",
+        payload.message_type,
+        &payload.peer_id[..8.min(payload.peer_id.len())],
+        payload.payload.len(),
+    );
+
     // Decode the payload
     let raw = match STANDARD.decode(&payload.payload) {
         Ok(b) => b,
@@ -561,7 +568,12 @@ pub async fn inbound_message(
 
     // Check if this is an RPC_REQ forwarded by the daemon (message_type 22).
     if payload.message_type == 22 {
-        if let Some(method) = extract_rpc_method(&raw) {
+        let method_opt = extract_rpc_method(&raw);
+        info!(
+            "inbound_message: type=22 dispatch — extracted method = {:?}",
+            method_opt
+        );
+        if let Some(method) = method_opt {
             return match method.as_str() {
                 "dm.send" => handle_dm_send_rpc(&state, &payload.peer_id, &raw).await,
                 other => {
@@ -570,6 +582,9 @@ pub async fn inbound_message(
                 }
             };
         }
+        warn!(
+            "inbound_message: type=22 but no method in CBOR payload, falling through to legacy path"
+        );
     }
 
     // ── Legacy / broadcast path (message_type 100+) ──────────────────────────
@@ -609,6 +624,12 @@ async fn handle_dm_send_rpc(
 ) -> axum::response::Response {
     use base64::{engine::general_purpose::STANDARD, Engine as _};
 
+    info!(
+        "handle_dm_send_rpc: enter, envelope_bytes={} from {}",
+        rpc_envelope.len(),
+        &sender_peer_id[..8.min(sender_peer_id.len())]
+    );
+
     // Extract the inner payload from the RPC envelope (CBOR key 3)
     let inner = match extract_rpc_payload(rpc_envelope) {
         Some(p) => p,
@@ -637,18 +658,27 @@ async fn handle_dm_send_rpc(
         return StatusCode::BAD_REQUEST.into_response();
     }
 
+    info!(
+        "handle_dm_send_rpc: validated, persisting body_len={}",
+        envelope.body.len()
+    );
+
     if let Err(resp) = persist_inbound_dm(state, sender_peer_id, envelope).await {
+        warn!("handle_dm_send_rpc: persist_inbound_dm returned error response");
         return resp;
     }
+
+    info!("handle_dm_send_rpc: persist OK, returning ack JSON");
 
     // Return an ack response so the daemon can build an RPC_RESP.
     // Encode a tiny CBOR "ok" as the response payload.
     let ack = {
         use ciborium::value::Value;
         let mut buf = Vec::new();
-        let _ = ciborium::into_writer(&Value::Map(vec![
-            (Value::Text("status".into()), Value::Text("ok".into())),
-        ]), &mut buf);
+        let _ = ciborium::into_writer(
+            &Value::Map(vec![(Value::Text("status".into()), Value::Text("ok".into()))]),
+            &mut buf,
+        );
         buf
     };
     let resp_b64 = STANDARD.encode(&ack);
