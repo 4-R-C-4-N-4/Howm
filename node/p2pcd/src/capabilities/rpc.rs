@@ -159,13 +159,26 @@ impl CapabilityHandler for RpcHandler {
                     let req_id = cbor_get_int(&map, keys::REQUEST_ID).unwrap_or(0);
                     let req_payload = cbor_get_bytes(&map, keys::PAYLOAD).unwrap_or_default();
 
-                    tracing::info!(
-                        "rpc: REQ method={} id={} from {} payload_bytes={}",
-                        method,
-                        req_id,
-                        hex::encode(&peer_id[..4]),
-                        req_payload.len(),
-                    );
+                    if method.is_empty() {
+                        // Diagnostic: dump the full CBOR map so we can see what
+                        // the sender actually put on the wire.
+                        tracing::warn!(
+                            "rpc: REQ id={} from {} has EMPTY method — raw envelope ({} bytes): {} | decoded map: {:?}",
+                            req_id,
+                            hex::encode(&peer_id[..4]),
+                            payload.len(),
+                            hex::encode(&payload),
+                            map,
+                        );
+                    } else {
+                        tracing::info!(
+                            "rpc: REQ method={} id={} from {} payload_bytes={}",
+                            method,
+                            req_id,
+                            hex::encode(&peer_id[..4]),
+                            req_payload.len(),
+                        );
+                    }
 
                     let methods = self.methods.read().await;
                     let result = if let Some(handler) = methods.get(&method) {
