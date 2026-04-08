@@ -262,15 +262,39 @@ impl CapabilityNotifier {
                     .await
                     .map_err(|e| anyhow::anyhow!("RPC forward to {}: {}", cap_name, e))?;
 
-                if !resp.status().is_success() {
-                    anyhow::bail!("RPC forward to {} returned {}", cap_name, resp.status());
+                let status = resp.status();
+                if !status.is_success() {
+                    let body_text = resp.text().await.unwrap_or_default();
+                    anyhow::bail!(
+                        "RPC forward to {} returned {} (body: {:?})",
+                        cap_name,
+                        status,
+                        body_text.chars().take(200).collect::<String>()
+                    );
+                }
+
+                // Read body as text first so we can log it on parse failure.
+                let body_text = resp
+                    .text()
+                    .await
+                    .map_err(|e| anyhow::anyhow!("RPC forward read body: {}", e))?;
+
+                // Empty body is valid: capability accepted the message but
+                // returned no payload (e.g. fire-and-forget RPCs like voice.join).
+                if body_text.is_empty() {
+                    return Ok(vec![]);
                 }
 
                 // Parse the response JSON for { "response": "<base64>" }
-                let resp_json: serde_json::Value = resp
-                    .json()
-                    .await
-                    .map_err(|e| anyhow::anyhow!("RPC forward response parse: {}", e))?;
+                let resp_json: serde_json::Value =
+                    serde_json::from_str(&body_text).map_err(|e| {
+                        anyhow::anyhow!(
+                            "RPC forward response parse: {} | raw body ({} bytes): {:?}",
+                            e,
+                            body_text.len(),
+                            body_text.chars().take(200).collect::<String>()
+                        )
+                    })?;
 
                 if let Some(resp_b64) = resp_json.get("response").and_then(|v| v.as_str()) {
                     let decoded = STANDARD
