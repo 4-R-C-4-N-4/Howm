@@ -7,6 +7,7 @@ use crate::{
     notifications::{NotificationBuffer, PushRateLimiter},
     p2pcd::engine::ProtocolEngine,
     peers::Peer,
+    profile::Profile,
 };
 use howm_access::AccessDb;
 use std::collections::HashMap;
@@ -45,6 +46,8 @@ pub struct AppState {
     pub push_rate_limiter: Arc<RwLock<PushRateLimiter>>,
     /// LAN mDNS discovery handle (None if lan_discoverable=false).
     pub lan_discovery: Arc<RwLock<Option<LanDiscovery>>>,
+    /// User profile (name, bio, avatar, homepage).
+    pub profile: Arc<RwLock<Profile>>,
 }
 
 impl AppState {
@@ -55,6 +58,7 @@ impl AppState {
         config: Config,
         api_token: String,
         access_db: Arc<AccessDb>,
+        profile: Profile,
     ) -> Self {
         let open_join_rate_limiter =
             Arc::new(RateLimiter::new(config.open_invite_rate_limit, 3600));
@@ -77,6 +81,7 @@ impl AppState {
             notifications: Arc::new(RwLock::new(NotificationBuffer::new())),
             push_rate_limiter: Arc::new(RwLock::new(PushRateLimiter::new(10, 10_000))),
             lan_discovery: Arc::new(RwLock::new(None)),
+            profile: Arc::new(RwLock::new(profile)),
         }
     }
 }

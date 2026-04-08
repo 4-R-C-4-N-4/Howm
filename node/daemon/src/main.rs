@@ -14,6 +14,8 @@ use howm::matchmake;
 use howm::net_detect;
 use howm::p2pcd;
 use howm::peers;
+use howm::profile;
+use howm::profile_sync;
 use howm::state;
 use howm::wireguard;
 
@@ -169,6 +171,10 @@ async fn main() -> anyhow::Result<()> {
     };
     info!("Access control database initialised");
 
+    // Load or create user profile
+    let user_profile = profile::load_or_create(&config.data_dir, &identity.name)?;
+    info!("Profile loaded: {}", user_profile.name);
+
     // Build app state
     let mut state = state::AppState::new(
         identity.clone(),
@@ -177,6 +183,7 @@ async fn main() -> anyhow::Result<()> {
         config.clone(),
         api_token,
         Arc::clone(&access_db),
+        user_profile,
     );
 
     // Build capability notifier and register running capabilities
@@ -342,6 +349,15 @@ async fn main() -> anyhow::Result<()> {
                 info!("Matchmake circuit event handler registered");
             }
         }
+    }
+
+    // Background: profile sync on boot (pushes to peers + fetches theirs)
+    {
+        let sync_state = state.clone();
+        tokio::spawn(async move {
+            profile_sync::boot_sync(sync_state).await;
+        });
+        info!("Profile boot sync scheduled (10s delay)");
     }
 
     // Background: capability health check loop (every 30s)
