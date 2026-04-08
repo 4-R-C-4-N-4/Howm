@@ -1,0 +1,29 @@
+[package]
+name = "wallet"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "wallet"
+path = "src/main.rs"
+
+[dependencies]
+axum = "0.8"
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive", "env"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"
+rusqlite = { version = "0.31", features = ["bundled"] }
+uuid = { version = "1", features = ["v7", "serde"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+hex = "0.4"
+include_dir = "0.7"
+chacha20poly1305 = "0.10"
+argon2 = "0.5"
+rand = "0.8"
+alloy = { version = "1", features = ["providers", "signers", "signer-local", "network", "contract", "rpc-types", "provider-http"] }
+tower-http = { version = "0.6", features = ["cors"] }
+async-trait = "0.1"
