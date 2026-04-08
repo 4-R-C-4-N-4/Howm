@@ -487,17 +487,21 @@ impl ProtocolMessage {
                 message_type,
                 payload,
             } => {
-                // Re-wrap: decode payload back to CBOR value, add message_type key
-                let inner = decode_cbor(payload).unwrap_or(Value::Map(vec![]));
-                let mut pairs = vec![(
-                    int_key(message_keys::MESSAGE_TYPE),
-                    Value::Integer(ciborium::value::Integer::from(*message_type)),
-                )];
-                // Merge inner map entries (if it's a map)
-                if let Value::Map(m) = inner {
-                    pairs.extend(m);
-                }
-                Value::Map(pairs)
+                // Store the payload as opaque Bytes under a dedicated key.
+                // The previous version merged the inner CBOR map into the outer
+                // envelope, which silently dropped any inner key that collided
+                // with MESSAGE_TYPE (= 1) — most notably the RpcHandler `method`
+                // field, breaking all RPC dispatch.
+                Value::Map(vec![
+                    (
+                        int_key(message_keys::MESSAGE_TYPE),
+                        Value::Integer(ciborium::value::Integer::from(*message_type)),
+                    ),
+                    (
+                        int_key(message_keys::PAYLOAD),
+                        Value::Bytes(payload.clone()),
+                    ),
+                ])
             }
         };
         cbor_to_bytes(&val).expect("protocol message CBOR encode should not fail")
@@ -513,17 +517,36 @@ impl ProtocolMessage {
         let msg_type_u64 = map_get_int(map, message_keys::MESSAGE_TYPE)
             .ok_or_else(|| anyhow!("protocol message: missing message_type"))?;
 
-        // Types 6+ are capability messages — extract payload and route to handlers
+        // Types 6+ are capability messages — extract opaque payload bytes.
+        // Newer wire format stores the payload under message_keys::PAYLOAD as
+        // CBOR Bytes; older senders merged the inner map into the outer
+        // envelope.  Try the new format first, fall back to the old behaviour
+        // so we can interop while peers are mid-upgrade.
         if MessageType::from_u64(msg_type_u64).is_none() {
-            // Build payload: re-encode the map without the message_type key
-            let filtered: Vec<(Value, Value)> = map
-                .iter()
-                .filter(|(k, _)| {
-                    !matches!(k, Value::Integer(ki) if u64::try_from(*ki).ok() == Some(message_keys::MESSAGE_TYPE))
-                })
-                .cloned()
-                .collect();
-            let payload = cbor_to_bytes(&Value::Map(filtered))?;
+            let payload_bytes = map.iter().find_map(|(k, v)| {
+                if matches!(k, Value::Integer(ki) if u64::try_from(*ki).ok() == Some(message_keys::PAYLOAD)) {
+                    if let Value::Bytes(b) = v {
+                        return Some(b.clone());
+                    }
+                }
+                None
+            });
+
+            let payload = match payload_bytes {
+                Some(b) => b,
+                None => {
+                    // Legacy fallback: re-encode the map minus the message_type key.
+                    let filtered: Vec<(Value, Value)> = map
+                        .iter()
+                        .filter(|(k, _)| {
+                            !matches!(k, Value::Integer(ki) if u64::try_from(*ki).ok() == Some(message_keys::MESSAGE_TYPE))
+                        })
+                        .cloned()
+                        .collect();
+                    cbor_to_bytes(&Value::Map(filtered))?
+                }
+            };
+
             return Ok(ProtocolMessage::CapabilityMsg {
                 message_type: msg_type_u64,
                 payload,

@@ -82,6 +82,11 @@ pub mod message_keys {
     pub const ACCEPTED_PARAMS: u64 = 5; // for CONFIRM
     pub const REASON: u64 = 6; // for CLOSE
     pub const TIMESTAMP: u64 = 7; // for PING/PONG
+    /// Opaque payload bytes for CapabilityMsg (msg_type 4+ application messages).
+    /// Stored as `Value::Bytes` so the inner CBOR is never merged into the outer
+    /// envelope — that merge previously dropped any inner key that collided
+    /// with MESSAGE_TYPE (= 1), e.g. RpcHandler's `method` field.
+    pub const PAYLOAD: u64 = 8;
 }
 
 // ─── Wire message types (§5.3.6 + Appendix B.12) ────────────────────────────
