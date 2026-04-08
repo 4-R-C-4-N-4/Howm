@@ -449,9 +449,6 @@ impl ProtocolEngine {
         session::run_initiator_exchange(&mut s, &trust_gate).await?;
 
         // §4.1 replay detection: reject stale sequence_num.
-        // Use strict less-than so simultaneous connections with the same seq are
-        // not falsely rejected.  When the peer is already active with a live
-        // transport we skip redundant setup to avoid the session cycling storm.
         if let Some(remote) = &s.remote_manifest {
             let mut seen = self.last_seen_sequence.lock().await;
             let last = seen.get(&peer_id).copied().unwrap_or(0);
@@ -464,32 +461,81 @@ impl ProtocolEngine {
                 );
                 return Ok(());
             }
-            // Duplicate seq (simultaneous connect): keep the existing live session.
-            if remote.sequence_num == last && remote.sequence_num > 0 {
-                let already_alive = self
-                    .peer_senders
-                    .lock()
-                    .await
-                    .get(&peer_id)
-                    .map(|tx| !tx.is_closed())
-                    .unwrap_or(false);
-                if already_alive {
-                    tracing::debug!(
-                        "engine: duplicate seq {} for {} but session already live, skipping",
-                        remote.sequence_num,
-                        short(peer_id),
-                    );
-                    self.sessions.write().await.insert(peer_id, s);
-                    return Ok(());
-                }
-            }
             seen.insert(peer_id, remote.sequence_num);
+        }
+
+        // §7.1.3 Glare resolution at the *post-exchange* boundary.
+        //
+        // The pre-exchange glare check (in on_peer_visible / run_responder_session)
+        // catches the common case where one side hasn't finished negotiation yet.
+        // But when both peers complete OFFER/CONFIRM in parallel within a few ms,
+        // both sessions reach this point with no overlap.  If we don't enforce a
+        // deterministic socket choice here, each peer ends up wiring its mux to
+        // its *own* outbound TCP, so PINGs flow on socket-A and PONGs on socket-B
+        // and heartbeat times out at 15 s.
+        //
+        // Rule: the lower peer_id is the canonical initiator.  Both peers agree
+        // to use the lower peer_id's outbound socket as the single mux transport.
+        //
+        //   - If we are lower → keep this initiator session, replace any existing.
+        //   - If we are higher → drop this initiator session, the responder
+        //     session (their inbound to us) is the canonical one.
+        let is_canonical_initiator = self.local_peer_id < peer_id;
+        if !is_canonical_initiator {
+            let already_alive = self
+                .peer_senders
+                .lock()
+                .await
+                .get(&peer_id)
+                .map(|tx| !tx.is_closed())
+                .unwrap_or(false);
+            if already_alive {
+                tracing::info!(
+                    "engine: glare yield (post-exchange) — dropping our initiator to {}, peer's inbound wins",
+                    short(peer_id),
+                );
+                self.sessions.write().await.insert(peer_id, s);
+                return Ok(());
+            }
+        } else {
+            // We are the canonical initiator.  If a responder session already
+            // wired up the wrong socket, tear it down so we replace it.
+            let needs_replace = self.peer_senders.lock().await.contains_key(&peer_id);
+            if needs_replace {
+                tracing::info!(
+                    "engine: glare resolution (post-exchange) — replacing existing mux for {} with our initiator socket",
+                    short(peer_id),
+                );
+                self.tear_down_mux_only(peer_id).await;
+            }
         }
 
         self.post_session_setup(&mut s, hb_event_tx).await;
         self.record_session_outcome(&s).await;
         self.sessions.write().await.insert(peer_id, s);
         Ok(())
+    }
+
+    /// Tear down the per-peer mux/sender state without removing the session
+    /// record or notifying capabilities.  Used during glare resolution to swap
+    /// the active TCP socket without firing peer-inactive notifications.
+    async fn tear_down_mux_only(&self, peer_id: PeerId) {
+        if let Some(handle) = self.heartbeat_handles.lock().await.remove(&peer_id) {
+            handle.abort();
+        }
+        self.peer_senders.lock().await.remove(&peer_id);
+        if let Some(handler) = self.cap_router.handler_by_name("core.data.rpc.1") {
+            if let Some(rpc) = handler
+                .as_any()
+                .downcast_ref::<p2pcd::capabilities::rpc::RpcHandler>()
+            {
+                rpc.remove_peer_sender(&peer_id).await;
+                rpc.remove_peer_active_set(&peer_id).await;
+            }
+        }
+        if let Some(handle) = self.mux_handles.lock().await.remove(&peer_id) {
+            handle.abort();
+        }
     }
 
     async fn run_responder_session(
@@ -546,9 +592,6 @@ impl ProtocolEngine {
         session::run_responder_exchange(&mut s, &trust_gate).await?;
 
         // §4.1 replay detection: reject stale sequence_num.
-        // Use strict less-than so simultaneous connections with the same seq are
-        // not falsely rejected.  When the peer is already active with a live
-        // transport we skip redundant setup to avoid the session cycling storm.
         if let Some(remote) = &s.remote_manifest {
             let mut seen = self.last_seen_sequence.lock().await;
             let last = seen.get(&peer_id).copied().unwrap_or(0);
@@ -561,26 +604,45 @@ impl ProtocolEngine {
                 );
                 return Ok(());
             }
-            // Duplicate seq (simultaneous connect): keep the existing live session.
-            if remote.sequence_num == last && remote.sequence_num > 0 {
-                let already_alive = self
-                    .peer_senders
-                    .lock()
-                    .await
-                    .get(&peer_id)
-                    .map(|tx| !tx.is_closed())
-                    .unwrap_or(false);
-                if already_alive {
-                    tracing::debug!(
-                        "engine: duplicate seq {} for {} but session already live, skipping",
-                        remote.sequence_num,
-                        short(peer_id),
-                    );
-                    self.sessions.write().await.insert(peer_id, s);
-                    return Ok(());
-                }
-            }
             seen.insert(peer_id, remote.sequence_num);
+        }
+
+        // §7.1.3 Glare resolution at the *post-exchange* boundary (responder side).
+        //
+        // Mirror of the initiator-side rule: the lower peer_id is the canonical
+        // initiator, so the canonical mux uses *its* outbound TCP socket.
+        //
+        //   - We are LOWER (local < remote) → our own outbound is canonical.
+        //     This responder session (the remote's inbound to us) should yield.
+        //   - We are HIGHER (local > remote) → the remote IS the canonical
+        //     initiator.  This responder session is the canonical socket; if
+        //     our own initiator already wired up the wrong socket, replace it.
+        let is_canonical_responder = self.local_peer_id > peer_id;
+        if !is_canonical_responder {
+            let already_alive = self
+                .peer_senders
+                .lock()
+                .await
+                .get(&peer_id)
+                .map(|tx| !tx.is_closed())
+                .unwrap_or(false);
+            if already_alive {
+                tracing::info!(
+                    "engine: glare yield (post-exchange) — dropping responder for {}, our initiator wins",
+                    short(peer_id),
+                );
+                self.sessions.write().await.insert(peer_id, s);
+                return Ok(());
+            }
+        } else {
+            let needs_replace = self.peer_senders.lock().await.contains_key(&peer_id);
+            if needs_replace {
+                tracing::info!(
+                    "engine: glare resolution (post-exchange) — replacing existing mux for {} with peer's inbound socket",
+                    short(peer_id),
+                );
+                self.tear_down_mux_only(peer_id).await;
+            }
         }
 
         self.post_session_setup(&mut s, hb_event_tx).await;
