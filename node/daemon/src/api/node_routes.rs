@@ -94,6 +94,8 @@ pub async fn remove_peer(
     State(state): State<AppState>,
     Path(node_id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+
     let peer_pubkey: Option<String>;
     {
         let mut peers = state.peers.write().await;
@@ -109,15 +111,47 @@ pub async fn remove_peer(
             .map_err(|e| AppError::Internal(e.to_string()))?;
     }
 
-    // Remove WG peer
-    if let Some(pubkey) = peer_pubkey {
+    let mut groups_removed: usize = 0;
+    let mut session_closed = false;
+
+    if let Some(ref pubkey) = peer_pubkey {
+        // Decode WG pubkey (base64) to raw 32-byte peer ID
+        if let Ok(peer_bytes) = STANDARD.decode(pubkey) {
+            // Remove from all access groups
+            groups_removed = state
+                .access_db
+                .remove_peer_from_all_groups(&peer_bytes)
+                .unwrap_or(0);
+
+            // Tear down active P2P-CD session + clean engine caches
+            if peer_bytes.len() == 32 {
+                let mut peer_id = [0u8; 32];
+                peer_id.copy_from_slice(&peer_bytes);
+
+                if let Some(engine) = &state.p2pcd_engine {
+                    engine.deny_session(&peer_id).await;
+                    session_closed = true;
+                }
+            }
+        }
+
+        // Remove WG peer from interface + config
         let wg_active = *state.wg_active.read().await;
         if wg_active {
-            let _ = wireguard::remove_peer(&state.config.data_dir, &pubkey, &node_id).await;
+            let _ = wireguard::remove_peer(&state.config.data_dir, pubkey, &node_id).await;
         }
     }
 
-    Ok(Json(json!({ "status": "removed" })))
+    info!(
+        "Forgot peer '{}' (groups_removed={}, session_closed={})",
+        node_id, groups_removed, session_closed
+    );
+
+    Ok(Json(json!({
+        "status": "removed",
+        "groups_removed": groups_removed,
+        "session_closed": session_closed,
+    })))
 }
 
 #[derive(Deserialize)]
