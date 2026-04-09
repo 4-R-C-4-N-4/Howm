@@ -1344,9 +1344,18 @@ mod tests {
     fn encode_rpc_envelope(method: &str, req_id: u64, payload: &[u8]) -> Vec<u8> {
         use ciborium::value::{Integer, Value};
         let map = Value::Map(vec![
-            (Value::Integer(Integer::from(rpc::METHOD)), Value::Text(method.into())),
-            (Value::Integer(Integer::from(rpc::REQUEST_ID)), Value::Integer(Integer::from(req_id))),
-            (Value::Integer(Integer::from(rpc::PAYLOAD)), Value::Bytes(payload.to_vec())),
+            (
+                Value::Integer(Integer::from(rpc::METHOD)),
+                Value::Text(method.into()),
+            ),
+            (
+                Value::Integer(Integer::from(rpc::REQUEST_ID)),
+                Value::Integer(Integer::from(req_id)),
+            ),
+            (
+                Value::Integer(Integer::from(rpc::PAYLOAD)),
+                Value::Bytes(payload.to_vec()),
+            ),
         ]);
         let mut buf = Vec::new();
         ciborium::into_writer(&map, &mut buf).unwrap();
