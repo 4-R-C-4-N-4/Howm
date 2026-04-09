@@ -177,6 +177,24 @@ if [[ -n "$STALE_PIDS" ]]; then
     sleep 0.5
 fi
 
+# Tear down any stale howm0 WireGuard interface from a previous run.
+#
+# A killed daemon does NOT automatically delete its WG interface — the kernel
+# keeps the interface (and its UDP listening port) alive until something
+# explicitly removes it. On the next ./howm.sh run, the new daemon's port
+# probe finds 41641 still in use and falls back to 41642, which then bakes a
+# wrong port into the next invite payload and breaks peer connectivity.
+# Removing the interface here forces a clean rebind on every start.
+WG_IFACE=howm0
+if ip link show "$WG_IFACE" &>/dev/null; then
+    warn "Stale $WG_IFACE interface from previous run — removing"
+    if [[ $EUID -eq 0 ]]; then
+        ip link delete "$WG_IFACE" 2>/dev/null || true
+    else
+        sudo ip link delete "$WG_IFACE" 2>/dev/null || true
+    fi
+fi
+
 info "Starting howm on port $PORT..."
 cd "$ROOT_DIR"
 "$HOWM_BIN" "${DAEMON_ARGS[@]}" &

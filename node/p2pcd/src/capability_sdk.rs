@@ -941,9 +941,7 @@ pub mod app {
         let filter = EnvFilter::try_from_default_env()
             .or_else(|_| EnvFilter::try_new("info"))
             .unwrap_or_else(|_| EnvFilter::new("info"));
-        let _ = tracing_subscriber::fmt()
-            .with_env_filter(filter)
-            .try_init();
+        let _ = tracing_subscriber::fmt().with_env_filter(filter).try_init();
     }
 
     /// Type-erased inbound-message handler.
@@ -1077,10 +1075,7 @@ pub mod app {
                 router = router
                     .route("/ui", get(move |req: Request| serve_ui(dir, req)))
                     .route("/ui/", get(move |req: Request| serve_ui(dir, req)))
-                    .route(
-                        "/ui/{*path}",
-                        get(move |req: Request| serve_ui(dir, req)),
-                    );
+                    .route("/ui/{*path}", get(move |req: Request| serve_ui(dir, req)));
             }
 
             if let Some(route_builder) = routes {
@@ -1120,7 +1115,10 @@ pub mod app {
     /// for client-side routing.
     async fn serve_ui(ui_dir: &'static Dir<'static>, req: Request) -> Response {
         let path = req.uri().path();
-        let rel = path.strip_prefix("/ui/").unwrap_or("").trim_start_matches('/');
+        let rel = path
+            .strip_prefix("/ui/")
+            .unwrap_or("")
+            .trim_start_matches('/');
         let rel = if rel.is_empty() { "index.html" } else { rel };
 
         if let Some(file) = ui_dir.get_file(rel) {
@@ -1806,12 +1804,8 @@ mod tests {
         // just pick a fixed high port unlikely to clash in CI).
         let port = pick_free_port().await;
 
-        let app = CapabilityApp::new(
-            "howm.test.capapp.1",
-            port,
-            TestState { tag: "hi" },
-        )
-        .with_routes(|r| r.route("/hello", get(hello)));
+        let app = CapabilityApp::new("howm.test.capapp.1", port, TestState { tag: "hi" })
+            .with_routes(|r| r.route("/hello", get(hello)));
 
         // Run server in a task; abort after hitting endpoints.
         let server = tokio::spawn(async move { app.run().await });
@@ -1830,7 +1824,9 @@ mod tests {
         let url_hello = format!("http://127.0.0.1:{}/hello", port);
         let resp = client.get(&url_hello).send().await.unwrap();
         assert_eq!(resp.status(), 200);
-        let body = to_bytes(resp.bytes().await.unwrap().into(), 64).await.unwrap();
+        let body = to_bytes(resp.bytes().await.unwrap().into(), 64)
+            .await
+            .unwrap();
         assert_eq!(&body[..], b"hi");
 
         server.abort();
@@ -1848,10 +1844,7 @@ mod tests {
             got: Arc<AtomicBool>,
         }
 
-        async fn inbound(
-            State(s): State<InState>,
-            Json(msg): Json<InboundMessage>,
-        ) -> Response {
+        async fn inbound(State(s): State<InState>, Json(msg): Json<InboundMessage>) -> Response {
             assert_eq!(msg.message_type, 22);
             s.got.store(true, Ordering::SeqCst);
             axum::Json(serde_json::json!({"ok": true})).into_response()
@@ -1860,12 +1853,8 @@ mod tests {
         let port = pick_free_port().await;
         let got = Arc::new(AtomicBool::new(false));
 
-        let app = CapabilityApp::new(
-            "howm.test.inbound.1",
-            port,
-            InState { got: got.clone() },
-        )
-        .with_inbound_handler(inbound);
+        let app = CapabilityApp::new("howm.test.inbound.1", port, InState { got: got.clone() })
+            .with_inbound_handler(inbound);
 
         let server = tokio::spawn(async move { app.run().await });
         tokio::time::sleep(std::time::Duration::from_millis(150)).await;
@@ -1880,7 +1869,10 @@ mod tests {
         let url = format!("http://127.0.0.1:{}/p2pcd/inbound", port);
         let resp = client.post(&url).json(&body).send().await.unwrap();
         assert_eq!(resp.status(), 200);
-        assert!(got.load(Ordering::SeqCst), "inbound handler should have run");
+        assert!(
+            got.load(Ordering::SeqCst),
+            "inbound handler should have run"
+        );
 
         server.abort();
     }
