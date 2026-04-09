@@ -12,7 +12,7 @@ use uuid::Uuid;
 use crate::db::{self, MessageDb};
 use crate::notifier::DaemonNotifier;
 use p2pcd::bridge_client::BridgeClient;
-use p2pcd::capability_sdk::PeerStream;
+use p2pcd::capability_sdk::{LocalPeerId, PeerStream};
 
 // ── Shared state ─────────────────────────────────────────────────────────────
 
@@ -24,44 +24,20 @@ pub struct AppState {
     pub daemon_port: u16,
     /// SSE-backed peer tracker for "howm.social.messaging.1".
     pub stream: Arc<PeerStream>,
-    /// Our own peer ID (base64), learned at startup or lazily on first use.
-    pub local_peer_id: Arc<tokio::sync::RwLock<String>>,
+    /// Our own peer ID (base64), learned at startup with lazy retry on first use.
+    pub local_peer_id: LocalPeerId,
     /// Fire-and-forget notifier for badge/toast events to the daemon.
     pub notifier: DaemonNotifier,
 }
 
 impl AppState {
-    #[allow(dead_code)]
-    pub fn new(
-        db: MessageDb,
-        bridge: BridgeClient,
-        daemon_port: u16,
-        stream: Arc<PeerStream>,
-        local_peer_id: Arc<tokio::sync::RwLock<String>>,
-    ) -> Self {
-        let db = Arc::new(db);
-        let notifier = DaemonNotifier::new(
-            reqwest::Client::new(),
-            &format!("http://127.0.0.1:{daemon_port}"),
-            db.clone(),
-        );
-        Self {
-            db,
-            bridge,
-            daemon_port,
-            stream,
-            local_peer_id,
-            notifier,
-        }
-    }
-
     pub fn new_with_notifier(
         db: Arc<MessageDb>,
         bridge: BridgeClient,
         daemon_port: u16,
         notifier: DaemonNotifier,
         stream: Arc<PeerStream>,
-        local_peer_id: Arc<tokio::sync::RwLock<String>>,
+        local_peer_id: LocalPeerId,
     ) -> Self {
         Self {
             db,
@@ -75,18 +51,7 @@ impl AppState {
 
     /// Get the local peer ID, retrying once from the daemon if not yet known.
     pub async fn get_local_peer_id(&self) -> Option<String> {
-        let id = self.local_peer_id.read().await.clone();
-        if !id.is_empty() {
-            return Some(id);
-        }
-        // Lazy retry: fetch from daemon now
-        if let Ok(pid) = self.bridge.get_local_peer_id().await {
-            if !pid.is_empty() {
-                *self.local_peer_id.write().await = pid.clone();
-                return Some(pid);
-            }
-        }
-        None
+        self.local_peer_id.get().await
     }
 }
 
@@ -246,10 +211,6 @@ pub struct ConversationResponse {
 use p2pcd::capability_sdk::{rpc as sdk_rpc, InboundMessage};
 
 // ── Handlers ─────────────────────────────────────────────────────────────────
-
-pub async fn health() -> impl IntoResponse {
-    Json(serde_json::json!({ "status": "ok" }))
-}
 
 /// POST /send — send a DM to a peer.
 pub async fn send_message(
@@ -421,7 +382,7 @@ pub async fn send_message(
 
 /// GET /conversations — list all conversations.
 pub async fn list_conversations(State(state): State<AppState>) -> impl IntoResponse {
-    let local_peer_id = state.local_peer_id.read().await.clone();
+    let local_peer_id = state.get_local_peer_id().await.unwrap_or_default();
 
     match state.db.list_conversations(&local_peer_id) {
         Ok(convs) => (StatusCode::OK, Json(serde_json::json!(convs))),
@@ -438,7 +399,7 @@ pub async fn get_conversation(
     Path(peer_id): Path<String>,
     Query(params): Query<PaginationParams>,
 ) -> impl IntoResponse {
-    let local_peer_id = state.local_peer_id.read().await.clone();
+    let local_peer_id = state.get_local_peer_id().await.unwrap_or_default();
 
     let conversation_id = MessageDb::conversation_id(&local_peer_id, &peer_id);
     let limit = params.limit.clamp(1, 100);
@@ -466,7 +427,7 @@ pub async fn mark_read(
     State(state): State<AppState>,
     Path(peer_id): Path<String>,
 ) -> impl IntoResponse {
-    let local_peer_id = state.local_peer_id.read().await.clone();
+    let local_peer_id = state.get_local_peer_id().await.unwrap_or_default();
 
     let conversation_id = MessageDb::conversation_id(&local_peer_id, &peer_id);
 
@@ -485,7 +446,7 @@ pub async fn delete_message(
     State(state): State<AppState>,
     Path((_peer_id, msg_id)): Path<(String, String)>,
 ) -> impl IntoResponse {
-    let local_peer_id = state.local_peer_id.read().await.clone();
+    let local_peer_id = state.get_local_peer_id().await.unwrap_or_default();
 
     match state.db.delete_message(&msg_id, &local_peer_id) {
         Ok(true) => StatusCode::NO_CONTENT,

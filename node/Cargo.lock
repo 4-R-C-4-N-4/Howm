@@ -1400,16 +1400,20 @@ dependencies = [
  "futures",
  "futures-util",
  "hex",
+ "include_dir",
  "p2pcd-types",
  "reqwest",
  "reqwest-eventsource",
+ "rusqlite",
  "serde",
  "serde_json",
  "sha2",
  "tempfile",
  "tokio",
  "tokio-stream",
+ "tower-http",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

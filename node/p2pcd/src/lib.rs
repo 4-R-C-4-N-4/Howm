@@ -17,6 +17,8 @@ pub mod bridge_client;
 pub mod capabilities;
 #[cfg(feature = "bridge-client")]
 pub mod capability_sdk;
+#[cfg(feature = "cap-db")]
+pub mod cap_db;
 pub mod cbor_helpers;
 pub mod heartbeat;
 pub mod mux;

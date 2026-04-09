@@ -796,6 +796,379 @@ pub mod rpc {
     }
 }
 
+// ── LocalPeerId lazy fetch ──────────────────────────────────────────────────
+//
+// Capabilities that key data by the local peer ID (conversation rows, per-peer
+// files, etc.) need a stable handle on that ID. The daemon answers
+// `GET /identity` with the ID, but at cap startup the daemon may still be
+// booting — so we retry a few times before giving up, and lazily re-fetch on
+// demand after that.
+//
+// Previously this lived in messaging/src/api.rs as a private Arc<RwLock<String>>;
+// now it's shared so other capabilities can adopt the pattern.
+
+/// A lazily-populated local peer ID, retried against the daemon's
+/// `/capabilities/self` endpoint via `BridgeClient::get_local_peer_id`.
+///
+/// The initial fetch runs with short backoff (0ms / 150ms / 500ms / 1s / 2s)
+/// at construction time. If all attempts fail, the inner value stays empty and
+/// `get()` will re-fetch on demand until it succeeds.
+///
+/// `BridgeClient` is `Clone`, so the helper takes it by value — no need to
+/// wrap in `Arc` at the call site.
+#[derive(Clone)]
+pub struct LocalPeerId {
+    value: Arc<RwLock<String>>,
+    bridge: BridgeClient,
+}
+
+impl LocalPeerId {
+    /// Construct and eagerly retry the initial fetch. Always returns; never
+    /// blocks past ~3.65s total in the worst case.
+    pub async fn lazy(bridge: BridgeClient) -> Self {
+        let value = Arc::new(RwLock::new(String::new()));
+        let delays_ms = [0u64, 150, 500, 1000, 2000];
+        for (attempt, delay) in delays_ms.iter().enumerate() {
+            if *delay > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(*delay)).await;
+            }
+            match bridge.get_local_peer_id().await {
+                Ok(id) if !id.is_empty() => {
+                    tracing::debug!("LocalPeerId: fetched on attempt {}", attempt + 1);
+                    *value.write().await = id;
+                    break;
+                }
+                Ok(_) => {
+                    tracing::debug!("LocalPeerId: empty identity, retrying");
+                }
+                Err(e) => {
+                    tracing::debug!("LocalPeerId: attempt {} failed: {}", attempt + 1, e);
+                }
+            }
+        }
+        if value.read().await.is_empty() {
+            tracing::warn!(
+                "LocalPeerId: initial fetch exhausted retries; will lazy-fetch on demand"
+            );
+        }
+        Self { value, bridge }
+    }
+
+    /// Returns the local peer ID, lazily re-fetching if the stored value is
+    /// still empty.
+    pub async fn get(&self) -> Option<String> {
+        {
+            let guard = self.value.read().await;
+            if !guard.is_empty() {
+                return Some(guard.clone());
+            }
+        }
+        // Empty — try once more.
+        match self.bridge.get_local_peer_id().await {
+            Ok(id) if !id.is_empty() => {
+                *self.value.write().await = id.clone();
+                Some(id)
+            }
+            _ => None,
+        }
+    }
+}
+
+// ── CapabilityApp — builder for out-of-process capability servers ──────────
+//
+// A typed builder that owns the standard capability scaffolding:
+//
+//   - Logging init
+//   - Standard routes: /health, /p2pcd/inbound, optional /ui/*
+//   - Configurable body limit
+//   - Background task spawning
+//   - Bind + serve loop
+//
+// Each cap still constructs its own clap config, AppState, and PeerStream
+// (those remain cap-specific), and hands the builder the pieces it needs.
+// The goal is not to hide everything, it's to delete the ~90 lines of pasted
+// startup glue in every main.rs.
+//
+// # Minimal example
+//
+// ```no_run
+// use std::sync::Arc;
+// use axum::{routing::get, Json};
+// use p2pcd::capability_sdk::CapabilityApp;
+//
+// #[derive(Clone)]
+// struct AppState { /* cap-specific */ }
+//
+// # async fn main() -> anyhow::Result<()> {
+// let state = AppState { };
+// let _ = CapabilityApp::new("howm.example.1", 7010, state)
+//     .with_routes(|router| router.route("/hello", get(|| async { "ok" })))
+//     .with_inbound_handler(|_state, _msg| async move { Json("{}") })
+//     .run()
+//     .await?;
+// # Ok(())
+// # }
+// ```
+#[cfg(feature = "bridge-client")]
+pub mod app {
+    use std::future::Future;
+    use std::net::SocketAddr;
+    use std::pin::Pin;
+    use std::sync::Arc;
+
+    use axum::extract::{Request, State};
+    use axum::http::{header, StatusCode};
+    use axum::response::{IntoResponse, Response};
+    use axum::routing::{get, post};
+    use axum::{Json, Router};
+    use include_dir::Dir;
+    use tower_http::limit::RequestBodyLimitLayer;
+
+    use super::InboundMessage;
+
+    /// Standard `/health` response body.
+    pub async fn health_handler() -> &'static str {
+        "ok"
+    }
+
+    /// Initialize `tracing_subscriber` with an `info`-level env filter.
+    ///
+    /// Safe to call once at process start. Idempotent only under try-init
+    /// semantics (subsequent calls silently no-op if the subscriber is
+    /// already installed).
+    pub fn init_tracing() {
+        use tracing_subscriber::EnvFilter;
+        let filter = EnvFilter::try_from_default_env()
+            .or_else(|_| EnvFilter::try_new("info"))
+            .unwrap_or_else(|_| EnvFilter::new("info"));
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .try_init();
+    }
+
+    /// Type-erased inbound-message handler.
+    ///
+    /// Caps provide an async function `fn(State<S>, Json<InboundMessage>) -> Response`;
+    /// the builder stores it as this trait object so the `S` parameter can
+    /// propagate through the Router without leaking into `CapabilityApp`'s
+    /// type signature twice.
+    type InboundFn<S> = Arc<
+        dyn Fn(State<S>, Json<InboundMessage>) -> Pin<Box<dyn Future<Output = Response> + Send>>
+            + Send
+            + Sync,
+    >;
+
+    /// Builder for a standard out-of-process capability server.
+    ///
+    /// Generic over the cap's `AppState` type, which must be `Clone + Send +
+    /// Sync + 'static` for axum.
+    pub struct CapabilityApp<S>
+    where
+        S: Clone + Send + Sync + 'static,
+    {
+        cap_name: String,
+        port: u16,
+        state: S,
+        body_limit: usize,
+        ui_dir: Option<&'static Dir<'static>>,
+        inbound: Option<InboundFn<S>>,
+        routes: Option<Box<dyn FnOnce(Router<S>) -> Router<S> + Send>>,
+        background_tasks: Vec<Pin<Box<dyn Future<Output = ()> + Send>>>,
+    }
+
+    impl<S> CapabilityApp<S>
+    where
+        S: Clone + Send + Sync + 'static,
+    {
+        /// Start a new builder. `cap_name` is used only for log lines; `port`
+        /// is the HTTP listen port.
+        pub fn new(cap_name: impl Into<String>, port: u16, state: S) -> Self {
+            Self {
+                cap_name: cap_name.into(),
+                port,
+                state,
+                body_limit: 1024 * 1024, // 1 MiB default — override with with_body_limit
+                ui_dir: None,
+                inbound: None,
+                routes: None,
+                background_tasks: Vec::new(),
+            }
+        }
+
+        /// Set the max request body size in bytes (default 1 MiB).
+        pub fn with_body_limit(mut self, bytes: usize) -> Self {
+            self.body_limit = bytes;
+            self
+        }
+
+        /// Attach an embedded UI directory. Registered as a fallback handler
+        /// under `/ui/*` with SPA index.html fallback.
+        pub fn with_ui(mut self, ui_dir: &'static Dir<'static>) -> Self {
+            self.ui_dir = Some(ui_dir);
+            self
+        }
+
+        /// Register the inbound-message handler mounted at `POST /p2pcd/inbound`.
+        ///
+        /// The handler receives the cap's `AppState` and the decoded
+        /// `InboundMessage`. Return any axum [`IntoResponse`] type (`StatusCode`,
+        /// `Json<T>`, `Result<_, _>`, `Response`, …).
+        pub fn with_inbound_handler<F, Fut, R>(mut self, handler: F) -> Self
+        where
+            F: Fn(State<S>, Json<InboundMessage>) -> Fut + Send + Sync + 'static,
+            Fut: Future<Output = R> + Send + 'static,
+            R: IntoResponse + 'static,
+        {
+            self.inbound = Some(Arc::new(move |state, json| {
+                let fut = handler(state, json);
+                Box::pin(async move { fut.await.into_response() })
+                    as Pin<Box<dyn Future<Output = Response> + Send>>
+            }));
+            self
+        }
+
+        /// Add cap-specific routes. The closure receives a `Router<S>` with
+        /// the standard routes already installed; return the extended router.
+        pub fn with_routes<F>(mut self, f: F) -> Self
+        where
+            F: FnOnce(Router<S>) -> Router<S> + Send + 'static,
+        {
+            self.routes = Some(Box::new(f));
+            self
+        }
+
+        /// Spawn a background task for the lifetime of the server. Use for
+        /// cap-specific loops (cleanup, gossip, etc.). The future runs
+        /// concurrently with the HTTP server and is dropped on shutdown.
+        pub fn spawn_task<Fut>(mut self, fut: Fut) -> Self
+        where
+            Fut: Future<Output = ()> + Send + 'static,
+        {
+            self.background_tasks.push(Box::pin(fut));
+            self
+        }
+
+        /// Build the router, bind the listener, spawn background tasks, and
+        /// serve until the future is cancelled.
+        pub async fn run(self) -> anyhow::Result<()> {
+            let CapabilityApp {
+                cap_name,
+                port,
+                state,
+                body_limit,
+                ui_dir,
+                inbound,
+                routes,
+                background_tasks,
+            } = self;
+
+            // ── Base router with standard routes ─────────────────────────────
+            let mut router: Router<S> = Router::new().route("/health", get(health_handler));
+
+            if let Some(handler) = inbound {
+                let inbound_route = post(move |state: State<S>, json: Json<InboundMessage>| {
+                    let handler = handler.clone();
+                    async move { handler(state, json).await }
+                });
+                router = router.route("/p2pcd/inbound", inbound_route);
+            }
+
+            if let Some(dir) = ui_dir {
+                router = router
+                    .route("/ui", get(move |req: Request| serve_ui(dir, req)))
+                    .route("/ui/", get(move |req: Request| serve_ui(dir, req)))
+                    .route(
+                        "/ui/{*path}",
+                        get(move |req: Request| serve_ui(dir, req)),
+                    );
+            }
+
+            if let Some(route_builder) = routes {
+                router = route_builder(router);
+            }
+
+            // Apply body limit as a layer, then attach state.
+            let app = router
+                .layer(RequestBodyLimitLayer::new(body_limit))
+                .with_state(state);
+
+            // ── Spawn background tasks ───────────────────────────────────────
+            let mut task_handles = Vec::new();
+            for fut in background_tasks {
+                task_handles.push(tokio::spawn(fut));
+            }
+
+            // ── Bind and serve ───────────────────────────────────────────────
+            let addr = SocketAddr::from(([127, 0, 0, 1], port));
+            let listener = tokio::net::TcpListener::bind(addr).await?;
+            tracing::info!("{} listening on {}", cap_name, addr);
+
+            let serve_result = axum::serve(listener, app).await;
+
+            // Abort background tasks on server exit.
+            for h in task_handles {
+                h.abort();
+            }
+
+            serve_result.map_err(anyhow::Error::from)
+        }
+    }
+
+    // ── UI serving (SPA fallback) ───────────────────────────────────────────
+
+    /// Serve an embedded file under `/ui/*`, falling back to `index.html`
+    /// for client-side routing.
+    async fn serve_ui(ui_dir: &'static Dir<'static>, req: Request) -> Response {
+        let path = req.uri().path();
+        let rel = path.strip_prefix("/ui/").unwrap_or("").trim_start_matches('/');
+        let rel = if rel.is_empty() { "index.html" } else { rel };
+
+        if let Some(file) = ui_dir.get_file(rel) {
+            let mime = guess_mime(rel);
+            return ([(header::CONTENT_TYPE, mime)], file.contents()).into_response();
+        }
+
+        // SPA fallback — any unmatched /ui/* request returns index.html so
+        // client-side routers can handle the path.
+        if let Some(index) = ui_dir.get_file("index.html") {
+            return (
+                [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+                index.contents(),
+            )
+                .into_response();
+        }
+
+        (StatusCode::NOT_FOUND, "ui not embedded").into_response()
+    }
+
+    /// Minimal MIME type guesser for the subset of extensions our UIs use.
+    fn guess_mime(path: &str) -> &'static str {
+        let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+        match ext.as_str() {
+            "html" | "htm" => "text/html; charset=utf-8",
+            "css" => "text/css; charset=utf-8",
+            "js" | "mjs" => "application/javascript; charset=utf-8",
+            "json" => "application/json",
+            "svg" => "image/svg+xml",
+            "png" => "image/png",
+            "jpg" | "jpeg" => "image/jpeg",
+            "gif" => "image/gif",
+            "webp" => "image/webp",
+            "ico" => "image/x-icon",
+            "woff" => "font/woff",
+            "woff2" => "font/woff2",
+            "ttf" => "font/ttf",
+            "otf" => "font/otf",
+            "wasm" => "application/wasm",
+            "txt" => "text/plain; charset=utf-8",
+            _ => "application/octet-stream",
+        }
+    }
+}
+
+#[cfg(feature = "bridge-client")]
+pub use app::{init_tracing, CapabilityApp};
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1407,5 +1780,118 @@ mod tests {
         assert_eq!(rpc::REQUEST_ID, 2);
         assert_eq!(rpc::PAYLOAD, 3);
         assert_eq!(rpc::ERROR, 4);
+    }
+
+    // ── CapabilityApp smoke tests ────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn capability_app_serves_health_and_stops_on_drop() {
+        use axum::body::to_bytes;
+        use axum::extract::State;
+        use axum::response::IntoResponse;
+        use axum::routing::get;
+
+        #[derive(Clone)]
+        struct TestState {
+            tag: &'static str,
+        }
+
+        async fn hello(State(s): State<TestState>) -> impl IntoResponse {
+            s.tag
+        }
+
+        // Bind to an ephemeral port by creating the listener first, then
+        // reading the port and using it for the builder. The builder will
+        // bind again on the same port (briefly collides — so instead we
+        // just pick a fixed high port unlikely to clash in CI).
+        let port = pick_free_port().await;
+
+        let app = CapabilityApp::new(
+            "howm.test.capapp.1",
+            port,
+            TestState { tag: "hi" },
+        )
+        .with_routes(|r| r.route("/hello", get(hello)));
+
+        // Run server in a task; abort after hitting endpoints.
+        let server = tokio::spawn(async move { app.run().await });
+
+        // Give the server a moment to bind.
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+        // Hit /health
+        let client = reqwest::Client::new();
+        let url_health = format!("http://127.0.0.1:{}/health", port);
+        let resp = client.get(&url_health).send().await.unwrap();
+        assert_eq!(resp.status(), 200);
+        assert_eq!(resp.text().await.unwrap(), "ok");
+
+        // Hit /hello
+        let url_hello = format!("http://127.0.0.1:{}/hello", port);
+        let resp = client.get(&url_hello).send().await.unwrap();
+        assert_eq!(resp.status(), 200);
+        let body = to_bytes(resp.bytes().await.unwrap().into(), 64).await.unwrap();
+        assert_eq!(&body[..], b"hi");
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn capability_app_inbound_handler_receives_message() {
+        use axum::extract::State;
+        use axum::response::{IntoResponse, Response};
+        use axum::Json;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        #[derive(Clone)]
+        struct InState {
+            got: Arc<AtomicBool>,
+        }
+
+        async fn inbound(
+            State(s): State<InState>,
+            Json(msg): Json<InboundMessage>,
+        ) -> Response {
+            assert_eq!(msg.message_type, 22);
+            s.got.store(true, Ordering::SeqCst);
+            axum::Json(serde_json::json!({"ok": true})).into_response()
+        }
+
+        let port = pick_free_port().await;
+        let got = Arc::new(AtomicBool::new(false));
+
+        let app = CapabilityApp::new(
+            "howm.test.inbound.1",
+            port,
+            InState { got: got.clone() },
+        )
+        .with_inbound_handler(inbound);
+
+        let server = tokio::spawn(async move { app.run().await });
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+        let body = serde_json::json!({
+            "peer_id": "AAAA",
+            "message_type": 22,
+            "payload": "",
+            "capability": "howm.test.inbound.1",
+        });
+        let client = reqwest::Client::new();
+        let url = format!("http://127.0.0.1:{}/p2pcd/inbound", port);
+        let resp = client.post(&url).json(&body).send().await.unwrap();
+        assert_eq!(resp.status(), 200);
+        assert!(got.load(Ordering::SeqCst), "inbound handler should have run");
+
+        server.abort();
+    }
+
+    /// Return a port that is free right now. There's an unavoidable TOCTOU
+    /// window between drop and rebind, but for unit tests on a dev box it's
+    /// good enough.
+    async fn pick_free_port() -> u16 {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        port
     }
 }

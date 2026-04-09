@@ -12,7 +12,15 @@ bridge-client = [
     "dep:serde_json",
     "dep:futures",
     "dep:reqwest-eventsource",
+    "dep:axum",
+    "dep:tower-http",
+    "dep:tracing-subscriber",
+    "dep:include_dir",
 ]
+# SQLite bootstrap helper for caps that need a local datastore.
+# Independent of bridge-client so caps without a DB (presence, voice) don't
+# need to compile rusqlite.
+cap-db = ["dep:rusqlite"]
 
 [dependencies]
 p2pcd-types = { path = "../p2pcd-types" }
@@ -28,6 +36,11 @@ serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
 futures = { version = "0.3", optional = true }
 reqwest-eventsource = { version = "0.6", optional = true }
+axum = { version = "0.8", features = ["tokio"], optional = true }
+tower-http = { version = "0.6", features = ["limit"], optional = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
+include_dir = { version = "0.7", optional = true }
+rusqlite = { version = "0.31", features = ["bundled"], optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
