@@ -16,8 +16,10 @@ use crate::cbor_helpers::{
     make_capability_msg,
 };
 
-/// CBOR payload keys for RPC_REQ/RPC_RESP
-mod keys {
+/// CBOR payload keys for RPC_REQ/RPC_RESP. Single source of truth for the
+/// RPC envelope wire format; `capability_sdk::rpc` re-exports these so both
+/// the in-process handler and out-of-process capabilities agree.
+pub mod keys {
     pub const METHOD: u64 = 1;
     pub const REQUEST_ID: u64 = 2;
     pub const PAYLOAD: u64 = 3;

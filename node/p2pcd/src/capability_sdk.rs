@@ -703,6 +703,99 @@ mod peer_stream_impl {
     }
 }
 
+// ── RPC envelope helpers ────────────────────────────────────────────────────
+//
+// Shared decoders for the CBOR RPC_REQ/RPC_RESP envelope used by
+// `core.data.rpc.1`. Capabilities that handle inbound RPCs (files, messaging,
+// voice, …) previously each kept their own private copies of these helpers
+// with hardcoded key numbers; any wire-format change would have required
+// updating each copy in lockstep. They now live here as the single source of
+// truth.
+//
+// Wire format (CBOR map with integer keys):
+//   { 1: <method: text>, 2: <request_id: u64>, 3: <payload: bytes>, 4: <error: text?> }
+
+/// CBOR envelope helpers for the `core.data.rpc.1` wire format.
+///
+/// Key constants are re-exported from `crate::capabilities::rpc::keys`, which
+/// is the single source of truth. Both this module (used by out-of-process
+/// capabilities) and the in-process handler read from the same definitions.
+pub mod rpc {
+    pub use crate::capabilities::rpc::keys::{ERROR, METHOD, PAYLOAD, REQUEST_ID};
+
+    /// Extract the method name from a CBOR RPC envelope.
+    ///
+    /// Returns `None` if `data` is not a CBOR map or does not contain a
+    /// text-valued `METHOD` field.
+    pub fn extract_method(data: &[u8]) -> Option<String> {
+        use ciborium::value::Value;
+        let value: Value = ciborium::from_reader(data).ok()?;
+        let map = match value {
+            Value::Map(m) => m,
+            _ => return None,
+        };
+        for (k, v) in map {
+            if let Value::Integer(i) = k {
+                let key: i128 = i.into();
+                if key as u64 == METHOD {
+                    if let Value::Text(t) = v {
+                        return Some(t);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Extract the inner payload bytes from a CBOR RPC envelope.
+    ///
+    /// Returns `None` if `data` is not a CBOR map or does not contain a
+    /// bytes-valued `PAYLOAD` field.
+    pub fn extract_inner_payload(data: &[u8]) -> Option<Vec<u8>> {
+        use ciborium::value::Value;
+        let value: Value = ciborium::from_reader(data).ok()?;
+        let map = match value {
+            Value::Map(m) => m,
+            _ => return None,
+        };
+        for (k, v) in map {
+            if let Value::Integer(i) = k {
+                let key: i128 = i.into();
+                if key as u64 == PAYLOAD {
+                    if let Value::Bytes(b) = v {
+                        return Some(b);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Extract the request id from a CBOR RPC envelope.
+    pub fn extract_request_id(data: &[u8]) -> Option<u64> {
+        use ciborium::value::Value;
+        let value: Value = ciborium::from_reader(data).ok()?;
+        let map = match value {
+            Value::Map(m) => m,
+            _ => return None,
+        };
+        for (k, v) in map {
+            if let Value::Integer(i) = k {
+                let key: i128 = i.into();
+                if key as u64 == REQUEST_ID {
+                    if let Value::Integer(id) = v {
+                        let n: i128 = id.into();
+                        if n >= 0 {
+                            return Some(n as u64);
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1244,5 +1337,66 @@ mod tests {
         };
         assert!(tracker.is_for_us(&msg_yes));
         assert!(!tracker.is_for_us(&msg_no));
+    }
+
+    // ── rpc helpers ──────────────────────────────────────────────────────────
+
+    fn encode_rpc_envelope(method: &str, req_id: u64, payload: &[u8]) -> Vec<u8> {
+        use ciborium::value::{Integer, Value};
+        let map = Value::Map(vec![
+            (Value::Integer(Integer::from(rpc::METHOD)), Value::Text(method.into())),
+            (Value::Integer(Integer::from(rpc::REQUEST_ID)), Value::Integer(Integer::from(req_id))),
+            (Value::Integer(Integer::from(rpc::PAYLOAD)), Value::Bytes(payload.to_vec())),
+        ]);
+        let mut buf = Vec::new();
+        ciborium::into_writer(&map, &mut buf).unwrap();
+        buf
+    }
+
+    #[test]
+    fn rpc_extract_method_roundtrip() {
+        let bytes = encode_rpc_envelope("dm.send", 42, b"hello");
+        assert_eq!(rpc::extract_method(&bytes).as_deref(), Some("dm.send"));
+    }
+
+    #[test]
+    fn rpc_extract_inner_payload_roundtrip() {
+        let bytes = encode_rpc_envelope("catalogue.list", 1, b"\x01\x02\x03");
+        assert_eq!(rpc::extract_inner_payload(&bytes), Some(vec![1, 2, 3]));
+    }
+
+    #[test]
+    fn rpc_extract_request_id_roundtrip() {
+        let bytes = encode_rpc_envelope("voice.join", 9001, b"");
+        assert_eq!(rpc::extract_request_id(&bytes), Some(9001));
+    }
+
+    #[test]
+    fn rpc_extract_method_none_on_garbage() {
+        assert_eq!(rpc::extract_method(&[0xff, 0xff, 0xff]), None);
+        assert_eq!(rpc::extract_method(&[]), None);
+    }
+
+    #[test]
+    fn rpc_extract_inner_payload_none_on_missing_key() {
+        use ciborium::value::{Integer, Value};
+        // Envelope with only method, no payload key
+        let map = Value::Map(vec![(
+            Value::Integer(Integer::from(rpc::METHOD)),
+            Value::Text("ping".into()),
+        )]);
+        let mut buf = Vec::new();
+        ciborium::into_writer(&map, &mut buf).unwrap();
+        assert_eq!(rpc::extract_inner_payload(&buf), None);
+    }
+
+    #[test]
+    fn rpc_key_constants_match_wire() {
+        // Lock in the wire-format contract. Changing these requires a protocol
+        // version bump and coordinated updates in the core RPC handler.
+        assert_eq!(rpc::METHOD, 1);
+        assert_eq!(rpc::REQUEST_ID, 2);
+        assert_eq!(rpc::PAYLOAD, 3);
+        assert_eq!(rpc::ERROR, 4);
     }
 }
