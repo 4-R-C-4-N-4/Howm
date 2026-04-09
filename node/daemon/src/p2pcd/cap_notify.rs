@@ -231,8 +231,50 @@ impl CapabilityNotifier {
         use base64::{engine::general_purpose::STANDARD, Engine as _};
 
         let endpoints = self.endpoints.read().await;
+        let registered: Vec<String> = endpoints.keys().cloned().collect();
 
-        for cap_name in active_set {
+        // Route RPC method → owning capability. Method names are conventionally
+        // prefixed with the capability's domain (`dm.*`, `catalogue.*`, `voice.*`,
+        // etc.), so we match by prefix. If no prefix matches, we fall back to
+        // iterating the full active_set (legacy behavior).
+        //
+        // TODO: replace with a registered method table built from capability
+        // manifests once the SDK refactor (R1/R2) lands.
+        let preferred_cap: Option<&'static str> = match method.split('.').next().unwrap_or("") {
+            "dm" | "conversation" => Some("howm.social.messaging.1"),
+            "catalogue" | "blob" => Some("howm.social.files.1"),
+            "voice" => Some("howm.social.voice.1"),
+            "feed" | "post" => Some("howm.social.feed.1"),
+            "presence" => Some("howm.social.presence.1"),
+            "room" | "world" => Some("howm.world.room.1"),
+            _ => None,
+        };
+
+        tracing::info!(
+            "forward_rpc: method='{}' preferred_cap={:?} active_set={:?} registered_endpoints={:?}",
+            method,
+            preferred_cap,
+            active_set,
+            registered,
+        );
+
+        // Strict routing: if we know which cap owns this method, only try
+        // that one. Otherwise fall back to iterating the full active_set.
+        let ordered: Vec<&String> = if let Some(pref) = preferred_cap {
+            let matched: Vec<&String> = active_set.iter().filter(|c| c.as_str() == pref).collect();
+            if matched.is_empty() {
+                tracing::warn!(
+                    "forward_rpc: preferred cap '{}' for method '{}' is not in peer's active_set",
+                    pref,
+                    method,
+                );
+            }
+            matched
+        } else {
+            active_set.iter().collect()
+        };
+
+        for cap_name in ordered {
             if let Some(ep) = endpoints.get(cap_name) {
                 let base = ep
                     .url_override
@@ -250,17 +292,24 @@ impl CapabilityNotifier {
                     capability: cap_name.clone(),
                 };
 
+                tracing::info!(
+                    "forward_rpc: POST {} body_peer={} body_payload_b64_len={}",
+                    url,
+                    &body.peer_id[..8.min(body.peer_id.len())],
+                    body.payload.len(),
+                );
+
                 let client = reqwest::Client::builder()
                     .timeout(Duration::from_secs(10))
                     .build()
                     .unwrap_or_default();
 
-                let resp = client
-                    .post(&url)
-                    .json(&body)
-                    .send()
-                    .await
-                    .map_err(|e| anyhow::anyhow!("RPC forward to {}: {}", cap_name, e))?;
+                let resp = client.post(&url).json(&body).send().await.map_err(|e| {
+                    tracing::warn!("forward_rpc: POST {} SEND ERROR: {}", url, e);
+                    anyhow::anyhow!("RPC forward to {}: {}", cap_name, e)
+                })?;
+
+                tracing::info!("forward_rpc: POST {} status={}", url, resp.status());
 
                 let status = resp.status();
                 if !status.is_success() {
@@ -278,6 +327,12 @@ impl CapabilityNotifier {
                     .text()
                     .await
                     .map_err(|e| anyhow::anyhow!("RPC forward read body: {}", e))?;
+
+                tracing::info!(
+                    "forward_rpc: response body_bytes={} first={:?}",
+                    body_text.len(),
+                    body_text.chars().take(120).collect::<String>(),
+                );
 
                 // Empty body is valid: capability accepted the message but
                 // returned no payload (e.g. fire-and-forget RPCs like voice.join).
@@ -309,6 +364,12 @@ impl CapabilityNotifier {
             }
         }
 
+        tracing::warn!(
+            "forward_rpc: NO ENDPOINT for method '{}' — active_set={:?} registered={:?}",
+            method,
+            active_set,
+            registered,
+        );
         anyhow::bail!("no capability endpoint for RPC method '{}'", method)
     }
 
