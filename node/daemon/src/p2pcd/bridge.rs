@@ -534,7 +534,7 @@ async fn handle_rpc(
 
     // Send RPC_REQ (message_type 22)
     let peer_short = encode_b64(&peer_id)[..8].to_string();
-    tracing::info!(
+    tracing::debug!(
         "rpc: sending REQ method={} id={} to peer={} timeout={}ms",
         method_name,
         request_id,
@@ -559,7 +559,7 @@ async fn handle_rpc(
             }),
         );
     }
-    tracing::info!(
+    tracing::debug!(
         "rpc: REQ sent ok method={} id={} peer={}, waiting {}ms",
         method_name,
         request_id,
@@ -571,7 +571,7 @@ async fn handle_rpc(
     let timeout_dur = tokio::time::Duration::from_millis(req.timeout_ms);
     match tokio::time::timeout(timeout_dur, resp_rx).await {
         Ok(Ok(response_bytes)) => {
-            tracing::info!(
+            tracing::debug!(
                 "rpc: RESP ok method={} id={} peer={} payload_bytes={}",
                 method_name,
                 request_id,
@@ -1175,7 +1175,7 @@ async fn handle_events(
             serde_json::json!({
                 "peer_id":    STANDARD.encode(s.peer_id),
                 "wg_address": serde_json::Value::Null, // wg_address is not stored in SessionSummary; null until a live peer-active event arrives
-                "active_since": s.last_activity,
+                "active_since": s.created_at,
             })
         })
         .collect();

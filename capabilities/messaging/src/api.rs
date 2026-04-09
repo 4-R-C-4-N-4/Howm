@@ -6,7 +6,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::db::{self, MessageDb};
@@ -550,11 +550,10 @@ pub async fn inbound_message(
 ) -> axum::response::Response {
     use base64::{engine::general_purpose::STANDARD, Engine as _};
 
-    info!(
-        "inbound_message: type={} from {} payload_b64_len={}",
+    debug!(
+        "inbound_message: type={} from {}",
         payload.message_type,
         &payload.peer_id[..8.min(payload.peer_id.len())],
-        payload.payload.len(),
     );
 
     // Decode the payload
@@ -568,12 +567,7 @@ pub async fn inbound_message(
 
     // Check if this is an RPC_REQ forwarded by the daemon (message_type 22).
     if payload.message_type == 22 {
-        let method_opt = extract_rpc_method(&raw);
-        info!(
-            "inbound_message: type=22 dispatch — extracted method = {:?}",
-            method_opt
-        );
-        if let Some(method) = method_opt {
+        if let Some(method) = extract_rpc_method(&raw) {
             return match method.as_str() {
                 "dm.send" => handle_dm_send_rpc(&state, &payload.peer_id, &raw).await,
                 other => {
@@ -582,9 +576,7 @@ pub async fn inbound_message(
                 }
             };
         }
-        warn!(
-            "inbound_message: type=22 but no method in CBOR payload, falling through to legacy path"
-        );
+        warn!("inbound_message: type=22 but no method in CBOR payload");
     }
 
     // ── Legacy / broadcast path (message_type 100+) ──────────────────────────
@@ -624,12 +616,6 @@ async fn handle_dm_send_rpc(
 ) -> axum::response::Response {
     use base64::{engine::general_purpose::STANDARD, Engine as _};
 
-    info!(
-        "handle_dm_send_rpc: enter, envelope_bytes={} from {}",
-        rpc_envelope.len(),
-        &sender_peer_id[..8.min(sender_peer_id.len())]
-    );
-
     // Extract the inner payload from the RPC envelope (CBOR key 3)
     let inner = match extract_rpc_payload(rpc_envelope) {
         Some(p) => p,
@@ -658,17 +644,9 @@ async fn handle_dm_send_rpc(
         return StatusCode::BAD_REQUEST.into_response();
     }
 
-    info!(
-        "handle_dm_send_rpc: validated, persisting body_len={}",
-        envelope.body.len()
-    );
-
     if let Err(resp) = persist_inbound_dm(state, sender_peer_id, envelope).await {
-        warn!("handle_dm_send_rpc: persist_inbound_dm returned error response");
         return resp;
     }
-
-    info!("handle_dm_send_rpc: persist OK, returning ack JSON");
 
     // Return an ack response so the daemon can build an RPC_RESP.
     // Encode a tiny CBOR "ok" as the response payload.

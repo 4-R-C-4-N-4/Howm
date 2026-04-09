@@ -250,8 +250,8 @@ impl CapabilityNotifier {
             _ => None,
         };
 
-        tracing::info!(
-            "forward_rpc: method='{}' preferred_cap={:?} active_set={:?} registered_endpoints={:?}",
+        tracing::debug!(
+            "forward_rpc: method='{}' preferred_cap={:?} active_set={:?} registered={:?}",
             method,
             preferred_cap,
             active_set,
@@ -292,10 +292,9 @@ impl CapabilityNotifier {
                     capability: cap_name.clone(),
                 };
 
-                tracing::info!(
-                    "forward_rpc: POST {} body_peer={} body_payload_b64_len={}",
+                tracing::debug!(
+                    "forward_rpc: POST {} payload_b64_len={}",
                     url,
-                    &body.peer_id[..8.min(body.peer_id.len())],
                     body.payload.len(),
                 );
 
@@ -305,11 +304,9 @@ impl CapabilityNotifier {
                     .unwrap_or_default();
 
                 let resp = client.post(&url).json(&body).send().await.map_err(|e| {
-                    tracing::warn!("forward_rpc: POST {} SEND ERROR: {}", url, e);
+                    tracing::warn!("forward_rpc: POST {} send error: {}", url, e);
                     anyhow::anyhow!("RPC forward to {}: {}", cap_name, e)
                 })?;
-
-                tracing::info!("forward_rpc: POST {} status={}", url, resp.status());
 
                 let status = resp.status();
                 if !status.is_success() {
@@ -328,10 +325,11 @@ impl CapabilityNotifier {
                     .await
                     .map_err(|e| anyhow::anyhow!("RPC forward read body: {}", e))?;
 
-                tracing::info!(
-                    "forward_rpc: response body_bytes={} first={:?}",
+                tracing::debug!(
+                    "forward_rpc: {} → {} ({} body bytes)",
+                    cap_name,
+                    status,
                     body_text.len(),
-                    body_text.chars().take(120).collect::<String>(),
                 );
 
                 // Empty body is valid: capability accepted the message but

@@ -159,7 +159,7 @@ impl CapabilityHandler for RpcHandler {
                     let req_id = cbor_get_int(&map, keys::REQUEST_ID).unwrap_or(0);
                     let req_payload = cbor_get_bytes(&map, keys::PAYLOAD).unwrap_or_default();
 
-                    tracing::info!(
+                    tracing::debug!(
                         "rpc: REQ method={} id={} from {} payload_bytes={}",
                         method,
                         req_id,
@@ -182,7 +182,7 @@ impl CapabilityHandler for RpcHandler {
                                 .get(&peer_id)
                                 .cloned()
                                 .unwrap_or_default();
-                            tracing::info!(
+                            tracing::debug!(
                                 "rpc: REQ id={} forwarding method '{}' to capability",
                                 req_id,
                                 method,
@@ -241,7 +241,7 @@ impl CapabilityHandler for RpcHandler {
                             err,
                         );
                     } else {
-                        tracing::info!(
+                        tracing::debug!(
                             "rpc: RESP id={} from {} ok",
                             req_id,
                             hex::encode(&peer_id[..4]),

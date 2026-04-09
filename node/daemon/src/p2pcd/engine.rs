@@ -64,6 +64,8 @@ pub struct SessionSummary {
     pub state: SessionState,
     pub active_set: Vec<String>,
     pub uptime_s: u64,
+    /// Unix timestamp of when the session was created (became Active).
+    pub created_at: u64,
     /// Unix timestamp of the last heartbeat PONG (or session activation if no pong yet).
     pub last_activity: u64,
 }
@@ -1178,6 +1180,7 @@ impl ProtocolEngine {
                 state: s.state.clone(),
                 active_set: s.active_set.clone(),
                 uptime_s: now.saturating_sub(s.created_at),
+                created_at: s.created_at,
                 last_activity: s.last_activity,
             })
             .collect()
@@ -1833,6 +1836,7 @@ mod tests {
             state: SessionState::Active,
             active_set: vec!["core.session.heartbeat.1".to_string()],
             uptime_s: 42,
+            created_at: 0,
             last_activity: 0,
         };
         assert_eq!(s.active_set.len(), 1);
