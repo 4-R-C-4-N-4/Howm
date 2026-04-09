@@ -10,6 +10,7 @@ use clap::Parser;
 use include_dir::{include_dir, Dir};
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
@@ -44,21 +45,46 @@ async fn main() -> anyhow::Result<()> {
     let files_db = db::FilesDb::open(&config.data_dir)?;
     let bridge = p2pcd::bridge_client::BridgeClient::new(config.daemon_port);
 
+    // Group cache — populated by the on_active hook for each peer.
+    let peer_groups = Arc::new(tokio::sync::RwLock::new(
+        std::collections::HashMap::<String, Vec<db::PeerGroup>>::new(),
+    ));
+
+    // on_active hook: fetch ACL group memberships for the peer.
+    // Spawned by PeerStream — never blocks the SSE consumer loop.
+    let peer_groups_hook = Arc::clone(&peer_groups);
+    let bridge_for_hook = p2pcd::bridge_client::BridgeClient::new(config.daemon_port);
+
+    let on_active: p2pcd::capability_sdk::HookFn = Arc::new(move |peer_id: String| {
+        let groups = Arc::clone(&peer_groups_hook);
+        let bridge = bridge_for_hook.clone();
+        Box::pin(async move {
+            let fetched = api::fetch_peer_groups_by_id(&bridge, &peer_id).await;
+            info!(
+                "on_active hook: cached {} groups for peer {}",
+                fetched.len(),
+                &peer_id[..8.min(peer_id.len())]
+            );
+            groups.write().await.insert(peer_id, fetched);
+        })
+    });
+
+    let stream = Arc::new(p2pcd::capability_sdk::PeerStream::connect_with_hooks(
+        "howm.social.files.1",
+        config.daemon_port,
+        Some(on_active),
+        None,
+    ));
+
     let state = api::AppState::new(
         files_db,
         bridge,
         config.daemon_port,
         config.port,
         config.data_dir.clone(),
+        stream,
+        peer_groups,
     );
-
-    // Restore active peers from daemon on startup
-    {
-        let state_clone = state.clone();
-        tokio::spawn(async move {
-            api::init_peers_from_daemon(state_clone).await;
-        });
-    }
 
     let app = Router::new()
         // Health
@@ -85,9 +111,7 @@ async fn main() -> anyhow::Result<()> {
         )
         .route("/downloads/{blob_id}/status", get(api::download_status))
         .route("/downloads/{blob_id}/data", get(api::download_data))
-        // P2P-CD lifecycle hooks (called by daemon cap_notify)
-        .route("/p2pcd/peer-active", post(api::peer_active))
-        .route("/p2pcd/peer-inactive", post(api::peer_inactive))
+        // P2P-CD inbound messages (forwarded by daemon cap_notify)
         .route("/p2pcd/inbound", post(api::inbound_message))
         // Internal: transfer-complete callback from daemon bridge
         .route("/internal/transfer-complete", post(api::transfer_complete))

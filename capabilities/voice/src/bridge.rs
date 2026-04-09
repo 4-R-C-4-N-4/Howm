@@ -17,27 +17,7 @@ use tracing::{info, warn};
 
 use crate::AppState;
 
-// ── Inbound payloads (from daemon cap_notify) ────────────────────────────────
-
-#[derive(Deserialize)]
-pub struct PeerActivePayload {
-    pub peer_id: String,
-    pub wg_address: String,
-    pub capability: String,
-}
-
-#[derive(Deserialize)]
-pub struct PeerInactivePayload {
-    pub peer_id: String,
-    pub reason: String,
-}
-
-#[derive(Deserialize)]
-pub struct InboundMessage {
-    pub peer_id: String,
-    pub method: String,
-    pub payload: String,
-}
+use p2pcd::capability_sdk::InboundMessage;
 
 // ── RPC payload types (CBOR-encoded over bridge) ─────────────────────────────
 
@@ -69,51 +49,51 @@ pub struct VoiceSignalPayload {
 }
 
 // ── Lifecycle handlers ───────────────────────────────────────────────────────
+//
+// peer-active and peer-inactive are now handled by the PeerStream SSE
+// connection started in main.rs. The on_inactive hook performs room teardown
+// with a generation guard to prevent double-fire on session flaps.
 
-/// POST /p2pcd/peer-active — a peer with voice capability came online.
-pub async fn peer_active(
-    State(_state): State<AppState>,
-    Json(payload): Json<PeerActivePayload>,
-) -> impl IntoResponse {
-    info!(
-        "Peer active: {} ({}) for {}",
-        &payload.peer_id[..8.min(payload.peer_id.len())],
-        payload.wg_address,
-        payload.capability
-    );
-    StatusCode::OK
-}
-
-/// POST /p2pcd/peer-inactive — a peer went offline.
-pub async fn peer_inactive(
-    State(state): State<AppState>,
-    Json(payload): Json<PeerInactivePayload>,
-) -> impl IntoResponse {
-    info!(
-        "Peer inactive: {} ({})",
-        &payload.peer_id[..8.min(payload.peer_id.len())],
-        payload.reason
-    );
-
-    // Auto-remove the peer from any rooms they're in
-    let rooms_affected = state.rooms.remove_peer_from_all(&payload.peer_id);
-    for (room_id, destroyed) in &rooms_affected {
-        if *destroyed {
-            info!("Room {} destroyed (last member went offline)", room_id);
-            state.signal_hub.close_room(room_id);
-        } else {
-            // Broadcast peer-left via signaling
-            let msg = serde_json::to_string(&crate::signal::SignalMessage {
-                msg_type: "peer-left".to_string(),
-                peer_id: Some(payload.peer_id.clone()),
-                ..Default::default()
-            })
-            .unwrap_or_default();
-            state.signal_hub.broadcast_all(room_id, &msg);
+/// Extract RPC method name from a CBOR payload (key 1 = method name).
+fn extract_rpc_method(data: &[u8]) -> Option<String> {
+    use ciborium::value::Value;
+    let value: Value = ciborium::from_reader(data).ok()?;
+    let map = match value {
+        Value::Map(m) => m,
+        _ => return None,
+    };
+    for (k, v) in map {
+        if let Value::Integer(i) = k {
+            let key: i128 = i.into();
+            if key == 1 {
+                if let Value::Text(t) = v {
+                    return Some(t);
+                }
+            }
         }
     }
+    None
+}
 
-    StatusCode::OK
+/// Extract inner payload bytes from a CBOR RPC envelope (key 3 = payload).
+fn extract_rpc_payload(data: &[u8]) -> Option<Vec<u8>> {
+    use ciborium::value::Value;
+    let value: Value = ciborium::from_reader(data).ok()?;
+    let map = match value {
+        Value::Map(m) => m,
+        _ => return None,
+    };
+    for (k, v) in map {
+        if let Value::Integer(i) = k {
+            let key: i128 = i.into();
+            if key == 3 {
+                if let Value::Bytes(b) = v {
+                    return Some(b);
+                }
+            }
+        }
+    }
+    None
 }
 
 /// POST /p2pcd/inbound — receive a forwarded capability message from the daemon.
@@ -129,11 +109,29 @@ pub async fn inbound_message(
         }
     };
 
-    match payload.method.as_str() {
-        "voice.invite" => handle_invite(&state, &payload.peer_id, &raw),
-        "voice.join" => handle_join_notify(&state, &raw),
-        "voice.leave" => handle_leave_notify(&state, &raw),
-        "voice.signal" => handle_signal_relay(&state, &raw),
+    // Extract method from CBOR RPC envelope (key 1).
+    // For RPC_REQ (message_type 22) the inner payload is in key 3.
+    // For direct forwarding the payload may already be the CBOR body.
+    let method = match extract_rpc_method(&raw) {
+        Some(m) => m,
+        None => {
+            warn!("No RPC method in inbound payload");
+            return StatusCode::BAD_REQUEST;
+        }
+    };
+
+    // For RPC_REQ forwarding, the actual payload is nested in CBOR key 3.
+    let body = if payload.message_type == 22 {
+        extract_rpc_payload(&raw).unwrap_or(raw)
+    } else {
+        raw
+    };
+
+    match method.as_str() {
+        "voice.invite" => handle_invite(&state, &payload.peer_id, &body),
+        "voice.join" => handle_join_notify(&state, &body),
+        "voice.leave" => handle_leave_notify(&state, &body),
+        "voice.signal" => handle_signal_relay(&state, &body),
         other => {
             warn!("Unknown voice RPC method: {}", other);
             StatusCode::BAD_REQUEST
@@ -312,6 +310,7 @@ pub async fn send_leave_notify(
 }
 
 /// Relay a signaling message to a remote peer via bridge RPC.
+#[allow(dead_code)]
 pub async fn send_signal_relay(
     state: &AppState,
     target_peer_id_b64: &str,

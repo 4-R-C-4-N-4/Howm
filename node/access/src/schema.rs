@@ -4,7 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::types::{GROUP_DEFAULT, GROUP_FRIENDS, GROUP_TRUSTED};
 
 /// Current schema version. Bump this when adding migrations.
-const CURRENT_SCHEMA_VERSION: i64 = 2;
+const CURRENT_SCHEMA_VERSION: i64 = 3;
 
 /// Create all tables and indexes. Idempotent (IF NOT EXISTS).
 pub fn create_tables(conn: &Connection) -> rusqlite::Result<()> {
@@ -89,6 +89,39 @@ fn run_migrations(conn: &Connection) -> rusqlite::Result<()> {
         }
     }
 
+    if version < 3 {
+        // v3: add core data capabilities (rpc, blob, event, stream) to the
+        // friends group.  These are transport-layer capabilities used by
+        // messaging (RPC for delivery ack), files (blob transfer), etc.
+        //
+        // Guard: migrations run before seed_built_in_groups, so on a fresh DB
+        // the friends group doesn't exist yet and the FK constraint would fail.
+        // Fresh DBs get the new caps via the updated seed; existing DBs need
+        // this INSERT to backfill the missing rows.
+        let friends_exists: bool = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM groups WHERE group_id = ?1)",
+                rusqlite::params![GROUP_FRIENDS.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap_or(false);
+        if friends_exists {
+            let data_caps = &[
+                "core.data.rpc.1",
+                "core.data.blob.1",
+                "core.data.event.1",
+                "core.data.stream.1",
+            ];
+            for cap in data_caps {
+                tx.execute(
+                    "INSERT OR IGNORE INTO capability_rules (group_id, capability_name, allow)
+                     VALUES (?1, ?2, 1)",
+                    rusqlite::params![GROUP_FRIENDS.to_string(), cap],
+                )?;
+            }
+        }
+    }
+
     // Bump the stored version to current.
     tx.execute(
         "UPDATE schema_version SET version = ?1 WHERE rowid = 1",
@@ -133,13 +166,18 @@ pub fn seed_built_in_groups(conn: &Connection) -> rusqlite::Result<()> {
         now,
         Some(&GROUP_DEFAULT.to_string()),
     )?;
-    // Only capabilities added at this tier (default caps inherited via parent)
+    // Only capabilities added at this tier (default caps inherited via parent).
+    // core.data.* caps are the transport layer for messaging (RPC ack), file
+    // transfer (blob), and future event/stream use-cases.
     let friends_caps = &[
         "howm.social.feed.1",
         "howm.social.messaging.1",
         "howm.social.files.1",
-        "howm.world.room.1",
         "core.network.peerexchange.1",
+        "core.data.rpc.1",
+        "core.data.blob.1",
+        "core.data.event.1",
+        "core.data.stream.1",
     ];
     seed_capability_rules(conn, &GROUP_FRIENDS.to_string(), friends_caps)?;
 

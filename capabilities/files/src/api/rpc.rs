@@ -8,17 +8,7 @@ use serde::Deserialize;
 use tracing::{info, warn};
 
 use super::{bad_request, base64_decode, base64_encode, hex_to_hash, AppState};
-
-// ── Inbound RPC messages ─────────────────────────────────────────────────────
-
-#[derive(Debug, Deserialize)]
-pub struct InboundMessage {
-    pub peer_id: String,
-    pub message_type: u64,
-    pub payload: String,
-    #[serde(default)]
-    pub capability: String,
-}
+use p2pcd::capability_sdk::InboundMessage;
 
 // CBOR keys for catalogue RPC envelopes
 pub(crate) const CBOR_KEY_METHOD: u64 = 1;
@@ -71,10 +61,18 @@ pub async fn inbound_message(
         }
     };
 
+    // For RPC_REQ forwarding (message_type 22) the actual method payload is
+    // nested inside CBOR key 3 of the RPC envelope.  Extract it so method
+    // handlers see the inner CBOR, not the wrapping envelope.
+    let method_payload = if msg.message_type == 22 {
+        extract_rpc_inner_payload(&payload_bytes).unwrap_or(payload_bytes)
+    } else {
+        payload_bytes
+    };
+
     match method.as_str() {
         "catalogue.list" => {
-            let response = handle_catalogue_list(&state, &msg.peer_id, &payload_bytes).await;
-            // Send response back via bridge RPC
+            let response = handle_catalogue_list(&state, &msg.peer_id, &method_payload).await;
             let response_b64 = base64_encode(&response);
             (
                 StatusCode::OK,
@@ -82,7 +80,7 @@ pub async fn inbound_message(
             )
         }
         "catalogue.has_blob" => {
-            let response = handle_catalogue_has_blob(&state, &payload_bytes).await;
+            let response = handle_catalogue_has_blob(&state, &method_payload).await;
             let response_b64 = base64_encode(&response);
             (
                 StatusCode::OK,
@@ -107,11 +105,8 @@ async fn handle_catalogue_list(state: &AppState, peer_id_b64: &str, payload: &[u
 
     // Get peer's cached group memberships
     let groups = {
-        let active = state.active_peers.read().await;
-        match active.get(peer_id_b64) {
-            Some(peer) => peer.groups.clone(),
-            None => vec![], // unknown peer gets no groups
-        }
+        let pg = state.peer_groups.read().await;
+        pg.get(peer_id_b64).cloned().unwrap_or_default()
     };
 
     // Query filtered offerings
@@ -181,14 +176,17 @@ pub async fn peer_catalogue(
     Query(query): Query<CatalogueQuery>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     // Verify peer is active
+    if state
+        .stream
+        .tracker()
+        .find_peer(&peer_id)
+        .await
+        .is_none()
     {
-        let active = state.active_peers.read().await;
-        if !active.contains_key(&peer_id) {
-            return Err((
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({ "error": "peer not active" })),
-            ));
-        }
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "peer not active" })),
+        ));
     }
 
     let cursor = query.cursor.unwrap_or(0);
@@ -310,6 +308,30 @@ pub(crate) fn cbor_value_to_json(v: ciborium::value::Value) -> serde_json::Value
         }
         _ => serde_json::Value::Null,
     }
+}
+
+/// Extract the inner payload bytes (CBOR key 3) from an RPC envelope.
+/// When the daemon forwards an RPC_REQ, the wire format is:
+///   { 1: method, 2: request_id, 3: inner_payload_bytes }
+/// Method handlers expect the inner payload, not the wrapping envelope.
+fn extract_rpc_inner_payload(data: &[u8]) -> Option<Vec<u8>> {
+    use ciborium::value::Value;
+    let value: Value = ciborium::from_reader(data).ok()?;
+    let map = match value {
+        Value::Map(m) => m,
+        _ => return None,
+    };
+    for (k, v) in map {
+        if let Value::Integer(i) = k {
+            let key: i128 = i.into();
+            if key == 3 {
+                if let Value::Bytes(b) = v {
+                    return Some(b);
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Decode the RPC method name from a CBOR payload.

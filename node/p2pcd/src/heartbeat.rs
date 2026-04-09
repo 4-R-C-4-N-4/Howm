@@ -50,14 +50,47 @@ impl HeartbeatManager {
 
     /// Spawn the heartbeat loop for one session.
     ///
-    /// `send_tx` is used to send PING messages through the transport.
-    /// `recv_rx` delivers inbound PONG (and unexpected) messages from the transport reader.
+    /// `send_tx` is used to send PING and PONG messages through the transport.
+    /// `recv_rx` delivers inbound PING/PONG messages from the transport reader.
+    ///
+    /// The loop both:
+    /// 1. Sends PINGs periodically and waits for matching PONGs (liveness check)
+    /// 2. Auto-responds to inbound PINGs with PONGs (so the remote peer's
+    ///    liveness check succeeds)
     pub fn spawn(
         self,
         send_tx: mpsc::Sender<ProtocolMessage>,
         recv_rx: mpsc::Receiver<ProtocolMessage>,
     ) -> tokio::task::JoinHandle<()> {
-        tokio::spawn(self.run(send_tx, recv_rx))
+        // Spawn a responder task that auto-replies to inbound PINGs with PONGs.
+        // It forwards PONG messages to the main heartbeat loop via a bridging channel.
+        let (pong_tx, pong_rx) = mpsc::channel::<ProtocolMessage>(64);
+        let responder_send_tx = send_tx.clone();
+        let mut responder_recv_rx = recv_rx;
+        tokio::spawn(async move {
+            while let Some(msg) = responder_recv_rx.recv().await {
+                match msg {
+                    ProtocolMessage::Ping { timestamp } => {
+                        // Auto-respond with PONG
+                        let pong = ProtocolMessage::Pong { timestamp };
+                        if responder_send_tx.send(pong).await.is_err() {
+                            break;
+                        }
+                    }
+                    pong @ ProtocolMessage::Pong { .. } => {
+                        // Forward PONGs to the main heartbeat loop
+                        if pong_tx.send(pong).await.is_err() {
+                            break;
+                        }
+                    }
+                    _ => {
+                        // Unexpected message type — ignore
+                    }
+                }
+            }
+        });
+
+        tokio::spawn(self.run(send_tx, pong_rx))
     }
 
     async fn run(
@@ -78,7 +111,13 @@ impl HeartbeatManager {
             let ping = ProtocolMessage::Ping { timestamp: ts };
 
             if send_tx.send(ping).await.is_err() {
-                // Transport closed
+                // Transport closed — peer is gone, notify engine
+                let _ = self
+                    .event_tx
+                    .send(HeartbeatEvent::Timeout {
+                        peer_id: self.peer_id,
+                    })
+                    .await;
                 return;
             }
 
@@ -95,7 +134,13 @@ impl HeartbeatManager {
                         .await;
                 }
                 Ok(Err(())) => {
-                    // Channel closed
+                    // Channel closed — peer is gone, notify engine
+                    let _ = self
+                        .event_tx
+                        .send(HeartbeatEvent::Timeout {
+                            peer_id: self.peer_id,
+                        })
+                        .await;
                     return;
                 }
                 Err(_) => {

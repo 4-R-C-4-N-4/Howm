@@ -64,6 +64,10 @@ pub struct SessionSummary {
     pub state: SessionState,
     pub active_set: Vec<String>,
     pub uptime_s: u64,
+    /// Unix timestamp of when the session was created (became Active).
+    pub created_at: u64,
+    /// Unix timestamp of the last heartbeat PONG (or session activation if no pong yet).
+    pub last_activity: u64,
 }
 
 // ── ProtocolEngine ───────────────────────────────────────────────────────────
@@ -322,7 +326,7 @@ impl ProtocolEngine {
         });
     }
 
-    async fn on_peer_unreachable(&self, peer_id: PeerId, reason: CloseReason) {
+    pub(crate) async fn on_peer_unreachable(&self, peer_id: PeerId, reason: CloseReason) {
         tracing::info!("engine: PEER_UNREACHABLE {}", short(peer_id));
 
         // Abort heartbeat task for this peer
@@ -331,20 +335,41 @@ impl ProtocolEngine {
         }
         // Clean up mux resources
         self.peer_senders.lock().await.remove(&peer_id);
+        // Remove the per-peer sender from the RPC handler so no stale replies
+        // are attempted on a dead session.
+        if let Some(handler) = self.cap_router.handler_by_name("core.data.rpc.1") {
+            if let Some(rpc) = handler
+                .as_any()
+                .downcast_ref::<p2pcd::capabilities::rpc::RpcHandler>()
+            {
+                rpc.remove_peer_sender(&peer_id).await;
+                rpc.remove_peer_active_set(&peer_id).await;
+            }
+        }
         if let Some(handle) = self.mux_handles.lock().await.remove(&peer_id) {
             handle.abort();
         }
 
+        // Clear replay-detection entry so the peer can reconnect with the same
+        // sequence_num. The replay guard exists to catch duplicate manifests within
+        // a single session, not across independent reconnects. Keeping the entry
+        // after a session ends blocks legitimate reconnects when the remote peer
+        // hasn't incremented their sequence_num (the common case after a restart).
+        self.last_seen_sequence.lock().await.remove(&peer_id);
+
         let active_set = {
             let mut sessions = self.sessions.write().await;
-            if let Some(s) = sessions.get_mut(&peer_id) {
+            let set = if let Some(s) = sessions.get_mut(&peer_id) {
                 if s.state == SessionState::Active {
                     let _ = session::send_close(s, reason).await;
                 }
                 s.active_set.clone()
             } else {
                 vec![]
-            }
+            };
+            // Remove the stale session so reconnects start clean.
+            sessions.remove(&peer_id);
+            set
         };
 
         if !active_set.is_empty() {
@@ -425,13 +450,13 @@ impl ProtocolEngine {
         s.transport = Some(transport);
         session::run_initiator_exchange(&mut s, &trust_gate).await?;
 
-        // §4.1 replay detection: reject stale sequence_num
+        // §4.1 replay detection: reject stale sequence_num.
         if let Some(remote) = &s.remote_manifest {
             let mut seen = self.last_seen_sequence.lock().await;
             let last = seen.get(&peer_id).copied().unwrap_or(0);
-            if remote.sequence_num <= last && remote.sequence_num > 0 {
+            if remote.sequence_num < last && remote.sequence_num > 0 {
                 tracing::warn!(
-                    "engine: replay detected for {} (seq {} <= {}), dropping",
+                    "engine: replay detected for {} (seq {} < {}), dropping",
                     short(peer_id),
                     remote.sequence_num,
                     last
@@ -441,10 +466,78 @@ impl ProtocolEngine {
             seen.insert(peer_id, remote.sequence_num);
         }
 
+        // §7.1.3 Glare resolution at the *post-exchange* boundary.
+        //
+        // The pre-exchange glare check (in on_peer_visible / run_responder_session)
+        // catches the common case where one side hasn't finished negotiation yet.
+        // But when both peers complete OFFER/CONFIRM in parallel within a few ms,
+        // both sessions reach this point with no overlap.  If we don't enforce a
+        // deterministic socket choice here, each peer ends up wiring its mux to
+        // its *own* outbound TCP, so PINGs flow on socket-A and PONGs on socket-B
+        // and heartbeat times out at 15 s.
+        //
+        // Rule: the lower peer_id is the canonical initiator.  Both peers agree
+        // to use the lower peer_id's outbound socket as the single mux transport.
+        //
+        //   - If we are lower → keep this initiator session, replace any existing.
+        //   - If we are higher → drop this initiator session, the responder
+        //     session (their inbound to us) is the canonical one.
+        let is_canonical_initiator = self.local_peer_id < peer_id;
+        if !is_canonical_initiator {
+            let already_alive = self
+                .peer_senders
+                .lock()
+                .await
+                .get(&peer_id)
+                .map(|tx| !tx.is_closed())
+                .unwrap_or(false);
+            if already_alive {
+                tracing::info!(
+                    "engine: glare yield (post-exchange) — dropping our initiator to {}, peer's inbound wins",
+                    short(peer_id),
+                );
+                self.sessions.write().await.insert(peer_id, s);
+                return Ok(());
+            }
+        } else {
+            // We are the canonical initiator.  If a responder session already
+            // wired up the wrong socket, tear it down so we replace it.
+            let needs_replace = self.peer_senders.lock().await.contains_key(&peer_id);
+            if needs_replace {
+                tracing::info!(
+                    "engine: glare resolution (post-exchange) — replacing existing mux for {} with our initiator socket",
+                    short(peer_id),
+                );
+                self.tear_down_mux_only(peer_id).await;
+            }
+        }
+
         self.post_session_setup(&mut s, hb_event_tx).await;
         self.record_session_outcome(&s).await;
         self.sessions.write().await.insert(peer_id, s);
         Ok(())
+    }
+
+    /// Tear down the per-peer mux/sender state without removing the session
+    /// record or notifying capabilities.  Used during glare resolution to swap
+    /// the active TCP socket without firing peer-inactive notifications.
+    async fn tear_down_mux_only(&self, peer_id: PeerId) {
+        if let Some(handle) = self.heartbeat_handles.lock().await.remove(&peer_id) {
+            handle.abort();
+        }
+        self.peer_senders.lock().await.remove(&peer_id);
+        if let Some(handler) = self.cap_router.handler_by_name("core.data.rpc.1") {
+            if let Some(rpc) = handler
+                .as_any()
+                .downcast_ref::<p2pcd::capabilities::rpc::RpcHandler>()
+            {
+                rpc.remove_peer_sender(&peer_id).await;
+                rpc.remove_peer_active_set(&peer_id).await;
+            }
+        }
+        if let Some(handle) = self.mux_handles.lock().await.remove(&peer_id) {
+            handle.abort();
+        }
     }
 
     async fn run_responder_session(
@@ -500,13 +593,13 @@ impl ProtocolEngine {
         s.transport = Some(transport);
         session::run_responder_exchange(&mut s, &trust_gate).await?;
 
-        // §4.1 replay detection: reject stale sequence_num
+        // §4.1 replay detection: reject stale sequence_num.
         if let Some(remote) = &s.remote_manifest {
             let mut seen = self.last_seen_sequence.lock().await;
             let last = seen.get(&peer_id).copied().unwrap_or(0);
-            if remote.sequence_num <= last && remote.sequence_num > 0 {
+            if remote.sequence_num < last && remote.sequence_num > 0 {
                 tracing::warn!(
-                    "engine: replay detected for {} (seq {} <= {}), dropping",
+                    "engine: replay detected for {} (seq {} < {}), dropping",
                     short(peer_id),
                     remote.sequence_num,
                     last
@@ -514,6 +607,44 @@ impl ProtocolEngine {
                 return Ok(());
             }
             seen.insert(peer_id, remote.sequence_num);
+        }
+
+        // §7.1.3 Glare resolution at the *post-exchange* boundary (responder side).
+        //
+        // Mirror of the initiator-side rule: the lower peer_id is the canonical
+        // initiator, so the canonical mux uses *its* outbound TCP socket.
+        //
+        //   - We are LOWER (local < remote) → our own outbound is canonical.
+        //     This responder session (the remote's inbound to us) should yield.
+        //   - We are HIGHER (local > remote) → the remote IS the canonical
+        //     initiator.  This responder session is the canonical socket; if
+        //     our own initiator already wired up the wrong socket, replace it.
+        let is_canonical_responder = self.local_peer_id > peer_id;
+        if !is_canonical_responder {
+            let already_alive = self
+                .peer_senders
+                .lock()
+                .await
+                .get(&peer_id)
+                .map(|tx| !tx.is_closed())
+                .unwrap_or(false);
+            if already_alive {
+                tracing::info!(
+                    "engine: glare yield (post-exchange) — dropping responder for {}, our initiator wins",
+                    short(peer_id),
+                );
+                self.sessions.write().await.insert(peer_id, s);
+                return Ok(());
+            }
+        } else {
+            let needs_replace = self.peer_senders.lock().await.contains_key(&peer_id);
+            if needs_replace {
+                tracing::info!(
+                    "engine: glare resolution (post-exchange) — replacing existing mux for {} with peer's inbound socket",
+                    short(peer_id),
+                );
+                self.tear_down_mux_only(peer_id).await;
+            }
         }
 
         self.post_session_setup(&mut s, hb_event_tx).await;
@@ -562,6 +693,10 @@ impl ProtocolEngine {
             let (transport_send_tx, transport_recv_rx) = transport.into_channels();
             let session_mux = mux::build_session_mux(transport_send_tx, transport_recv_rx);
 
+            // Clone send_tx for RPC handler registration before heartbeat can move it.
+            // Done here (before the heartbeat block) to avoid borrow-after-move.
+            let rpc_send_tx = session_mux.send_tx.clone();
+
             // Store the shared sender so the bridge can send cap messages to this peer
             self.peer_senders
                 .lock()
@@ -593,6 +728,22 @@ impl ProtocolEngine {
                 let handle = hb.spawn(session_mux.send_tx, session_mux.heartbeat_rx);
                 self.heartbeat_handles.lock().await.insert(peer_id, handle);
                 tracing::info!("engine: heartbeat started for {}", short(peer_id));
+            }
+
+            if let Some(handler) = self.cap_router.handler_by_name("core.data.rpc.1") {
+                if let Some(rpc) = handler
+                    .as_any()
+                    .downcast_ref::<p2pcd::capabilities::rpc::RpcHandler>()
+                {
+                    rpc.add_peer_sender(peer_id, rpc_send_tx).await;
+                    rpc.set_peer_active_set(peer_id, s.active_set.clone()).await;
+                    // Wire the forwarder once (idempotent — subsequent calls are no-ops
+                    // since the Arc<CapabilityNotifier> is the same).
+                    rpc.set_forwarder(Arc::clone(&self.notifier)
+                        as Arc<dyn p2pcd::capabilities::rpc::RpcForwarder>)
+                        .await;
+                    tracing::debug!("engine: registered RPC sender for {}", short(peer_id));
+                }
             }
 
             // Spawn capability message dispatch loop (routes inbound cap msgs to handlers)
@@ -655,19 +806,14 @@ impl ProtocolEngine {
                 payload,
             } = msg
             {
-                // Find the matching capability name for this message type
-                let cap_name = active_set
-                    .iter()
-                    .find(|name| {
-                        cap_router
-                            .handler_by_name(name)
-                            .map(|h| h.handled_message_types().contains(&message_type))
-                            .unwrap_or(false)
-                    })
-                    .cloned();
-
-                if let Some(cap_name) = cap_name {
-                    // In-process handler found — dispatch directly
+                // Check for a registered in-process handler by message type first.
+                // Core data capabilities (rpc, blob, event, stream) are wired into the
+                // cap_router regardless of what was negotiated in the active_set — they
+                // are transport-layer facilities, not user-configurable capabilities.
+                // Searching only through active_set caused RPC_REQ/RESP (type 22/23) to
+                // fall through to the out-of-process notifier and get silently dropped.
+                if let Some(handler) = cap_router.handler_for_type(message_type) {
+                    let cap_name = handler.capability_name().to_string();
                     let params = accepted_params.get(&cap_name).cloned().unwrap_or_default();
                     if let Err(e) = cap_router
                         .dispatch(message_type, &payload, peer_id, &params, &cap_name)
@@ -707,10 +853,17 @@ impl ProtocolEngine {
     ) -> Result<()> {
         let senders = self.peer_senders.lock().await;
         match senders.get(peer_id) {
-            Some(tx) => tx
+            Some(tx) if !tx.is_closed() => tx
                 .send(msg)
                 .await
                 .map_err(|_| anyhow::anyhow!("peer transport closed")),
+            Some(_) => {
+                // Channel exists but transport is dead — report immediately
+                // instead of letting the caller wait for a 4s timeout.
+                drop(senders);
+                self.peer_senders.lock().await.remove(peer_id);
+                anyhow::bail!("peer transport closed")
+            }
             None => anyhow::bail!("no active session for peer"),
         }
     }
@@ -906,19 +1059,61 @@ impl ProtocolEngine {
         let manifest = self.local_manifest.read().await.clone();
 
         for peer_id in active_peers {
+            // Skip peers whose existing transport is still alive — renegotiating
+            // creates new TCP connections that cause session cycling storms.
+            let sender_alive = self
+                .peer_senders
+                .lock()
+                .await
+                .get(&peer_id)
+                .map(|tx| !tx.is_closed())
+                .unwrap_or(false);
+            if sender_alive {
+                tracing::debug!(
+                    "engine: rebroadcast skipping {} — transport still alive",
+                    short(peer_id),
+                );
+                continue;
+            }
+
             // §8.4 Active-set continuity: keep old active set alive during re-exchange.
             // Only capabilities removed from the new set are deactivated.
-            let (transport, old_active_set) = {
-                let mut sessions = self.sessions.write().await;
-                if let Some(s) = sessions.get_mut(&peer_id) {
-                    (s.transport.take(), s.active_set.clone())
+            let old_active_set = {
+                let sessions = self.sessions.read().await;
+                if let Some(s) = sessions.get(&peer_id) {
+                    s.active_set.clone()
                 } else {
                     continue;
                 }
             };
 
+            // Rebroadcast must open a fresh TCP connection — the session's transport
+            // was already consumed by post_session_setup (converted into mux channels).
+            let addr = match self.resolve_peer_addr(peer_id).await {
+                Some(a) => a,
+                None => {
+                    tracing::warn!(
+                        "engine: rebroadcast to {} skipped: can't resolve addr",
+                        short(peer_id)
+                    );
+                    continue;
+                }
+            };
+
+            let fresh_transport = match transport::connect(addr).await {
+                Ok(t) => t,
+                Err(e) => {
+                    tracing::warn!(
+                        "engine: rebroadcast to {} failed: connect error: {:?}",
+                        short(peer_id),
+                        e
+                    );
+                    continue;
+                }
+            };
+
             let mut new_s = Session::new(peer_id, manifest.clone());
-            new_s.transport = transport;
+            new_s.transport = Some(fresh_transport);
             new_s.state = SessionState::PeerVisible;
 
             let access_db = Arc::clone(&self.access_db);
@@ -928,10 +1123,6 @@ impl ProtocolEngine {
 
             if let Err(e) = session::run_initiator_exchange(&mut new_s, &trust_gate).await {
                 tracing::warn!("engine: rebroadcast to {} failed: {:?}", short(peer_id), e);
-                // On failure, restore the old session's transport and keep active set
-                self.sessions.write().await.entry(peer_id).and_modify(|s| {
-                    s.transport = new_s.transport.take();
-                });
                 continue;
             }
 
@@ -957,11 +1148,27 @@ impl ProtocolEngine {
                     .await;
             }
 
+            // Drop the negotiation-only transport — capability traffic continues
+            // on the existing mux established during the initial session setup.
+            new_s.transport = None;
+
             self.sessions.write().await.insert(peer_id, new_s);
         }
     }
 
     // ── Public query API ──────────────────────────────────────────────────────
+
+    /// Register a capability endpoint with the notifier so it receives peer-active
+    /// and peer-inactive callbacks. Must be called with the p2pcd capability name
+    /// (e.g. "howm.social.messaging.1") — that is what appears in session active_sets.
+    pub async fn register_capability(&self, p2pcd_name: String, port: u16) {
+        self.notifier.register(p2pcd_name, port).await;
+    }
+
+    /// Unregister a capability from the notifier (call on stop/uninstall).
+    pub async fn unregister_capability(&self, p2pcd_name: &str) {
+        self.notifier.unregister(p2pcd_name).await;
+    }
 
     pub async fn active_sessions(&self) -> Vec<SessionSummary> {
         let sessions = self.sessions.read().await;
@@ -973,6 +1180,8 @@ impl ProtocolEngine {
                 state: s.state.clone(),
                 active_set: s.active_set.clone(),
                 uptime_s: now.saturating_sub(s.created_at),
+                created_at: s.created_at,
+                last_activity: s.last_activity,
             })
             .collect()
     }
@@ -1165,7 +1374,7 @@ mod tests {
     // Two ProtocolEngine instances on loopback. No WireGuard, no network.
     // Alice dials Bob; both should reach Active and fire HTTP callbacks.
 
-    /// Build a minimal PeerConfig for tests: one `howm.feed.1` capability.
+    /// Build a minimal PeerConfig for tests: one `howm.social.feed.1` capability.
     fn test_access_db() -> Arc<AccessDb> {
         let dir = tempfile::TempDir::new().unwrap();
         let db_path = dir.path().join("access.db");
@@ -1174,7 +1383,7 @@ mod tests {
         // so the trust gate doesn't block anything (tests focus on protocol, not access).
         let all_caps = vec![
             howm_access::CapabilityRule {
-                capability_name: "howm.feed.1".into(),
+                capability_name: "howm.social.feed.1".into(),
                 allow: true,
                 rate_limit: None,
                 ttl: None,
@@ -1187,12 +1396,6 @@ mod tests {
             },
             howm_access::CapabilityRule {
                 capability_name: "howm.social.files.1".into(),
-                allow: true,
-                rate_limit: None,
-                ttl: None,
-            },
-            howm_access::CapabilityRule {
-                capability_name: "howm.world.room.1".into(),
                 allow: true,
                 rate_limit: None,
                 ttl: None,
@@ -1248,7 +1451,7 @@ mod tests {
                 m.insert(
                     "social".to_string(),
                     CapabilityConfig {
-                        name: "howm.feed.1".to_string(),
+                        name: "howm.social.feed.1".to_string(),
                         role: RoleConfig::Both,
                         mutual: true,
                         scope: None,
@@ -1344,11 +1547,14 @@ mod tests {
         let (bob_notifier_url, bob_active, _bob_inactive) = spawn_mock_notifier().await;
 
         // ── Build Alice's engine ──
-        let alice_notifier = Arc::new(CapabilityNotifier::new());
-        alice_notifier.register("howm.feed.1".to_string(), 0).await;
+        let alice_notifier =
+            CapabilityNotifier::new(Arc::new(crate::p2pcd::event_bus::EventBus::new()));
+        alice_notifier
+            .register("howm.social.feed.1".to_string(), 0)
+            .await;
         // Override notifier URL so callbacks reach our mock server
         alice_notifier
-            .register_with_url("howm.feed.1".to_string(), alice_notifier_url.clone())
+            .register_with_url("howm.social.feed.1".to_string(), alice_notifier_url.clone())
             .await;
 
         let alice_engine = Arc::new(ProtocolEngine::new(
@@ -1368,9 +1574,10 @@ mod tests {
         let alice_p2pcd_addr = alice_listener.local_addr;
 
         // ── Build Bob's engine ──
-        let bob_notifier = Arc::new(CapabilityNotifier::new());
+        let bob_notifier =
+            CapabilityNotifier::new(Arc::new(crate::p2pcd::event_bus::EventBus::new()));
         bob_notifier
-            .register_with_url("howm.feed.1".to_string(), bob_notifier_url.clone())
+            .register_with_url("howm.social.feed.1".to_string(), bob_notifier_url.clone())
             .await;
 
         let bob_engine = Arc::new(ProtocolEngine::new(
@@ -1487,7 +1694,8 @@ mod tests {
             .unwrap();
         let bob_p2pcd_addr = bob_listener.local_addr;
 
-        let alice_notifier = Arc::new(CapabilityNotifier::new());
+        let alice_notifier =
+            CapabilityNotifier::new(Arc::new(crate::p2pcd::event_bus::EventBus::new()));
         let alice_engine = Arc::new(ProtocolEngine::new(
             make_peer_config_fast_heartbeat(0),
             alice_id,
@@ -1502,7 +1710,8 @@ mod tests {
             .unwrap();
         let alice_p2pcd_addr = alice_listener.local_addr;
 
-        let bob_notifier = Arc::new(CapabilityNotifier::new());
+        let bob_notifier =
+            CapabilityNotifier::new(Arc::new(crate::p2pcd::event_bus::EventBus::new()));
         let bob_engine = Arc::new(ProtocolEngine::new(
             make_peer_config_fast_heartbeat(bob_p2pcd_addr.port()),
             bob_id,
@@ -1553,11 +1762,17 @@ mod tests {
             }
         }
 
-        // Kill Bob's engine — he can no longer send PONGs
+        // Tear down Bob's session (closes mux + transport), then abort the engine.
+        // Just aborting the engine handle is not enough — the transport reader/writer
+        // tasks are independently spawned and would keep the TCP connection alive,
+        // causing Alice's heartbeat to keep receiving auto-PONGs indefinitely.
+        bob_engine
+            .on_peer_unreachable(alice_id, CloseReason::Normal)
+            .await;
         bob_handle.abort();
 
-        // Alice's heartbeat (150ms timeout) should fire within ~500ms
-        let deadline = tokio::time::Instant::now() + Duration::from_millis(800);
+        // Alice's heartbeat (150ms timeout × 3 missed) should fire within ~600ms.
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(2000);
         loop {
             sleep(Duration::from_millis(30)).await;
             let still_active = alice_engine
@@ -1621,6 +1836,8 @@ mod tests {
             state: SessionState::Active,
             active_set: vec!["core.session.heartbeat.1".to_string()],
             uptime_s: 42,
+            created_at: 0,
+            last_activity: 0,
         };
         assert_eq!(s.active_set.len(), 1);
     }
@@ -1643,7 +1860,8 @@ mod tests {
             .unwrap();
         let bob_p2pcd_addr = bob_listener.local_addr;
 
-        let alice_notifier = Arc::new(CapabilityNotifier::new());
+        let alice_notifier =
+            CapabilityNotifier::new(Arc::new(crate::p2pcd::event_bus::EventBus::new()));
         let alice_engine = Arc::new(ProtocolEngine::new(
             make_peer_config(0),
             alice_id,
@@ -1658,7 +1876,8 @@ mod tests {
             .unwrap();
         let alice_p2pcd_addr = alice_listener.local_addr;
 
-        let bob_notifier = Arc::new(CapabilityNotifier::new());
+        let bob_notifier =
+            CapabilityNotifier::new(Arc::new(crate::p2pcd::event_bus::EventBus::new()));
         let bob_engine = Arc::new(ProtocolEngine::new(
             make_peer_config(bob_p2pcd_addr.port()),
             bob_id,
@@ -1746,7 +1965,8 @@ mod tests {
             .unwrap();
         let bob_p2pcd_addr = bob_listener.local_addr;
 
-        let alice_notifier = Arc::new(CapabilityNotifier::new());
+        let alice_notifier =
+            CapabilityNotifier::new(Arc::new(crate::p2pcd::event_bus::EventBus::new()));
         let alice_engine = Arc::new(ProtocolEngine::new(
             make_peer_config(0),
             alice_id,
@@ -1760,7 +1980,8 @@ mod tests {
             .await
             .unwrap();
 
-        let bob_notifier = Arc::new(CapabilityNotifier::new());
+        let bob_notifier =
+            CapabilityNotifier::new(Arc::new(crate::p2pcd::event_bus::EventBus::new()));
         let bob_engine = Arc::new(ProtocolEngine::new(
             make_peer_config(bob_p2pcd_addr.port()),
             bob_id,
@@ -1838,9 +2059,10 @@ mod tests {
         let bob_p2pcd_addr = bob_listener.local_addr;
 
         let (alice_notifier_url, _alice_active, alice_inactive) = spawn_mock_notifier().await;
-        let alice_notifier = Arc::new(CapabilityNotifier::new());
+        let alice_notifier =
+            CapabilityNotifier::new(Arc::new(crate::p2pcd::event_bus::EventBus::new()));
         alice_notifier
-            .register_with_url("howm.feed.1".to_string(), alice_notifier_url.clone())
+            .register_with_url("howm.social.feed.1".to_string(), alice_notifier_url.clone())
             .await;
         alice_notifier
             .register_with_url(
@@ -1862,7 +2084,8 @@ mod tests {
             .await
             .unwrap();
 
-        let bob_notifier = Arc::new(CapabilityNotifier::new());
+        let bob_notifier =
+            CapabilityNotifier::new(Arc::new(crate::p2pcd::event_bus::EventBus::new()));
         let bob_engine = Arc::new(ProtocolEngine::new(
             make_peer_config(bob_p2pcd_addr.port()),
             bob_id,
@@ -1916,7 +2139,7 @@ mod tests {
         assert!(
             alice_session
                 .active_set
-                .contains(&"howm.feed.1".to_string()),
+                .contains(&"howm.social.feed.1".to_string()),
             "social feed should be active before rebroadcast"
         );
 
@@ -1968,7 +2191,7 @@ mod tests {
         let alice_id: PeerId = [0xD1u8; 32];
         let bob_id: PeerId = [0xD2u8; 32];
 
-        let notifier = Arc::new(CapabilityNotifier::new());
+        let notifier = CapabilityNotifier::new(Arc::new(crate::p2pcd::event_bus::EventBus::new()));
         let engine = Arc::new(ProtocolEngine::new(
             make_peer_config(0),
             alice_id,
@@ -2006,7 +2229,9 @@ mod tests {
         let alice_id: PeerId = [0xE1u8; 32];
         let bob_id: PeerId = [0xE2u8; 32];
 
-        let notifier = Arc::new(crate::p2pcd::cap_notify::CapabilityNotifier::new());
+        let notifier = crate::p2pcd::cap_notify::CapabilityNotifier::new(Arc::new(
+            crate::p2pcd::event_bus::EventBus::new(),
+        ));
         let engine = Arc::new(ProtocolEngine::new(
             make_peer_config(0),
             alice_id,
@@ -2043,7 +2268,9 @@ mod tests {
         let alice_id: PeerId = [0xF1u8; 32];
         let bob_id: PeerId = [0xF2u8; 32];
 
-        let notifier = Arc::new(crate::p2pcd::cap_notify::CapabilityNotifier::new());
+        let notifier = crate::p2pcd::cap_notify::CapabilityNotifier::new(Arc::new(
+            crate::p2pcd::event_bus::EventBus::new(),
+        ));
         let engine = Arc::new(ProtocolEngine::new(
             make_peer_config(0),
             alice_id,
@@ -2101,9 +2328,10 @@ mod tests {
 
         // Build Alice — use set_lan_hint instead of set_peer_addr to simulate
         // what complete_invite now does (the LAN invite path).
-        let alice_notifier = Arc::new(CapabilityNotifier::new());
+        let alice_notifier =
+            CapabilityNotifier::new(Arc::new(crate::p2pcd::event_bus::EventBus::new()));
         alice_notifier
-            .register_with_url("howm.feed.1".to_string(), alice_notifier_url.clone())
+            .register_with_url("howm.social.feed.1".to_string(), alice_notifier_url.clone())
             .await;
 
         let alice_engine = Arc::new(ProtocolEngine::new(
@@ -2119,9 +2347,10 @@ mod tests {
         alice_engine.set_lan_hint(bob_id, bob_p2pcd_addr).await;
 
         // Build Bob — needs peer_addr for Alice so Bob can also accept/initiate
-        let bob_notifier = Arc::new(CapabilityNotifier::new());
+        let bob_notifier =
+            CapabilityNotifier::new(Arc::new(crate::p2pcd::event_bus::EventBus::new()));
         bob_notifier
-            .register_with_url("howm.feed.1".to_string(), bob_notifier_url.clone())
+            .register_with_url("howm.social.feed.1".to_string(), bob_notifier_url.clone())
             .await;
 
         let bob_engine = Arc::new(ProtocolEngine::new(

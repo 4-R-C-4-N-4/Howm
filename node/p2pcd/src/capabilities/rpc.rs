@@ -33,13 +33,35 @@ pub trait RpcMethodHandler: Send + Sync {
     ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<Vec<u8>>> + Send + '_>>;
 }
 
+/// Trait for forwarding RPC requests to out-of-process capabilities.
+/// Implemented by the daemon to bridge RPC_REQ → HTTP POST → capability.
+pub trait RpcForwarder: Send + Sync {
+    fn forward_rpc(
+        &self,
+        peer_id: p2pcd_types::PeerId,
+        method: &str,
+        payload: &[u8],
+        active_set: &[String],
+    ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<Vec<u8>>> + Send + '_>>;
+}
+
 #[allow(dead_code)]
 pub struct RpcHandler {
     methods: Arc<RwLock<HashMap<String, Box<dyn RpcMethodHandler>>>>,
-    send_tx: RwLock<Option<tokio::sync::mpsc::Sender<ProtocolMessage>>>,
+    /// Per-peer send channels — keyed by peer_id so replies go back through
+    /// the right session.  Populated by the engine on session activation,
+    /// removed on teardown.  The old global `set_sender` was never called,
+    /// so send_tx was always None and every RPC_RESP was silently dropped.
+    peer_senders:
+        Arc<RwLock<HashMap<p2pcd_types::PeerId, tokio::sync::mpsc::Sender<ProtocolMessage>>>>,
     /// Pending RPC waiters: request_id → oneshot sender for the response payload.
     /// Used by the bridge to await RPC responses from peers.
     rpc_waiters: Arc<RwLock<HashMap<u64, tokio::sync::oneshot::Sender<Vec<u8>>>>>,
+    /// Forwards unregistered RPC methods to out-of-process capabilities.
+    /// Set by the engine after creation via `set_forwarder`.
+    cap_forwarder: Arc<RwLock<Option<Arc<dyn RpcForwarder>>>>,
+    /// Per-peer active_set cache so the forwarder knows which capability to target.
+    peer_active_sets: Arc<RwLock<HashMap<p2pcd_types::PeerId, Vec<String>>>>,
 }
 
 impl Default for RpcHandler {
@@ -52,13 +74,44 @@ impl RpcHandler {
     pub fn new() -> Self {
         Self {
             methods: Arc::new(RwLock::new(HashMap::new())),
-            send_tx: RwLock::new(None),
+            peer_senders: Arc::new(RwLock::new(HashMap::new())),
             rpc_waiters: Arc::new(RwLock::new(HashMap::new())),
+            cap_forwarder: Arc::new(RwLock::new(None)),
+            peer_active_sets: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
-    pub async fn set_sender(&self, tx: tokio::sync::mpsc::Sender<ProtocolMessage>) {
-        *self.send_tx.write().await = Some(tx);
+    /// Set the forwarder used to dispatch unknown RPC methods to capabilities.
+    pub async fn set_forwarder(&self, forwarder: Arc<dyn RpcForwarder>) {
+        *self.cap_forwarder.write().await = Some(forwarder);
+    }
+
+    /// Store a peer's active_set so forwarded RPCs can resolve the target capability.
+    pub async fn set_peer_active_set(&self, peer_id: p2pcd_types::PeerId, active_set: Vec<String>) {
+        self.peer_active_sets
+            .write()
+            .await
+            .insert(peer_id, active_set);
+    }
+
+    /// Remove a peer's cached active_set on session teardown.
+    pub async fn remove_peer_active_set(&self, peer_id: &p2pcd_types::PeerId) {
+        self.peer_active_sets.write().await.remove(peer_id);
+    }
+
+    /// Register the send channel for an active peer session.
+    /// Called by the engine when a session reaches Active.
+    pub async fn add_peer_sender(
+        &self,
+        peer_id: p2pcd_types::PeerId,
+        tx: tokio::sync::mpsc::Sender<ProtocolMessage>,
+    ) {
+        self.peer_senders.write().await.insert(peer_id, tx);
+    }
+
+    /// Remove a peer's send channel on session teardown.
+    pub async fn remove_peer_sender(&self, peer_id: &p2pcd_types::PeerId) {
+        self.peer_senders.write().await.remove(peer_id);
     }
 
     pub async fn register_method(&self, name: String, handler: Box<dyn RpcMethodHandler>) {
@@ -107,17 +160,44 @@ impl CapabilityHandler for RpcHandler {
                     let req_payload = cbor_get_bytes(&map, keys::PAYLOAD).unwrap_or_default();
 
                     tracing::debug!(
-                        "rpc: REQ method={} id={} from {}",
+                        "rpc: REQ method={} id={} from {} payload_bytes={}",
                         method,
                         req_id,
-                        hex::encode(&peer_id[..4])
+                        hex::encode(&peer_id[..4]),
+                        req_payload.len(),
                     );
 
                     let methods = self.methods.read().await;
                     let result = if let Some(handler) = methods.get(&method) {
                         handler.handle(&req_payload, &ctx_clone).await
                     } else {
-                        Err(anyhow::anyhow!("unknown method: {}", method))
+                        drop(methods);
+                        // Forward to out-of-process capability via HTTP.
+                        let fwd_guard = self.cap_forwarder.read().await;
+                        if let Some(fwd) = fwd_guard.as_ref() {
+                            let active_set = self
+                                .peer_active_sets
+                                .read()
+                                .await
+                                .get(&peer_id)
+                                .cloned()
+                                .unwrap_or_default();
+                            tracing::debug!(
+                                "rpc: REQ id={} forwarding method '{}' to capability",
+                                req_id,
+                                method,
+                            );
+                            fwd.forward_rpc(peer_id, &method, &payload, &active_set)
+                                .await
+                        } else {
+                            tracing::warn!(
+                                "rpc: REQ id={} unknown method '{}' from {} — no forwarder, sending error RESP",
+                                req_id,
+                                method,
+                                hex::encode(&peer_id[..4]),
+                            );
+                            Err(anyhow::anyhow!("unknown method: {}", method))
+                        }
                     };
 
                     let resp = match result {
@@ -142,21 +222,42 @@ impl CapabilityHandler for RpcHandler {
                     };
 
                     let msg = make_capability_msg(message_types::RPC_RESP, resp);
-                    if let Some(tx) = self.send_tx.read().await.as_ref() {
+                    if let Some(tx) = self.peer_senders.read().await.get(&peer_id) {
                         let _ = tx.send(msg).await;
+                    } else {
+                        tracing::warn!(
+                            "rpc: no sender for peer {} — RPC_RESP dropped (session not registered?)",
+                            hex::encode(&peer_id[..4]),
+                        );
                     }
                 }
                 message_types::RPC_RESP => {
                     let req_id = cbor_get_int(&map, keys::REQUEST_ID).unwrap_or(0);
                     if let Some(err) = cbor_get_text(&map, keys::ERROR) {
-                        tracing::warn!("rpc: RESP id={} error={}", req_id, err);
+                        tracing::warn!(
+                            "rpc: RESP id={} from {} ERROR: {}",
+                            req_id,
+                            hex::encode(&peer_id[..4]),
+                            err,
+                        );
                     } else {
-                        tracing::debug!("rpc: RESP id={} ok", req_id);
+                        tracing::debug!(
+                            "rpc: RESP id={} from {} ok",
+                            req_id,
+                            hex::encode(&peer_id[..4]),
+                        );
                     }
                     // Deliver to bridge waiter if one is registered
-                    if let Some(waiter) = self.rpc_waiters.write().await.remove(&req_id) {
+                    let mut waiters = self.rpc_waiters.write().await;
+                    if let Some(waiter) = waiters.remove(&req_id) {
                         let resp_payload = cbor_get_bytes(&map, keys::PAYLOAD).unwrap_or_default();
                         let _ = waiter.send(resp_payload);
+                    } else {
+                        tracing::warn!(
+                            "rpc: RESP id={} from {} has no waiter (already timed out?)",
+                            req_id,
+                            hex::encode(&peer_id[..4]),
+                        );
                     }
                 }
                 _ => {}

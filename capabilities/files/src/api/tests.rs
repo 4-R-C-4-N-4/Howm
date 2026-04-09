@@ -1,7 +1,6 @@
 use super::rpc::*;
 use super::*;
 use axum::http::StatusCode;
-use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use uuid::Uuid;
@@ -236,15 +235,22 @@ fn test_app() -> (axum::Router, Arc<crate::db::FilesDb>, tempfile::TempDir) {
     let db = Arc::new(db);
     let bridge = p2pcd::bridge_client::BridgeClient::new(19999); // unused port
 
-    let state = AppState {
-        db: db.clone(),
+    // PeerStream with a non-connecting URL — tests don't need live peers.
+    let stream = Arc::new(p2pcd::capability_sdk::PeerStream::connect_with_url(
+        "howm.social.files.1",
+        "http://127.0.0.1:1/p2pcd/bridge/events?capability=howm.social.files.1".to_string(),
+    ));
+    let peer_groups = Arc::new(RwLock::new(std::collections::HashMap::new()));
+
+    let state = AppState::new(
+        (*db).clone(),
         bridge,
-        daemon_port: 19999,
-        local_port: 17003,
-        data_dir: dir.path().to_path_buf(),
-        active_peers: Arc::new(RwLock::new(HashMap::new())),
-        local_peer_id: Arc::new(RwLock::new(None)),
-    };
+        19999,
+        17003,
+        dir.path().to_path_buf(),
+        stream,
+        peer_groups,
+    );
 
     let app = axum::Router::new()
         .route("/health", axum::routing::get(super::health))
@@ -275,14 +281,6 @@ fn test_app() -> (axum::Router, Arc<crate::db::FilesDb>, tempfile::TempDir) {
         .route(
             "/downloads/{blob_id}/data",
             axum::routing::get(super::download_data),
-        )
-        .route(
-            "/p2pcd/peer-active",
-            axum::routing::post(super::peer_active),
-        )
-        .route(
-            "/p2pcd/peer-inactive",
-            axum::routing::post(super::peer_inactive),
         )
         .route(
             "/p2pcd/inbound",
@@ -618,46 +616,9 @@ async fn http_create_offering_json_desc_too_long() {
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
 
-#[tokio::test]
-async fn http_peer_active_and_inactive() {
-    let (app, _, _dir) = test_app();
-
-    // peer-active
-    let req = axum::http::Request::builder()
-        .method("POST")
-        .uri("/p2pcd/peer-active")
-        .header("content-type", "application/json")
-        .body(axum::body::Body::from(
-            serde_json::json!({
-                "peer_id": "dGVzdHBlZXIx",
-                "wg_address": "100.222.1.5",
-                "capability": "howm.social.files.1",
-            })
-            .to_string(),
-        ))
-        .unwrap();
-
-    let resp = app.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-
-    // peer-inactive
-    let req = axum::http::Request::builder()
-        .method("POST")
-        .uri("/p2pcd/peer-inactive")
-        .header("content-type", "application/json")
-        .body(axum::body::Body::from(
-            serde_json::json!({
-                "peer_id": "dGVzdHBlZXIx",
-                "capability": "howm.social.files.1",
-                "reason": "disconnect",
-            })
-            .to_string(),
-        ))
-        .unwrap();
-
-    let resp = app.oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-}
+// Removed: http_peer_active_and_inactive
+// peer-active and peer-inactive HTTP endpoints were removed in Phase 6.
+// Lifecycle events are now delivered via SSE (PeerStream) from the daemon.
 
 #[tokio::test]
 async fn http_inbound_bad_base64() {

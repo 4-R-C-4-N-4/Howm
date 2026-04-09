@@ -7,7 +7,9 @@ use axum::{
 };
 use clap::Parser;
 use include_dir::{include_dir, Dir};
+use p2pcd::capability_sdk::PeerStream;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
@@ -71,14 +73,6 @@ async fn main() -> anyhow::Result<()> {
         config.gossip_port,
     );
 
-    // Restore active peers from daemon on startup
-    {
-        let s = app_state.clone();
-        tokio::spawn(async move {
-            api::init_peers_from_daemon(s).await;
-        });
-    }
-
     // Idle timeout background task — checks every 10s
     {
         let s = app_state.clone();
@@ -104,6 +98,64 @@ async fn main() -> anyhow::Result<()> {
     gossip::start_gossip_sender(app_state.clone());
     gossip::start_gossip_receiver(app_state.clone());
 
+    // PeerStream: subscribe to daemon SSE peer events and update state via hooks.
+    // Hook Type 1 (on_active): upsert peer in presence map as Active.
+    // Hook Type 2 (on_inactive): remove from peer_addresses, set peer Away.
+    // Note: wg_address is not available via the HookFn signature (only peer_id).
+    // peer_addresses will be populated once a live peer-active fires and the gossip
+    // receiver learns the address; until then the gossip sender skips empty entries.
+    // _stream must live at function scope — not inside a nested block — so the
+    // SSE background task stays alive for the full lifetime of axum::serve.
+    let peers_map_active = Arc::clone(&app_state.peers);
+    let peers_map_inactive = Arc::clone(&app_state.peers);
+    let addr_map_inactive = Arc::clone(&app_state.peer_addresses);
+
+    let on_active: p2pcd::capability_sdk::HookFn = Arc::new(move |peer_id: String| {
+            let peers = Arc::clone(&peers_map_active);
+            Box::pin(async move {
+                let now = crate::state::now_secs();
+                let mut peers_guard = peers.write().await;
+                peers_guard
+                    .entry(peer_id.clone())
+                    .and_modify(|p| {
+                        p.activity = crate::state::Activity::Active;
+                        p.updated_at = now;
+                    })
+                    .or_insert_with(|| crate::peers::PeerPresence {
+                        peer_id: peer_id.clone(),
+                        activity: crate::state::Activity::Active,
+                        status: None,
+                        emoji: None,
+                        updated_at: now,
+                        last_broadcast_received: now,
+                    });
+                info!("PeerStream: peer active {}", peer_id);
+            })
+        });
+
+        let on_inactive: p2pcd::capability_sdk::HookFn = Arc::new(move |peer_id: String| {
+            let peers = Arc::clone(&peers_map_inactive);
+            let addrs = Arc::clone(&addr_map_inactive);
+            Box::pin(async move {
+                addrs.write().await.remove(&peer_id);
+                let now = crate::state::now_secs();
+                let mut peers_guard = peers.write().await;
+                if let Some(p) = peers_guard.get_mut(&peer_id) {
+                    p.activity = crate::state::Activity::Away;
+                    p.updated_at = now;
+                }
+                info!("PeerStream: peer inactive {}", peer_id);
+            })
+        });
+
+    // Keep the stream alive for the process lifetime.
+    let _stream = PeerStream::connect_with_hooks(
+        "howm.social.presence.0",
+        config.daemon_port,
+        Some(on_active),
+        Some(on_inactive),
+    );
+
     let app = Router::new()
         // Presence API
         .route("/heartbeat", post(api::heartbeat))
@@ -116,9 +168,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/ui/{*path}", get(serve_ui_asset))
         // Health
         .route("/health", get(api::health))
-        // P2P-CD lifecycle hooks (called by daemon cap_notify)
-        .route("/p2pcd/peer-active", post(api::peer_active))
-        .route("/p2pcd/peer-inactive", post(api::peer_inactive))
+        // P2P-CD inbound messages
         .route("/p2pcd/inbound", post(api::inbound_message))
         .with_state(app_state);
 

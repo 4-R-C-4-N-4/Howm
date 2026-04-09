@@ -17,10 +17,12 @@ fn default_ui_style() -> String {
     "nav".to_string()
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum CapStatus {
     Running,
     Stopped,
+    /// Detected by the HTTP health watchdog after two consecutive /health failures.
+    Crashed,
     Error(String),
 }
 

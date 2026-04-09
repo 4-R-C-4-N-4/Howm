@@ -24,6 +24,10 @@ pub struct Message {
     pub body: String,
     /// "pending", "delivered", or "failed"
     pub delivery_status: String,
+    /// Recipient peer ID (base64). Only set for sent messages so
+    /// sent-only conversations can identify the other party.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recipient_peer_id: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -82,6 +86,18 @@ impl MessageDb {
                 read_at         INTEGER NOT NULL
             );",
         )?;
+
+        // v2: add recipient_peer_id column for sent-only conversation display
+        let version: i64 = conn
+            .query_row("SELECT version FROM schema_version WHERE rowid = 1", [], |r| r.get(0))
+            .unwrap_or(1);
+        if version < 2 {
+            conn.execute_batch(
+                "ALTER TABLE messages ADD COLUMN recipient_peer_id TEXT;
+                 UPDATE schema_version SET version = 2 WHERE rowid = 1;",
+            )?;
+        }
+
         Ok(())
     }
 
@@ -113,8 +129,8 @@ impl MessageDb {
     pub fn insert_message(&self, msg: &Message) -> anyhow::Result<()> {
         let conn = self.conn.lock();
         conn.execute(
-            "INSERT INTO messages (msg_id, conversation_id, direction, sender_peer_id, sent_at, body, delivery_status)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO messages (msg_id, conversation_id, direction, sender_peer_id, sent_at, body, delivery_status, recipient_peer_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 msg.msg_id,
                 msg.conversation_id,
@@ -123,6 +139,7 @@ impl MessageDb {
                 msg.sent_at,
                 msg.body,
                 msg.delivery_status,
+                msg.recipient_peer_id,
             ],
         )?;
         Ok(())
@@ -140,6 +157,7 @@ impl MessageDb {
     }
 
     /// Transition all pending messages to a peer to 'failed'.
+    #[allow(dead_code)]
     pub fn fail_pending_to_peer(&self, conversation_id: &str, reason: &str) -> anyhow::Result<u64> {
         let _ = reason; // stored in delivery_status as "failed"
         let conn = self.conn.lock();
@@ -181,6 +199,7 @@ impl MessageDb {
                     sent_at: row.get(4)?,
                     body: row.get(5)?,
                     delivery_status: row.get(6)?,
+                    recipient_peer_id: None,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -198,7 +217,7 @@ impl MessageDb {
     /// List conversations with last message and unread count.
     pub fn list_conversations(
         &self,
-        local_peer_id: &str,
+        _local_peer_id: &str,
     ) -> anyhow::Result<Vec<ConversationSummary>> {
         let conn = self.conn.lock();
 
@@ -232,30 +251,44 @@ impl MessageDb {
             let unread = self.unread_count_inner(&conn, &conv_id)?;
 
             // Figure out the other peer's ID
-            // For sent messages, sender is us; we need to find a received message for the peer ID
-            // For received messages, sender is the peer
+            // For received messages, sender is the peer.
+            // For sent messages, use recipient_peer_id (v2 schema), fall back to
+            // looking for a received message, and finally return empty as last resort.
             let peer_id = if direction == "received" {
                 sender_peer_id.clone()
             } else {
-                // Find any received message in this conversation to get the peer ID
-                let peer: Option<String> = conn
+                // Try recipient_peer_id on any sent message in this conversation
+                let recipient: Option<String> = conn
                     .query_row(
-                        "SELECT sender_peer_id FROM messages WHERE conversation_id = ?1 AND direction = 'received' LIMIT 1",
+                        "SELECT recipient_peer_id FROM messages
+                         WHERE conversation_id = ?1 AND direction = 'sent'
+                         AND recipient_peer_id IS NOT NULL LIMIT 1",
                         params![conv_id],
                         |row| row.get(0),
                     )
                     .optional()?;
-                peer.unwrap_or_else(|| {
-                    // All messages are sent — we need to derive peer from conversation_id
-                    // This is a fallback; in practice there should be received messages
-                    local_peer_id.to_string()
-                })
+                recipient
+                    .or_else(|| {
+                        // Fallback: find a received message in the conversation
+                        conn.query_row(
+                            "SELECT sender_peer_id FROM messages
+                             WHERE conversation_id = ?1 AND direction = 'received' LIMIT 1",
+                            params![conv_id],
+                            |row| row.get(0),
+                        )
+                        .optional()
+                        .ok()
+                        .flatten()
+                    })
+                    .unwrap_or_default()
             };
 
-            let preview = if body.len() > 128 {
-                format!("{}…", &body[..128])
-            } else {
-                body.clone()
+            let preview = {
+                let truncated = body.char_indices().nth(128).map(|(i, _)| &body[..i]);
+                match truncated {
+                    Some(s) => format!("{}\u{2026}", s),
+                    None => body.clone(),
+                }
             };
 
             summaries.push(ConversationSummary {
@@ -392,6 +425,7 @@ mod tests {
                 sent_at: 1000 + i,
                 body: format!("hello {}", i),
                 delivery_status: "delivered".into(),
+                recipient_peer_id: None,
             })
             .unwrap();
         }
@@ -417,6 +451,7 @@ mod tests {
                 sent_at: 1000 + i,
                 body: format!("msg {}", i),
                 delivery_status: "delivered".into(),
+                recipient_peer_id: None,
             })
             .unwrap();
         }
@@ -457,6 +492,7 @@ mod tests {
                 sent_at: now_ms - 3000 + (i * 1000),
                 body: "hi".into(),
                 delivery_status: "delivered".into(),
+                recipient_peer_id: None,
             })
             .unwrap();
         }
@@ -486,6 +522,7 @@ mod tests {
             sent_at: future_ms,
             body: "new".into(),
             delivery_status: "delivered".into(),
+                recipient_peer_id: None,
         })
         .unwrap();
 
@@ -507,6 +544,7 @@ mod tests {
             sent_at: 1000,
             body: "hello".into(),
             delivery_status: "delivered".into(),
+                recipient_peer_id: None,
         })
         .unwrap();
 
@@ -518,6 +556,7 @@ mod tests {
             sent_at: 1001,
             body: "hi back".into(),
             delivery_status: "delivered".into(),
+                recipient_peer_id: None,
         })
         .unwrap();
 
@@ -544,6 +583,7 @@ mod tests {
             sent_at: 1000,
             body: "test".into(),
             delivery_status: "pending".into(),
+                recipient_peer_id: None,
         })
         .unwrap();
 
@@ -567,6 +607,7 @@ mod tests {
                 sent_at: 1000 + i,
                 body: "test".into(),
                 delivery_status: "pending".into(),
+                recipient_peer_id: None,
             })
             .unwrap();
         }
@@ -609,6 +650,7 @@ mod tests {
             sent_at: 1000,
             body: "hello".into(),
             delivery_status: "pending".into(),
+                recipient_peer_id: None,
         };
         db.insert_message(&msg).unwrap();
         assert!(db.insert_message(&msg).is_err());
@@ -636,6 +678,7 @@ mod tests {
                 sent_at: 1000 + i,
                 body: format!("msg {}", i),
                 delivery_status: "delivered".into(),
+                recipient_peer_id: None,
             })
             .unwrap();
         }
@@ -665,6 +708,7 @@ mod tests {
             sent_at: 1000,
             body: "hello from peer2".into(),
             delivery_status: "delivered".into(),
+                recipient_peer_id: None,
         })
         .unwrap();
         let conv2 = MessageDb::conversation_id(local, "cGVlcjM=");
@@ -676,6 +720,7 @@ mod tests {
             sent_at: 2000,
             body: "hello from peer3".into(),
             delivery_status: "delivered".into(),
+                recipient_peer_id: None,
         })
         .unwrap();
         let convos = db.list_conversations(local).unwrap();
@@ -697,6 +742,7 @@ mod tests {
             sent_at: 1000,
             body: "first".into(),
             delivery_status: "delivered".into(),
+                recipient_peer_id: None,
         })
         .unwrap();
         db.insert_message(&Message {
@@ -707,6 +753,7 @@ mod tests {
             sent_at: 2000,
             body: "second".into(),
             delivery_status: "delivered".into(),
+                recipient_peer_id: None,
         })
         .unwrap();
         let convos = db.list_conversations(local).unwrap();
@@ -730,6 +777,7 @@ mod tests {
             sent_at: 1000,
             body: long_body,
             delivery_status: "delivered".into(),
+                recipient_peer_id: None,
         })
         .unwrap();
         let convos = db.list_conversations(local).unwrap();
@@ -750,6 +798,7 @@ mod tests {
             sent_at: 1000,
             body: "pending".into(),
             delivery_status: "pending".into(),
+                recipient_peer_id: None,
         })
         .unwrap();
         db.insert_message(&Message {
@@ -760,6 +809,7 @@ mod tests {
             sent_at: 1001,
             body: "delivered".into(),
             delivery_status: "delivered".into(),
+                recipient_peer_id: None,
         })
         .unwrap();
         db.insert_message(&Message {
@@ -770,6 +820,7 @@ mod tests {
             sent_at: 1002,
             body: "from peer".into(),
             delivery_status: "delivered".into(),
+                recipient_peer_id: None,
         })
         .unwrap();
         let failed = db.fail_pending_to_peer(&conv, "peer_offline").unwrap();
@@ -810,6 +861,7 @@ mod tests {
             sent_at: 1000,
             body: "test".into(),
             delivery_status: "delivered".into(),
+                recipient_peer_id: None,
         })
         .unwrap();
         let failed = db.fail_pending_to_peer(&conv, "peer_offline").unwrap();

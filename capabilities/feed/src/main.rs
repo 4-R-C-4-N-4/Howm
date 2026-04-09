@@ -69,13 +69,9 @@ async fn main() -> anyhow::Result<()> {
     let state = api::FeedState::new(config.data_dir.clone(), feed_db, config.daemon_port)
         .with_limits(limits);
 
-    // Restore active peers from daemon on startup
-    {
-        let state_clone = state.clone();
-        tokio::spawn(async move {
-            api::init_peers_from_daemon(state_clone).await;
-        });
-    }
+    // Start SSE stream — replaces init_from_daemon.
+    // PeerStream keeps the tracker current automatically via daemon events.
+    state.runtime.start_event_stream();
 
     // Resume any pending blob transfers from a previous run
     {
@@ -103,8 +99,6 @@ async fn main() -> anyhow::Result<()> {
         .route("/health", get(api::health))
         .route("/peers", get(api::list_peers))
         // P2P-CD daemon callbacks
-        .route("/p2pcd/peer-active", post(api::p2pcd_peer_active))
-        .route("/p2pcd/peer-inactive", post(api::p2pcd_peer_inactive))
         .route("/p2pcd/inbound", post(api::p2pcd_inbound))
         .with_state(state)
         .layer(DefaultBodyLimit::max(50 * 1024 * 1024)) // 50 MB for media uploads

@@ -52,13 +52,50 @@ pub async fn get_peers(
         _ => peers.iter().collect(),
     };
 
-    Json(json!({ "peers": visible }))
+    // Overlay live session last_activity onto last_seen so the UI reflects
+    // the true online/offline state driven by heartbeat PONGs, not the stale
+    // invite-time timestamp stored in peers.json.
+    let active_sessions: std::collections::HashMap<String, u64> =
+        if let Some(ref engine) = state.p2pcd_engine {
+            use base64::{engine::general_purpose::STANDARD, Engine as _};
+            engine
+                .active_sessions()
+                .await
+                .into_iter()
+                .filter(|s| s.state == p2pcd::SessionState::Active)
+                .map(|s| (STANDARD.encode(s.peer_id), s.last_activity))
+                .collect()
+        } else {
+            std::collections::HashMap::new()
+        };
+
+    let visible_with_live: Vec<serde_json::Value> = visible
+        .iter()
+        .map(|p| {
+            let mut v = serde_json::to_value(p).unwrap_or_default();
+            let online = active_sessions.contains_key(&p.wg_pubkey);
+            if let Some(obj) = v.as_object_mut() {
+                // If this peer has an active session, override last_seen with the
+                // live last_activity timestamp so the UI correctly shows them online.
+                if let Some(&activity) = active_sessions.get(&p.wg_pubkey) {
+                    obj.insert("last_seen".to_string(), serde_json::json!(activity));
+                }
+                // Explicit boolean — authoritative, no timestamp-threshold guessing needed.
+                obj.insert("online".to_string(), serde_json::json!(online));
+            }
+            v
+        })
+        .collect();
+
+    Json(json!({ "peers": visible_with_live }))
 }
 
 pub async fn remove_peer(
     State(state): State<AppState>,
     Path(node_id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+
     let peer_pubkey: Option<String>;
     {
         let mut peers = state.peers.write().await;
@@ -74,15 +111,47 @@ pub async fn remove_peer(
             .map_err(|e| AppError::Internal(e.to_string()))?;
     }
 
-    // Remove WG peer
-    if let Some(pubkey) = peer_pubkey {
+    let mut groups_removed: usize = 0;
+    let mut session_closed = false;
+
+    if let Some(ref pubkey) = peer_pubkey {
+        // Decode WG pubkey (base64) to raw 32-byte peer ID
+        if let Ok(peer_bytes) = STANDARD.decode(pubkey) {
+            // Remove from all access groups
+            groups_removed = state
+                .access_db
+                .remove_peer_from_all_groups(&peer_bytes)
+                .unwrap_or(0);
+
+            // Tear down active P2P-CD session + clean engine caches
+            if peer_bytes.len() == 32 {
+                let mut peer_id = [0u8; 32];
+                peer_id.copy_from_slice(&peer_bytes);
+
+                if let Some(engine) = &state.p2pcd_engine {
+                    engine.deny_session(&peer_id).await;
+                    session_closed = true;
+                }
+            }
+        }
+
+        // Remove WG peer from interface + config
         let wg_active = *state.wg_active.read().await;
         if wg_active {
-            let _ = wireguard::remove_peer(&state.config.data_dir, &pubkey, &node_id).await;
+            let _ = wireguard::remove_peer(&state.config.data_dir, pubkey, &node_id).await;
         }
     }
 
-    Ok(Json(json!({ "status": "removed" })))
+    info!(
+        "Forgot peer '{}' (groups_removed={}, session_closed={})",
+        node_id, groups_removed, session_closed
+    );
+
+    Ok(Json(json!({
+        "status": "removed",
+        "groups_removed": groups_removed,
+        "session_closed": session_closed,
+    })))
 }
 
 #[derive(Deserialize)]

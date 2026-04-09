@@ -138,7 +138,7 @@ impl Default for DiscoveryConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CapabilityConfig {
-    /// Fully-qualified capability name (e.g. "howm.feed.1").
+    /// Fully-qualified capability name (e.g. "howm.social.feed.1").
     /// Must match the namespace grammar §4.4.
     pub name: String,
     /// Role: "provide" | "consume" | "both"
@@ -326,11 +326,133 @@ impl PeerConfig {
             discovery: DiscoveryConfig::default(),
             capabilities: {
                 let mut m = HashMap::new();
-                // Single social capability — Both/mutual:true, direction handled at app layer
+
+                // ── Core session capabilities ────────────────────────────
+                m.insert(
+                    "heartbeat".to_string(),
+                    CapabilityConfig {
+                        name: "core.session.heartbeat.1".to_string(),
+                        role: RoleConfig::Both,
+                        mutual: true,
+                        scope: None,
+                        classification: None,
+                        params: Some(HeartbeatParams {
+                            interval_ms: 5000,
+                            timeout_ms: 15000,
+                        }),
+                    },
+                );
+                m.insert(
+                    "attest".to_string(),
+                    CapabilityConfig {
+                        name: "core.session.attest.1".to_string(),
+                        role: RoleConfig::Both,
+                        mutual: true,
+                        scope: None,
+                        classification: None,
+                        params: None,
+                    },
+                );
+                m.insert(
+                    "timesync".to_string(),
+                    CapabilityConfig {
+                        name: "core.session.timesync.1".to_string(),
+                        role: RoleConfig::Both,
+                        mutual: true,
+                        scope: None,
+                        classification: None,
+                        params: None,
+                    },
+                );
+                m.insert(
+                    "latency".to_string(),
+                    CapabilityConfig {
+                        name: "core.session.latency.1".to_string(),
+                        role: RoleConfig::Both,
+                        mutual: true,
+                        scope: None,
+                        classification: None,
+                        params: None,
+                    },
+                );
+
+                // ── Core network capabilities ────────────────────────────
+                m.insert(
+                    "endpoint".to_string(),
+                    CapabilityConfig {
+                        name: "core.network.endpoint.1".to_string(),
+                        role: RoleConfig::Both,
+                        mutual: true,
+                        scope: None,
+                        classification: None,
+                        params: None,
+                    },
+                );
+                m.insert(
+                    "peerexchange".to_string(),
+                    CapabilityConfig {
+                        name: "core.network.peerexchange.1".to_string(),
+                        role: RoleConfig::Both,
+                        mutual: true,
+                        scope: None,
+                        classification: None,
+                        params: None,
+                    },
+                );
+
+                // ── Core data capabilities ───────────────────────────────
+                m.insert(
+                    "rpc".to_string(),
+                    CapabilityConfig {
+                        name: "core.data.rpc.1".to_string(),
+                        role: RoleConfig::Both,
+                        mutual: true,
+                        scope: None,
+                        classification: None,
+                        params: None,
+                    },
+                );
+                m.insert(
+                    "blob".to_string(),
+                    CapabilityConfig {
+                        name: "core.data.blob.1".to_string(),
+                        role: RoleConfig::Both,
+                        mutual: true,
+                        scope: None,
+                        classification: None,
+                        params: None,
+                    },
+                );
+                m.insert(
+                    "event".to_string(),
+                    CapabilityConfig {
+                        name: "core.data.event.1".to_string(),
+                        role: RoleConfig::Both,
+                        mutual: true,
+                        scope: None,
+                        classification: None,
+                        params: None,
+                    },
+                );
+                m.insert(
+                    "stream".to_string(),
+                    CapabilityConfig {
+                        name: "core.data.stream.1".to_string(),
+                        role: RoleConfig::Both,
+                        mutual: true,
+                        scope: None,
+                        classification: None,
+                        params: None,
+                    },
+                );
+
+                // ── Howm application capabilities ───────────────────────
+                // Names MUST match the access schema in howm-access
+                // (schema.rs: howm.friends group allowed capabilities).
                 m.insert(
                     "feed".to_string(),
                     CapabilityConfig {
-                        name: "howm.feed.1".to_string(),
+                        name: "howm.social.feed.1".to_string(),
                         role: RoleConfig::Both,
                         mutual: true,
                         scope: Some(ScopeConfig {
@@ -367,19 +489,30 @@ impl PeerConfig {
                     },
                 );
                 m.insert(
-                    "heartbeat".to_string(),
+                    "presence".to_string(),
                     CapabilityConfig {
-                        name: "core.session.heartbeat.1".to_string(),
+                        name: "howm.social.presence.1".to_string(),
                         role: RoleConfig::Both,
                         mutual: true,
                         scope: None,
                         classification: None,
-                        params: Some(HeartbeatParams {
-                            interval_ms: 5000,
-                            timeout_ms: 15000,
-                        }),
+                        params: None,
                     },
                 );
+                m.insert(
+                    "voice".to_string(),
+                    CapabilityConfig {
+                        name: "howm.social.voice.1".to_string(),
+                        role: RoleConfig::Both,
+                        mutual: true,
+                        scope: None,
+                        classification: None,
+                        params: None,
+                    },
+                );
+                // world.generation is a WIP capability on a separate branch.
+                // Not included in the default manifest until it ships.
+
                 m
             },
             friends: FriendsConfig::default(),
@@ -507,7 +640,7 @@ mode = "wireguard"
 poll_interval_ms = 2000
 
 [capabilities.feed]
-name = "howm.feed.1"
+name = "howm.social.feed.1"
 role = "both"
 mutual = true
 
@@ -558,7 +691,12 @@ list = []
         let cfg = PeerConfig::generate_default(&data_dir);
         let peer_id = [0xA1u8; 32];
         let manifest = cfg.to_manifest(peer_id, 1);
-        assert_eq!(manifest.capabilities.len(), 4);
+        // 15 capabilities:
+        //   core.session: heartbeat, attest, timesync, latency
+        //   core.network: endpoint, peerexchange
+        //   core.data:    rpc, blob, event, stream
+        //   howm.social:  feed, messaging, files, presence, voice
+        assert_eq!(manifest.capabilities.len(), 15);
         // Capabilities must be sorted
         let names: Vec<_> = manifest
             .capabilities
@@ -577,14 +715,14 @@ list = []
     fn trust_policies_built_correctly() {
         let cfg: PeerConfig = toml::from_str(SAMPLE_TOML).unwrap();
         let policies = cfg.trust_policies();
-        assert!(policies.contains_key("howm.feed.1"));
+        assert!(policies.contains_key("howm.social.feed.1"));
         // Heartbeat has no classification config → no policy
         assert!(!policies.contains_key("core.session.heartbeat.1"));
     }
 
     #[test]
     fn validate_capability_names() {
-        assert!(validate_capability_name("howm.feed.1"));
+        assert!(validate_capability_name("howm.social.feed.1"));
         assert!(validate_capability_name("core.session.heartbeat.1"));
         assert!(validate_capability_name("org.example.cap.2"));
         assert!(!validate_capability_name("invalid"));

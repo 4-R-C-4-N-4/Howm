@@ -9,6 +9,8 @@ Howm lets you connect your devices — and the devices of people you trust — i
 - **Direct messaging** — send private messages to connected peers
 - **File sharing** — publish a catalogue of files for peers to browse and download
 - **Social feed** — post updates visible to your connected peers
+- **Presence** — share active/away status and a custom status message with your peers
+- **Voice chat** — join encrypted audio rooms with peers, direct over WireGuard
 - **Access control** — assign peers to groups (friends, public, etc.) and control what each group can see
 - **Web dashboard** — manage everything from a built-in browser UI
 
@@ -147,8 +149,10 @@ Howm includes a built-in web UI served at `http://localhost:<port>` (default: `h
 
 - View and manage connected peers
 - Send and receive messages
+- See peer presence and status
 - Browse and download shared files
 - Read and post to the social feed
+- Join and host voice chat rooms
 - Manage access control groups
 - Adjust node settings
 
@@ -193,13 +197,15 @@ Capabilities are optional add-ons that run alongside the Howm daemon and extend 
 
 ### Built-in capabilities
 
-Howm ships with three capabilities that `howm.sh` builds and installs automatically:
+Howm ships with five capabilities that `howm.sh` builds and installs automatically:
 
-| Capability | What it does |
-|------------|-------------|
-| **Messaging** | Private, direct peer-to-peer messages |
-| **Social Feed** | Post updates and see posts from connected peers |
-| **Files** | Publish a catalogue of files; peers can browse and download them |
+| Capability | Port | What it does |
+|------------|------|--------------|
+| **Messaging** | 7002 | Private, direct peer-to-peer messages with delivery receipts |
+| **Social Feed** | 7001 | Post updates and see posts from your connected peers |
+| **Files** | 7003 | Publish a browseable catalogue of files; peers can download them directly over WireGuard |
+| **Presence** | 7004 | Share active/away status and a custom status message; UDP gossip keeps it live |
+| **Voice** | 7005 | Encrypted audio rooms over WireGuard using WebRTC peer-to-peer mesh |
 
 ### Writing your own
 
