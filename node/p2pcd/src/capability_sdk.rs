@@ -1119,29 +1119,60 @@ pub mod app {
 
     /// Serve an embedded file under `/ui/*`, falling back to `index.html`
     /// for client-side routing.
+    ///
+    /// Headers:
+    /// - `content-type` from [`guess_mime`]
+    /// - `cache-control: no-cache, must-revalidate` — capability UIs are
+    ///   recompiled on every `./howm.sh` run, so the browser must always
+    ///   re-fetch rather than risk pinning a stale dev build.
     async fn serve_ui(ui_dir: &'static Dir<'static>, req: Request) -> Response {
         let path = req.uri().path();
-        let rel = path
+        // Tolerant prefix stripping: handle /ui, /ui/, /ui/foo equally.
+        let after = path
             .strip_prefix("/ui/")
-            .unwrap_or("")
-            .trim_start_matches('/');
+            .or_else(|| path.strip_prefix("/ui"))
+            .unwrap_or("");
+        let rel = after.trim_start_matches('/');
         let rel = if rel.is_empty() { "index.html" } else { rel };
 
         if let Some(file) = ui_dir.get_file(rel) {
             let mime = guess_mime(rel);
-            return ([(header::CONTENT_TYPE, mime)], file.contents()).into_response();
+            tracing::debug!(
+                "serve_ui: {} → {} ({} bytes, {})",
+                path,
+                rel,
+                file.contents().len(),
+                mime,
+            );
+            return (
+                [
+                    (header::CONTENT_TYPE, mime),
+                    (header::CACHE_CONTROL, "no-cache, must-revalidate"),
+                ],
+                file.contents(),
+            )
+                .into_response();
         }
 
         // SPA fallback — any unmatched /ui/* request returns index.html so
         // client-side routers can handle the path.
         if let Some(index) = ui_dir.get_file("index.html") {
+            tracing::debug!(
+                "serve_ui: {} → SPA fallback index.html ({} bytes)",
+                path,
+                index.contents().len(),
+            );
             return (
-                [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+                [
+                    (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+                    (header::CACHE_CONTROL, "no-cache, must-revalidate"),
+                ],
                 index.contents(),
             )
                 .into_response();
         }
 
+        tracing::warn!("serve_ui: {} → 404 (no index.html in UI dir)", path);
         (StatusCode::NOT_FOUND, "ui not embedded").into_response()
     }
 
