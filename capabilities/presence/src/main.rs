@@ -1,24 +1,18 @@
-use axum::{
-    extract::Path as AxumPath,
-    http::StatusCode,
-    response::{Html, IntoResponse, Response},
-    routing::{get, post},
-    Router,
-};
+use axum::routing::{get, post};
 use clap::Parser;
 use include_dir::{include_dir, Dir};
-use p2pcd::capability_sdk::PeerStream;
-use std::net::SocketAddr;
 use std::sync::Arc;
+
+use p2pcd::bridge_client::BridgeClient;
+use p2pcd::capability_sdk::{init_tracing, CapabilityApp, HookFn, PeerStream};
 use tracing::info;
-use tracing_subscriber::EnvFilter;
 
 mod api;
 mod gossip;
 mod peers;
 mod state;
 
-static UI_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/ui");
+static UI_DIR: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/ui");
 
 #[derive(Parser, Debug)]
 #[command(name = "presence", about = "Howm peer presence capability")]
@@ -56,14 +50,12 @@ struct Config {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env().add_directive("info".parse()?))
-        .init();
+    init_tracing();
 
     let config = Config::parse();
     std::fs::create_dir_all(&config.data_dir)?;
 
-    let bridge = p2pcd::bridge_client::BridgeClient::new(config.daemon_port);
+    let bridge = BridgeClient::new(config.daemon_port);
 
     let app_state = state::AppState::new(
         bridge,
@@ -73,11 +65,71 @@ async fn main() -> anyhow::Result<()> {
         config.gossip_port,
     );
 
-    // Idle timeout background task — checks every 10s
-    {
+    // ── Type-2 PeerStream: hooks update presence map on session lifecycle ──
+    let on_active: HookFn = {
+        let peers_map = Arc::clone(&app_state.peers);
+        Arc::new(move |peer_id: String| {
+            let peers = Arc::clone(&peers_map);
+            Box::pin(async move {
+                let now = state::now_secs();
+                let mut peers_guard = peers.write().await;
+                peers_guard
+                    .entry(peer_id.clone())
+                    .and_modify(|p| {
+                        p.activity = state::Activity::Active;
+                        p.updated_at = now;
+                    })
+                    .or_insert_with(|| peers::PeerPresence {
+                        peer_id: peer_id.clone(),
+                        activity: state::Activity::Active,
+                        status: None,
+                        emoji: None,
+                        updated_at: now,
+                        last_broadcast_received: now,
+                    });
+                info!("PeerStream: peer active {}", peer_id);
+            })
+        })
+    };
+
+    let on_inactive: HookFn = {
+        let peers_map = Arc::clone(&app_state.peers);
+        let addr_map = Arc::clone(&app_state.peer_addresses);
+        Arc::new(move |peer_id: String| {
+            let peers = Arc::clone(&peers_map);
+            let addrs = Arc::clone(&addr_map);
+            Box::pin(async move {
+                addrs.write().await.remove(&peer_id);
+                let now = state::now_secs();
+                let mut peers_guard = peers.write().await;
+                if let Some(p) = peers_guard.get_mut(&peer_id) {
+                    p.activity = state::Activity::Away;
+                    p.updated_at = now;
+                }
+                info!("PeerStream: peer inactive {}", peer_id);
+            })
+        })
+    };
+
+    // PeerStream's SSE loop is detached internally, so the returned handle
+    // does not need to live past this scope.
+    let _stream = PeerStream::connect_with_hooks(
+        "howm.social.presence.0",
+        config.daemon_port,
+        Some(on_active),
+        Some(on_inactive),
+    );
+
+    // Gossip sender + receiver each spawn their own background tasks internally.
+    gossip::start_gossip_sender(app_state.clone());
+    gossip::start_gossip_receiver(app_state.clone());
+
+    // Idle-timeout watcher — flips Active to Away after `idle_timeout` seconds
+    // without a /heartbeat ping.
+    let idle_fut = {
         let s = app_state.clone();
         let idle_timeout = config.idle_timeout;
-        tokio::spawn(async move {
+        async move {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(10)).await;
                 let now = state::now_secs();
@@ -91,121 +143,20 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
             }
-        });
-    }
-
-    // Start gossip sender and receiver
-    gossip::start_gossip_sender(app_state.clone());
-    gossip::start_gossip_receiver(app_state.clone());
-
-    // PeerStream: subscribe to daemon SSE peer events and update state via hooks.
-    // Hook Type 1 (on_active): upsert peer in presence map as Active.
-    // Hook Type 2 (on_inactive): remove from peer_addresses, set peer Away.
-    // Note: wg_address is not available via the HookFn signature (only peer_id).
-    // peer_addresses will be populated once a live peer-active fires and the gossip
-    // receiver learns the address; until then the gossip sender skips empty entries.
-    // _stream must live at function scope — not inside a nested block — so the
-    // SSE background task stays alive for the full lifetime of axum::serve.
-    let peers_map_active = Arc::clone(&app_state.peers);
-    let peers_map_inactive = Arc::clone(&app_state.peers);
-    let addr_map_inactive = Arc::clone(&app_state.peer_addresses);
-
-    let on_active: p2pcd::capability_sdk::HookFn = Arc::new(move |peer_id: String| {
-            let peers = Arc::clone(&peers_map_active);
-            Box::pin(async move {
-                let now = crate::state::now_secs();
-                let mut peers_guard = peers.write().await;
-                peers_guard
-                    .entry(peer_id.clone())
-                    .and_modify(|p| {
-                        p.activity = crate::state::Activity::Active;
-                        p.updated_at = now;
-                    })
-                    .or_insert_with(|| crate::peers::PeerPresence {
-                        peer_id: peer_id.clone(),
-                        activity: crate::state::Activity::Active,
-                        status: None,
-                        emoji: None,
-                        updated_at: now,
-                        last_broadcast_received: now,
-                    });
-                info!("PeerStream: peer active {}", peer_id);
-            })
-        });
-
-        let on_inactive: p2pcd::capability_sdk::HookFn = Arc::new(move |peer_id: String| {
-            let peers = Arc::clone(&peers_map_inactive);
-            let addrs = Arc::clone(&addr_map_inactive);
-            Box::pin(async move {
-                addrs.write().await.remove(&peer_id);
-                let now = crate::state::now_secs();
-                let mut peers_guard = peers.write().await;
-                if let Some(p) = peers_guard.get_mut(&peer_id) {
-                    p.activity = crate::state::Activity::Away;
-                    p.updated_at = now;
-                }
-                info!("PeerStream: peer inactive {}", peer_id);
-            })
-        });
-
-    // Keep the stream alive for the process lifetime.
-    let _stream = PeerStream::connect_with_hooks(
-        "howm.social.presence.0",
-        config.daemon_port,
-        Some(on_active),
-        Some(on_inactive),
-    );
-
-    let app = Router::new()
-        // Presence API
-        .route("/heartbeat", post(api::heartbeat))
-        .route("/status", get(api::get_status).put(api::set_status))
-        .route("/peers", get(api::list_peers))
-        .route("/peers/{peer_id}", get(api::get_peer))
-        // Embedded UI
-        .route("/ui", get(serve_ui_index))
-        .route("/ui/", get(serve_ui_index))
-        .route("/ui/{*path}", get(serve_ui_asset))
-        // Health
-        .route("/health", get(api::health))
-        // P2P-CD inbound messages
-        .route("/p2pcd/inbound", post(api::inbound_message))
-        .with_state(app_state);
-
-    let addr = SocketAddr::from(([127, 0, 0, 1], config.port));
-    info!("Presence capability listening on {}", addr);
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
-    Ok(())
-}
-
-async fn serve_ui_index() -> impl IntoResponse {
-    match UI_DIR.get_file("index.html") {
-        Some(f) => Html(f.contents_utf8().unwrap_or("")).into_response(),
-        None => StatusCode::NOT_FOUND.into_response(),
-    }
-}
-
-async fn serve_ui_asset(AxumPath(path): AxumPath<String>) -> impl IntoResponse {
-    let rel = path.strip_prefix("/ui").unwrap_or(&path);
-    let rel = rel.strip_prefix('/').unwrap_or(rel);
-    if rel.is_empty() {
-        return serve_ui_index().await.into_response();
-    }
-    match UI_DIR.get_file(rel) {
-        Some(f) => {
-            let mime = if rel.ends_with(".js") {
-                "application/javascript"
-            } else if rel.ends_with(".css") {
-                "text/css"
-            } else {
-                "application/octet-stream"
-            };
-            Response::builder()
-                .header("content-type", mime)
-                .body(axum::body::Body::from(f.contents().to_vec()))
-                .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
         }
-        None => StatusCode::NOT_FOUND.into_response(),
-    }
+    };
+
+    CapabilityApp::new("howm.social.presence.0", config.port, app_state)
+        .with_ui(&UI_DIR)
+        .with_inbound_handler(api::inbound_message)
+        .with_routes(|router| {
+            router
+                .route("/heartbeat", post(api::heartbeat))
+                .route("/status", get(api::get_status).put(api::set_status))
+                .route("/peers", get(api::list_peers))
+                .route("/peers/{peer_id}", get(api::get_peer))
+        })
+        .spawn_task(idle_fut)
+        .run()
+        .await
 }

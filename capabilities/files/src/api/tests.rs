@@ -253,7 +253,6 @@ fn test_app() -> (axum::Router, Arc<crate::db::FilesDb>, tempfile::TempDir) {
     );
 
     let app = axum::Router::new()
-        .route("/health", axum::routing::get(super::health))
         .route(
             "/offerings",
             axum::routing::get(super::list_offerings).post(super::create_offering),

@@ -128,12 +128,6 @@ fn base64_to_hex(b64: &str) -> Option<String> {
     Some(hex::encode(bytes))
 }
 
-// ── Health ───────────────────────────────────────────────────────────────────
-
-pub async fn health() -> impl IntoResponse {
-    (StatusCode::OK, Json(serde_json::json!({ "status": "ok" })))
-}
-
 // ── Active peers list (for UI) ───────────────────────────────────────────────
 
 /// GET /peers — return active peers for the UI.

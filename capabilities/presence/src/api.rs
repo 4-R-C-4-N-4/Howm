@@ -12,10 +12,6 @@ use p2pcd::capability_sdk::InboundMessage;
 
 // ── Handlers ─────────────────────────────────────────────────────────────────
 
-pub async fn health() -> impl IntoResponse {
-    Json(serde_json::json!({ "status": "ok" }))
-}
-
 /// POST /heartbeat — UI signals that the user is active.
 pub async fn heartbeat(State(state): State<AppState>) -> impl IntoResponse {
     let now = now_secs();
@@ -152,6 +148,9 @@ pub async fn get_peer(
 }
 
 /// POST /p2pcd/inbound — presence doesn't use inbound messages.
-pub async fn inbound_message(Json(_payload): Json<InboundMessage>) -> impl IntoResponse {
+pub async fn inbound_message(
+    State(_state): State<AppState>,
+    Json(_payload): Json<InboundMessage>,
+) -> impl IntoResponse {
     StatusCode::OK
 }

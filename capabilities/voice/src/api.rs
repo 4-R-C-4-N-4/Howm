@@ -379,8 +379,3 @@ pub async fn quick_call(
 
     (StatusCode::CREATED, Json(json!(room))).into_response()
 }
-
-/// GET /health — health check.
-pub async fn health() -> impl IntoResponse {
-    Json(json!({"status": "ok", "capability": "social.voice"}))
-}
