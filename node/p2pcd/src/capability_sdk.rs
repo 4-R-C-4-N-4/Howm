@@ -916,7 +916,7 @@ pub mod app {
     use std::pin::Pin;
     use std::sync::Arc;
 
-    use axum::extract::{Request, State};
+    use axum::extract::{DefaultBodyLimit, Request, State};
     use axum::http::{header, StatusCode};
     use axum::response::{IntoResponse, Response};
     use axum::routing::{get, post};
@@ -1082,8 +1082,14 @@ pub mod app {
                 router = route_builder(router);
             }
 
-            // Apply body limit as a layer, then attach state.
+            // Apply body limit. Two layers required: axum has its own
+            // `DefaultBodyLimit` (2 MiB cap) that runs before tower-http's
+            // limiter, so any cap that needs > 2 MiB (multipart uploads,
+            // large blobs) gets a 400/413 from axum's middleware first
+            // unless we disable it explicitly. The hard cap then comes
+            // from `RequestBodyLimitLayer`.
             let app = router
+                .layer(DefaultBodyLimit::disable())
                 .layer(RequestBodyLimitLayer::new(body_limit))
                 .with_state(state);
 
