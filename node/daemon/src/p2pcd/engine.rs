@@ -346,6 +346,14 @@ impl ProtocolEngine {
                 rpc.remove_peer_active_set(&peer_id).await;
             }
         }
+        if let Some(handler) = self.cap_router.handler_by_name("core.data.blob.1") {
+            if let Some(blob) = handler
+                .as_any()
+                .downcast_ref::<p2pcd::capabilities::blob::BlobHandler>()
+            {
+                blob.remove_peer_sender(&peer_id).await;
+            }
+        }
         if let Some(handle) = self.mux_handles.lock().await.remove(&peer_id) {
             handle.abort();
         }
@@ -535,6 +543,14 @@ impl ProtocolEngine {
                 rpc.remove_peer_active_set(&peer_id).await;
             }
         }
+        if let Some(handler) = self.cap_router.handler_by_name("core.data.blob.1") {
+            if let Some(blob) = handler
+                .as_any()
+                .downcast_ref::<p2pcd::capabilities::blob::BlobHandler>()
+            {
+                blob.remove_peer_sender(&peer_id).await;
+            }
+        }
         if let Some(handle) = self.mux_handles.lock().await.remove(&peer_id) {
             handle.abort();
         }
@@ -696,6 +712,7 @@ impl ProtocolEngine {
             // Clone send_tx for RPC handler registration before heartbeat can move it.
             // Done here (before the heartbeat block) to avoid borrow-after-move.
             let rpc_send_tx = session_mux.send_tx.clone();
+            let blob_send_tx = session_mux.send_tx.clone();
 
             // Store the shared sender so the bridge can send cap messages to this peer
             self.peer_senders
@@ -737,12 +754,24 @@ impl ProtocolEngine {
                 {
                     rpc.add_peer_sender(peer_id, rpc_send_tx).await;
                     rpc.set_peer_active_set(peer_id, s.active_set.clone()).await;
-                    // Wire the forwarder once (idempotent — subsequent calls are no-ops
-                    // since the Arc<CapabilityNotifier> is the same).
                     rpc.set_forwarder(Arc::clone(&self.notifier)
                         as Arc<dyn p2pcd::capabilities::rpc::RpcForwarder>)
                         .await;
                     tracing::debug!("engine: registered RPC sender for {}", short(peer_id));
+                }
+            }
+
+            // Wire blob handler's per-peer sender so BLOB_OFFER/BLOB_CHUNK
+            // messages can reach the peer. Without this, the blob handler's
+            // send_msg silently drops every outbound message (same bug class
+            // as the RPC handler had before add_peer_sender was introduced).
+            if let Some(handler) = self.cap_router.handler_by_name("core.data.blob.1") {
+                if let Some(blob) = handler
+                    .as_any()
+                    .downcast_ref::<p2pcd::capabilities::blob::BlobHandler>()
+                {
+                    blob.add_peer_sender(peer_id, blob_send_tx).await;
+                    tracing::debug!("engine: registered blob sender for {}", short(peer_id));
                 }
             }
 
