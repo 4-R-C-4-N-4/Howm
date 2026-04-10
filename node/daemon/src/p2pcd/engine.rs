@@ -354,6 +354,36 @@ impl ProtocolEngine {
                 blob.remove_peer_sender(&peer_id).await;
             }
         }
+        if let Some(handler) = self.cap_router.handler_by_name("core.data.stream.1") {
+            if let Some(h) = handler.as_any().downcast_ref::<p2pcd::capabilities::stream::StreamHandler>() {
+                h.remove_peer_sender(&peer_id).await;
+            }
+        }
+        if let Some(handler) = self.cap_router.handler_by_name("core.session.latency.1") {
+            if let Some(h) = handler.as_any().downcast_ref::<p2pcd::capabilities::latency::LatencyHandler>() {
+                h.remove_peer_sender(&peer_id).await;
+            }
+        }
+        if let Some(handler) = self.cap_router.handler_by_name("core.session.timesync.1") {
+            if let Some(h) = handler.as_any().downcast_ref::<p2pcd::capabilities::timesync::TimesyncHandler>() {
+                h.remove_peer_sender(&peer_id).await;
+            }
+        }
+        if let Some(handler) = self.cap_router.handler_by_name("core.session.attest.1") {
+            if let Some(h) = handler.as_any().downcast_ref::<p2pcd::capabilities::attest::AttestHandler>() {
+                h.remove_peer_sender(&peer_id).await;
+            }
+        }
+        if let Some(handler) = self.cap_router.handler_by_name("core.network.peerexchange.1") {
+            if let Some(h) = handler.as_any().downcast_ref::<p2pcd::capabilities::peerexchange::PeerExchangeHandler>() {
+                h.remove_peer_sender(&peer_id).await;
+            }
+        }
+        if let Some(handler) = self.cap_router.handler_by_name("core.network.endpoint.1") {
+            if let Some(h) = handler.as_any().downcast_ref::<p2pcd::capabilities::endpoint::EndpointHandler>() {
+                h.remove_peer_sender(&peer_id).await;
+            }
+        }
         if let Some(handle) = self.mux_handles.lock().await.remove(&peer_id) {
             handle.abort();
         }
@@ -551,6 +581,36 @@ impl ProtocolEngine {
                 blob.remove_peer_sender(&peer_id).await;
             }
         }
+        if let Some(handler) = self.cap_router.handler_by_name("core.data.stream.1") {
+            if let Some(h) = handler.as_any().downcast_ref::<p2pcd::capabilities::stream::StreamHandler>() {
+                h.remove_peer_sender(&peer_id).await;
+            }
+        }
+        if let Some(handler) = self.cap_router.handler_by_name("core.session.latency.1") {
+            if let Some(h) = handler.as_any().downcast_ref::<p2pcd::capabilities::latency::LatencyHandler>() {
+                h.remove_peer_sender(&peer_id).await;
+            }
+        }
+        if let Some(handler) = self.cap_router.handler_by_name("core.session.timesync.1") {
+            if let Some(h) = handler.as_any().downcast_ref::<p2pcd::capabilities::timesync::TimesyncHandler>() {
+                h.remove_peer_sender(&peer_id).await;
+            }
+        }
+        if let Some(handler) = self.cap_router.handler_by_name("core.session.attest.1") {
+            if let Some(h) = handler.as_any().downcast_ref::<p2pcd::capabilities::attest::AttestHandler>() {
+                h.remove_peer_sender(&peer_id).await;
+            }
+        }
+        if let Some(handler) = self.cap_router.handler_by_name("core.network.peerexchange.1") {
+            if let Some(h) = handler.as_any().downcast_ref::<p2pcd::capabilities::peerexchange::PeerExchangeHandler>() {
+                h.remove_peer_sender(&peer_id).await;
+            }
+        }
+        if let Some(handler) = self.cap_router.handler_by_name("core.network.endpoint.1") {
+            if let Some(h) = handler.as_any().downcast_ref::<p2pcd::capabilities::endpoint::EndpointHandler>() {
+                h.remove_peer_sender(&peer_id).await;
+            }
+        }
         if let Some(handle) = self.mux_handles.lock().await.remove(&peer_id) {
             handle.abort();
         }
@@ -713,6 +773,12 @@ impl ProtocolEngine {
             // Done here (before the heartbeat block) to avoid borrow-after-move.
             let rpc_send_tx = session_mux.send_tx.clone();
             let blob_send_tx = session_mux.send_tx.clone();
+            let stream_send_tx = session_mux.send_tx.clone();
+            let latency_send_tx = session_mux.send_tx.clone();
+            let timesync_send_tx = session_mux.send_tx.clone();
+            let attest_send_tx = session_mux.send_tx.clone();
+            let pex_send_tx = session_mux.send_tx.clone();
+            let endpoint_send_tx = session_mux.send_tx.clone();
 
             // Store the shared sender so the bridge can send cap messages to this peer
             self.peer_senders
@@ -772,6 +838,38 @@ impl ProtocolEngine {
                 {
                     blob.add_peer_sender(peer_id, blob_send_tx).await;
                     tracing::debug!("engine: registered blob sender for {}", short(peer_id));
+                }
+            }
+
+            // Wire remaining capability handlers' per-peer senders
+            if let Some(handler) = self.cap_router.handler_by_name("core.data.stream.1") {
+                if let Some(h) = handler.as_any().downcast_ref::<p2pcd::capabilities::stream::StreamHandler>() {
+                    h.add_peer_sender(peer_id, stream_send_tx).await;
+                }
+            }
+            if let Some(handler) = self.cap_router.handler_by_name("core.session.latency.1") {
+                if let Some(h) = handler.as_any().downcast_ref::<p2pcd::capabilities::latency::LatencyHandler>() {
+                    h.add_peer_sender(peer_id, latency_send_tx).await;
+                }
+            }
+            if let Some(handler) = self.cap_router.handler_by_name("core.session.timesync.1") {
+                if let Some(h) = handler.as_any().downcast_ref::<p2pcd::capabilities::timesync::TimesyncHandler>() {
+                    h.add_peer_sender(peer_id, timesync_send_tx).await;
+                }
+            }
+            if let Some(handler) = self.cap_router.handler_by_name("core.session.attest.1") {
+                if let Some(h) = handler.as_any().downcast_ref::<p2pcd::capabilities::attest::AttestHandler>() {
+                    h.add_peer_sender(peer_id, attest_send_tx).await;
+                }
+            }
+            if let Some(handler) = self.cap_router.handler_by_name("core.network.peerexchange.1") {
+                if let Some(h) = handler.as_any().downcast_ref::<p2pcd::capabilities::peerexchange::PeerExchangeHandler>() {
+                    h.add_peer_sender(peer_id, pex_send_tx).await;
+                }
+            }
+            if let Some(handler) = self.cap_router.handler_by_name("core.network.endpoint.1") {
+                if let Some(h) = handler.as_any().downcast_ref::<p2pcd::capabilities::endpoint::EndpointHandler>() {
+                    h.add_peer_sender(peer_id, endpoint_send_tx).await;
                 }
             }
 

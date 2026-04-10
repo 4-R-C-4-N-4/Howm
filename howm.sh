@@ -148,8 +148,17 @@ else
 fi
 
 # ── Start daemon ────────────────────────────────────────────────────────────
+
+# Always pass --data-dir explicitly. The daemon's default uses dirs::data_local_dir()
+# which can resolve differently under sudo (e.g. /root/.local/share/howm vs
+# /home/user/.local/share/howm), causing blobs stored in one session to be
+# invisible in the next. Pinning it here avoids the ambiguity.
+if [[ -z "$DATA_DIR" ]]; then
+    DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/howm"
+fi
+
 DAEMON_ARGS=(--port "$PORT")
-[[ -n "$DATA_DIR" ]]      && DAEMON_ARGS+=(--data-dir "$DATA_DIR")
+DAEMON_ARGS+=(--data-dir "$DATA_DIR")
 [[ -n "$NODE_NAME" ]]     && DAEMON_ARGS+=(--name "$NODE_NAME")
 [[ -n "$DEV_FLAG" ]]      && DAEMON_ARGS+=("$DEV_FLAG")
 [[ -n "$DEBUG_FLAG" ]]    && DAEMON_ARGS+=("$DEBUG_FLAG")
