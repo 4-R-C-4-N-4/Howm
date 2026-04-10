@@ -4,7 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::types::{GROUP_DEFAULT, GROUP_FRIENDS, GROUP_TRUSTED};
 
 /// Current schema version. Bump this when adding migrations.
-const CURRENT_SCHEMA_VERSION: i64 = 3;
+const CURRENT_SCHEMA_VERSION: i64 = 4;
 
 /// Create all tables and indexes. Idempotent (IF NOT EXISTS).
 pub fn create_tables(conn: &Connection) -> rusqlite::Result<()> {
@@ -122,6 +122,34 @@ fn run_migrations(conn: &Connection) -> rusqlite::Result<()> {
         }
     }
 
+    if version < 4 {
+        // v4: add presence and voice capabilities to the friends group.
+        // These were declared in p2pcd-peer.toml defaults but missing from
+        // the access schema, so the trust gate filtered them out during
+        // capability exchange — presence never saw peers and voice couldn't
+        // detect online status.
+        let friends_exists: bool = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM groups WHERE group_id = ?1)",
+                rusqlite::params![GROUP_FRIENDS.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap_or(false);
+        if friends_exists {
+            let new_caps = &[
+                "howm.social.presence.1",
+                "howm.social.voice.1",
+            ];
+            for cap in new_caps {
+                tx.execute(
+                    "INSERT OR IGNORE INTO capability_rules (group_id, capability_name, allow)
+                     VALUES (?1, ?2, 1)",
+                    rusqlite::params![GROUP_FRIENDS.to_string(), cap],
+                )?;
+            }
+        }
+    }
+
     // Bump the stored version to current.
     tx.execute(
         "UPDATE schema_version SET version = ?1 WHERE rowid = 1",
@@ -173,6 +201,8 @@ pub fn seed_built_in_groups(conn: &Connection) -> rusqlite::Result<()> {
         "howm.social.feed.1",
         "howm.social.messaging.1",
         "howm.social.files.1",
+        "howm.social.presence.1",
+        "howm.social.voice.1",
         "core.network.peerexchange.1",
         "core.data.rpc.1",
         "core.data.blob.1",
