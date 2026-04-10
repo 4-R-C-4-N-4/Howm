@@ -157,6 +157,13 @@ function escHtml(s) {
   return d.innerHTML;
 }
 
+/// Escape a string for safe injection into a double-quoted HTML attribute.
+/// Unlike escHtml (which only escapes <, >, &), this also escapes " and '.
+function escAttr(s) {
+  return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+          .replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
 function shortId(id) {
   return id.length > 12 ? id.substring(0, 8) + '…' : id;
 }
@@ -488,8 +495,8 @@ function renderCatalogue() {
         (o.description ? '<div class="cat-desc">' + escHtml(o.description) + '</div>' : '') +
         '<span class="cat-size">' + humanSize(o.size || 0) + '</span>' +
       '</div>' +
-      '<button class="dl-btn" data-peer="' + escHtml(selectedPeerId) +
-      '" data-offering="' + escHtml(JSON.stringify(o)) + '">Download</button>' +
+      '<button class="dl-btn" data-peer="' + escAttr(selectedPeerId) +
+      '" data-offering="' + escAttr(JSON.stringify(o)) + '">Download</button>' +
     '</div>';
   }).join('');
   // Wire up the Download buttons via addEventListener — inline onclick can't
