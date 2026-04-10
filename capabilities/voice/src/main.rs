@@ -44,6 +44,7 @@ pub struct AppState {
     pub signal_hub: SignalHub,
     pub bridge: BridgeClient,
     pub notifier: VoiceNotifier,
+    pub tracker: PeerTracker,
     #[allow(dead_code)]
     pub daemon_port: u16,
 }
@@ -66,22 +67,22 @@ async fn main() -> anyhow::Result<()> {
     let bridge = BridgeClient::new(config.daemon_port);
     let notifier = VoiceNotifier::new(reqwest::Client::new(), &config.daemon_url);
 
+    // Build the tracker BEFORE constructing state so we can share it with
+    // PeerStream and the on_inactive hook while also exposing it in AppState
+    // for the /peers endpoint.
+    let tracker = PeerTracker::new("howm.social.voice.1");
+    let hook_tracker = tracker.clone();
+
     let state = AppState {
         rooms: RoomStore::new(voice_config),
         signal_hub: SignalHub::new(),
         bridge,
         notifier,
+        tracker: tracker.clone(),
         daemon_port: config.daemon_port,
     };
 
     // ── Type-3 PeerStream: pre-built tracker shared with on_inactive guard ──
-    //
-    // Voice's on_inactive hook needs to call tracker.find_peer() as a
-    // generation guard against destructive teardown on session flaps. To make
-    // that work, we build the tracker first and pass it both to PeerStream
-    // (via drive_existing) and to the hook closure.
-    let tracker = PeerTracker::new("howm.social.voice.1");
-    let hook_tracker = tracker.clone();
 
     let on_inactive: HookFn = {
         let state_for_hook = state.clone();
@@ -169,6 +170,7 @@ async fn main() -> anyhow::Result<()> {
                 .route("/rooms/{room_id}/invite", post(api::invite_peers))
                 .route("/rooms/{room_id}/mute", post(api::mute))
                 .route("/quick-call", post(api::quick_call))
+                .route("/peers", get(api::list_peers))
                 .route("/rooms/{room_id}/signal", get(signal::signal_ws))
         })
         .spawn_task(cleanup_fut)

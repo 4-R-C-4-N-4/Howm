@@ -379,3 +379,23 @@ pub async fn quick_call(
 
     (StatusCode::CREATED, Json(json!(room))).into_response()
 }
+
+/// GET /peers — list peers active for the voice capability.
+///
+/// Uses the PeerStream tracker (same pattern as files/messaging) instead of
+/// querying the presence capability, which is a separate service that may not
+/// be running and whose peer list is scoped to its own capability name.
+pub async fn list_peers(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let peers = state.tracker.peers().await;
+    let list: Vec<serde_json::Value> = peers
+        .iter()
+        .map(|p| {
+            json!({
+                "peer_id": p.peer_id,
+                "wg_address": p.wg_address,
+                "active_since": p.active_since,
+            })
+        })
+        .collect();
+    Json(json!({ "peers": list }))
+}

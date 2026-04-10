@@ -48,7 +48,11 @@ impl AttestHandler {
         }
     }
 
-    pub async fn add_peer_sender(&self, peer_id: PeerId, tx: tokio::sync::mpsc::Sender<ProtocolMessage>) {
+    pub async fn add_peer_sender(
+        &self,
+        peer_id: PeerId,
+        tx: tokio::sync::mpsc::Sender<ProtocolMessage>,
+    ) {
         self.peer_senders.write().await.insert(peer_id, tx);
     }
 
@@ -103,7 +107,10 @@ impl CapabilityHandler for AttestHandler {
             if let Some(tx) = self.peer_senders.read().await.get(&peer_id) {
                 let _ = tx.send(msg).await;
             } else {
-                tracing::warn!("attest: no sender for peer {} — message dropped", hex::encode(&peer_id[..4]));
+                tracing::warn!(
+                    "attest: no sender for peer {} — message dropped",
+                    hex::encode(&peer_id[..4])
+                );
             }
             Ok(())
         })

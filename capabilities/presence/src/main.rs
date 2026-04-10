@@ -114,7 +114,7 @@ async fn main() -> anyhow::Result<()> {
     // PeerStream's SSE loop is detached internally, so the returned handle
     // does not need to live past this scope.
     let _stream = PeerStream::connect_with_hooks(
-        "howm.social.presence.0",
+        "howm.social.presence.1",
         config.daemon_port,
         Some(on_active),
         Some(on_inactive),
@@ -146,7 +146,7 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    CapabilityApp::new("howm.social.presence.0", config.port, app_state)
+    CapabilityApp::new("howm.social.presence.1", config.port, app_state)
         .with_ui(&UI_DIR)
         .with_inbound_handler(api::inbound_message)
         .with_routes(|router| {

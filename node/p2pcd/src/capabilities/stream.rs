@@ -215,7 +215,11 @@ impl StreamHandler {
         }
     }
 
-    pub async fn add_peer_sender(&self, peer_id: PeerId, tx: tokio::sync::mpsc::Sender<ProtocolMessage>) {
+    pub async fn add_peer_sender(
+        &self,
+        peer_id: PeerId,
+        tx: tokio::sync::mpsc::Sender<ProtocolMessage>,
+    ) {
         self.peer_senders.write().await.insert(peer_id, tx);
     }
 
@@ -294,7 +298,8 @@ impl StreamHandler {
             pairs.push((keys::LABEL, ciborium::value::Value::Text(l.to_string())));
         }
         let payload = cbor_encode_map(pairs);
-        self.send_msg(&peer_id, message_types::STREAM_OPEN, payload).await;
+        self.send_msg(&peer_id, message_types::STREAM_OPEN, payload)
+            .await;
 
         // Track as outbound/sending
         self.streams.write().await.insert(
@@ -367,7 +372,8 @@ impl StreamHandler {
             ));
         }
         let payload = cbor_encode_map(pairs);
-        self.send_msg(peer_id, message_types::STREAM_DATA, payload).await;
+        self.send_msg(peer_id, message_types::STREAM_DATA, payload)
+            .await;
 
         Ok(())
     }
@@ -383,7 +389,8 @@ impl StreamHandler {
             ),
             (keys::REASON, ciborium::value::Value::Integer(reason.into())),
         ]);
-        self.send_msg(peer_id, message_types::STREAM_CLOSE, payload).await;
+        self.send_msg(peer_id, message_types::STREAM_CLOSE, payload)
+            .await;
 
         Ok(())
     }
@@ -656,7 +663,8 @@ impl StreamHandler {
                         ),
                     ]);
                     drop(streams);
-                    self.send_msg(&ctx.peer_id, message_types::STREAM_CONTROL, stats).await;
+                    self.send_msg(&ctx.peer_id, message_types::STREAM_CONTROL, stats)
+                        .await;
                 }
             }
             control_types::STATS_RESP => {
@@ -684,7 +692,8 @@ impl StreamHandler {
             ),
             (keys::STATUS, ciborium::value::Value::Integer(status.into())),
         ]);
-        self.send_msg(peer_id, message_types::STREAM_OPEN, payload).await;
+        self.send_msg(peer_id, message_types::STREAM_OPEN, payload)
+            .await;
     }
 
     async fn send_msg(&self, peer_id: &PeerId, msg_type: u64, payload: Vec<u8>) {
@@ -739,7 +748,8 @@ impl StreamHandler {
                     ciborium::value::Value::Integer(close_reasons::TIMEOUT.into()),
                 ),
             ]);
-            self.send_msg(peer_id, message_types::STREAM_CLOSE, payload).await;
+            self.send_msg(peer_id, message_types::STREAM_CLOSE, payload)
+                .await;
         }
     }
 }

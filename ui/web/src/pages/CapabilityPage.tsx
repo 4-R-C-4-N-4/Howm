@@ -1,9 +1,9 @@
-import { useEffect, useRef, useState } from 'react';
-import { useParams, useSearchParams } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
-import { getCapabilities } from '../api/capabilities';
-import { sendTokenReply, sendNavigateTo } from '../lib/postMessage';
-import { getApiToken } from '../api/client';
+import { useEffect, useRef, useState } from "react";
+import { useParams, useSearchParams } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
+import { getCapabilities } from "../api/capabilities";
+import { sendTokenReply, sendNavigateTo } from "../lib/postMessage";
+import { getApiToken } from "../api/client";
 
 /**
  * Full-height iframe wrapper for a capability UI.
@@ -27,11 +27,11 @@ export function CapabilityPage() {
   const loadTimeout = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   const { data: capabilities } = useQuery({
-    queryKey: ['capabilities'],
+    queryKey: ["capabilities"],
     queryFn: getCapabilities,
   });
 
-  const cap = capabilities?.find(c => c.name === name);
+  const cap = capabilities?.find((c) => c.name === name);
   const token = getApiToken();
 
   // Reset loading / error state during render when the token changes
@@ -61,25 +61,31 @@ export function CapabilityPage() {
 
     function handle(e: MessageEvent) {
       if (e.origin !== window.location.origin) return;
-      if (e.data?.type === 'howm:token:request' && iframeRef.current) {
+      if (e.data?.type === "howm:token:request" && iframeRef.current) {
         sendTokenReply(iframeRef.current, token!, name);
       }
       // After capability signals ready, send any URL search params as deep-link
-      if (e.data?.type === 'howm:ready' && iframeRef.current && !readySent.current) {
+      if (
+        e.data?.type === "howm:ready" &&
+        iframeRef.current &&
+        !readySent.current
+      ) {
         readySent.current = true;
         clearTimeout(loadTimeout.current);
         setLoading(false);
         setLoadError(false);
         const params: Record<string, string> = {};
-        searchParams.forEach((v, k) => { params[k] = v; });
+        searchParams.forEach((v, k) => {
+          params[k] = v;
+        });
         if (Object.keys(params).length > 0) {
           sendNavigateTo(iframeRef.current, params);
         }
       }
     }
-    window.addEventListener('message', handle);
+    window.addEventListener("message", handle);
     return () => {
-      window.removeEventListener('message', handle);
+      window.removeEventListener("message", handle);
       clearTimeout(loadTimeout.current);
     };
   }, [token, searchParams, name]);
@@ -88,19 +94,25 @@ export function CapabilityPage() {
   useEffect(() => {
     if (!iframeRef.current || !readySent.current) return;
     const params: Record<string, string> = {};
-    searchParams.forEach((v, k) => { params[k] = v; });
+    searchParams.forEach((v, k) => {
+      params[k] = v;
+    });
     if (Object.keys(params).length > 0) {
       sendNavigateTo(iframeRef.current, params);
     }
   }, [searchParams]);
 
   if (!capabilities) {
-    return <div className='flex items-center justify-center h-[calc(100vh-48px)] text-howm-text-muted'>Loading…</div>;
+    return (
+      <div className="flex items-center justify-center h-[calc(100vh-48px)] text-howm-text-muted">
+        Loading…
+      </div>
+    );
   }
 
   if (!cap?.ui) {
     return (
-      <div className='flex items-center justify-center h-[calc(100vh-48px)] text-howm-text-muted'>
+      <div className="flex items-center justify-center h-[calc(100vh-48px)] text-howm-text-muted">
         Capability <strong>{name}</strong> not found or has no UI.
       </div>
     );
@@ -109,22 +121,31 @@ export function CapabilityPage() {
   // Build the iframe src — route through the daemon proxy at /cap/{prefix}/...
   // Use the authoritative route_name set at install time; fall back to last
   // segment of name only for capabilities installed before route_name existed.
-  const proxyPrefix = cap.route_name ?? cap.name.split('.').pop()!;
-  const src = cap.ui.entry.startsWith('/')
+  const proxyPrefix = cap.route_name ?? cap.name.split(".").pop()!;
+  const src = cap.ui.entry.startsWith("/")
     ? `/cap/${proxyPrefix}${cap.ui.entry}`
     : `/cap/${proxyPrefix}/${cap.ui.entry}`;
 
   if (loadError) {
     return (
-      <div className='flex flex-col items-center justify-center h-[calc(100vh-48px)] text-center gap-1' style={{ color: 'var(--howm-text, #e0e0e0)' }}>
-        <div className='text-3xl mb-2'>⚠</div>
-        <div><strong>{cap.ui.label}</strong> failed to load.</div>
-        <div className='text-howm-text-muted text-sm mt-1'>
+      <div
+        className="flex flex-col items-center justify-center h-[calc(100vh-48px)] text-center gap-1"
+        style={{ color: "var(--howm-text, #e0e0e0)" }}
+      >
+        <div className="text-3xl mb-2">⚠</div>
+        <div>
+          <strong>{cap.ui.label}</strong> failed to load.
+        </div>
+        <div className="text-howm-text-muted text-sm mt-1">
           The capability process may not be running.
         </div>
         <button
-          onClick={() => { setLoadError(false); readySent.current = false; }}
-          className='mt-4 py-2 px-6 rounded-md border border-howm-border bg-howm-bg-elevated cursor-pointer text-sm' style={{ color: 'var(--howm-text, #e0e0e0)' }}
+          onClick={() => {
+            setLoadError(false);
+            readySent.current = false;
+          }}
+          className="mt-4 py-2 px-6 rounded-md border border-howm-border bg-howm-bg-elevated cursor-pointer text-sm"
+          style={{ color: "var(--howm-text, #e0e0e0)" }}
         >
           Retry
         </button>
@@ -133,11 +154,11 @@ export function CapabilityPage() {
   }
 
   return (
-    <div className='relative w-full h-[calc(100vh-48px)]'>
+    <div className="relative w-full h-[calc(100vh-48px)]">
       {loading && (
-        <div className='absolute inset-0 flex flex-col items-center justify-center bg-howm-bg-primary z-10'>
-          <div className='w-7 h-7 border-3 border-howm-border border-t-howm-accent rounded-full animate-spin' />
-          <div className='mt-3 text-howm-text-muted text-sm'>
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-howm-bg-primary z-10">
+          <div className="w-7 h-7 border-3 border-howm-border border-t-howm-accent rounded-full animate-spin" />
+          <div className="mt-3 text-howm-text-muted text-sm">
             Loading {cap.ui.label}…
           </div>
         </div>
@@ -146,10 +167,13 @@ export function CapabilityPage() {
         ref={iframeRef}
         src={src}
         title={cap.ui.label}
-        className='w-full h-full border-none block'
+        className="w-full h-full border-none block"
         // Restrict iframe capabilities; adjust as needed for specific caps
-        sandbox="allow-scripts allow-same-origin allow-forms"
-        onError={() => { setLoading(false); setLoadError(true); }}
+        sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox"
+        onError={() => {
+          setLoading(false);
+          setLoadError(true);
+        }}
       />
     </div>
   );
