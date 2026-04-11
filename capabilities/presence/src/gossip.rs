@@ -151,6 +151,10 @@ pub fn start_gossip_sender(state: AppState) {
             let packet = encode_broadcast(&presence);
             let addresses = state.peer_addresses.read().await;
 
+            if addresses.is_empty() {
+                debug!("gossip sender: tick — no peer addresses, skipping");
+            }
+
             for (_peer_id, wg_addr) in addresses.iter() {
                 if wg_addr.is_empty() {
                     continue;
@@ -175,18 +179,19 @@ pub async fn send_immediate_broadcast(state: &AppState) {
     let gossip_port = state.gossip_port;
 
     if addresses.is_empty() {
+        info!("gossip: immediate broadcast skipped — peer_addresses is empty");
         return;
     }
 
     let sock = match UdpSocket::bind("0.0.0.0:0").await {
         Ok(s) => s,
         Err(e) => {
-            debug!("Immediate broadcast: failed to bind: {}", e);
+            warn!("gossip: immediate broadcast failed to bind UDP: {}", e);
             return;
         }
     };
 
-    for (_peer_id, wg_addr) in addresses.iter() {
+    for (peer_id, wg_addr) in addresses.iter() {
         if wg_addr.is_empty() {
             continue;
         }
@@ -194,6 +199,11 @@ pub async fn send_immediate_broadcast(state: &AppState) {
             Ok(addr) => addr,
             Err(_) => continue,
         };
+        info!(
+            "gossip: immediate broadcast to {} at {}",
+            &peer_id[..8.min(peer_id.len())],
+            target,
+        );
         let _ = sock.send_to(&packet, target).await;
     }
 }
@@ -248,10 +258,22 @@ pub fn start_gossip_receiver(state: AppState) {
             let peer_id = match peer_id {
                 Some(id) => id,
                 None => {
-                    debug!("Gossip from unknown address {}, ignoring", src_ip);
+                    info!(
+                        "gossip recv: packet from {} — not in peer_addresses ({} known), ignoring",
+                        src_ip,
+                        state.peer_addresses.read().await.len(),
+                    );
                     continue;
                 }
             };
+
+            info!(
+                "gossip recv: {} activity={:?} status={:?} emoji={:?}",
+                &peer_id[..8.min(peer_id.len())],
+                activity,
+                status,
+                emoji,
+            );
 
             let now = now_secs();
             let mut peers = state.peers.write().await;

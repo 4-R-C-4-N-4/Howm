@@ -72,6 +72,13 @@ pub async fn set_status(
         presence.clone()
     };
 
+    info!(
+        "set_status: emoji={:?} status={:?} — broadcasting to {} peers",
+        updated.emoji,
+        updated.status,
+        state.peer_addresses.read().await.len(),
+    );
+
     // Broadcast status change immediately to peers
     gossip::send_immediate_broadcast(&state).await;
 
