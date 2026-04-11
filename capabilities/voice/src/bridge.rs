@@ -210,11 +210,27 @@ pub async fn send_invite(
     };
     let cbor = encode_cbor(&payload)?;
 
-    state
+    match state
         .bridge
         .rpc_call(&target_bytes, "voice.invite", &cbor, Some(4000))
         .await
-        .map_err(|e| format!("bridge RPC failed: {e}"))?;
+    {
+        Ok(resp) => {
+            tracing::info!(
+                "voice.invite RPC sent to {} — resp {} bytes",
+                &target_peer_id_b64[..8.min(target_peer_id_b64.len())],
+                resp.len(),
+            );
+        }
+        Err(e) => {
+            tracing::warn!(
+                "voice.invite RPC to {} FAILED: {}",
+                &target_peer_id_b64[..8.min(target_peer_id_b64.len())],
+                e,
+            );
+            return Err(format!("bridge RPC failed: {e}"));
+        }
+    }
 
     Ok(())
 }

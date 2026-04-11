@@ -136,10 +136,7 @@ fn run_migrations(conn: &Connection) -> rusqlite::Result<()> {
             )
             .unwrap_or(false);
         if friends_exists {
-            let new_caps = &[
-                "howm.social.presence.1",
-                "howm.social.voice.1",
-            ];
+            let new_caps = &["howm.social.presence.1", "howm.social.voice.1"];
             for cap in new_caps {
                 tx.execute(
                     "INSERT OR IGNORE INTO capability_rules (group_id, capability_name, allow)

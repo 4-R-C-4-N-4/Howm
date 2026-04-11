@@ -4,7 +4,7 @@ use include_dir::{include_dir, Dir};
 use std::sync::Arc;
 
 use p2pcd::bridge_client::BridgeClient;
-use p2pcd::capability_sdk::{init_tracing, CapabilityApp, HookFn, PeerStream};
+use p2pcd::capability_sdk::{init_tracing, CapabilityApp, HookFn, PeerStream, PeerTracker};
 use tracing::info;
 
 mod api;
@@ -65,11 +65,18 @@ async fn main() -> anyhow::Result<()> {
         config.gossip_port,
     );
 
-    // ── Type-2 PeerStream: hooks update presence map on session lifecycle ──
+    // ── Type-3 PeerStream: pre-built tracker so hooks can look up wg_address
+    //    for the gossip sender/receiver address map ──
+    let tracker = PeerTracker::new("howm.social.presence.1");
+
     let on_active: HookFn = {
         let peers_map = Arc::clone(&app_state.peers);
+        let addr_map = Arc::clone(&app_state.peer_addresses);
+        let hook_tracker = tracker.clone();
         Arc::new(move |peer_id: String| {
             let peers = Arc::clone(&peers_map);
+            let addrs = Arc::clone(&addr_map);
+            let tracker = hook_tracker.clone();
             Box::pin(async move {
                 let now = state::now_secs();
                 let mut peers_guard = peers.write().await;
@@ -87,6 +94,16 @@ async fn main() -> anyhow::Result<()> {
                         updated_at: now,
                         last_broadcast_received: now,
                     });
+                // Populate wg_address from the tracker so gossip knows where
+                // to send broadcasts and can identify incoming packets.
+                if let Some(active_peer) = tracker.find_peer(&peer_id).await {
+                    if !active_peer.wg_address.is_empty() {
+                        addrs
+                            .write()
+                            .await
+                            .insert(peer_id.clone(), active_peer.wg_address);
+                    }
+                }
                 info!("PeerStream: peer active {}", peer_id);
             })
         })
@@ -111,11 +128,13 @@ async fn main() -> anyhow::Result<()> {
         })
     };
 
-    // PeerStream's SSE loop is detached internally, so the returned handle
-    // does not need to live past this scope.
-    let _stream = PeerStream::connect_with_hooks(
-        "howm.social.presence.1",
-        config.daemon_port,
+    // Drive the pre-built tracker with PeerStream SSE (Type-3 pattern).
+    let _stream = PeerStream::drive_existing(
+        tracker,
+        format!(
+            "http://127.0.0.1:{}/p2pcd/bridge/events?capability=howm.social.presence.1",
+            config.daemon_port
+        ),
         Some(on_active),
         Some(on_inactive),
     );
