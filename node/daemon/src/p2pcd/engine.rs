@@ -1414,6 +1414,13 @@ impl ProtocolEngine {
 
     // ── Address helpers ───────────────────────────────────────────────────────
 
+    /// Resolve the WG overlay IP for a peer (public wrapper for bridge/SSE use).
+    pub async fn peer_wg_ip(&self, peer_id: &PeerId) -> Option<String> {
+        self.resolve_peer_addr(*peer_id)
+            .await
+            .map(|addr| addr.ip().to_string())
+    }
+
     async fn resolve_peer_addr(&self, peer_id: PeerId) -> Option<SocketAddr> {
         // Check test override map first (bypasses `wg show`).
         if let Some(addr) = self.peer_addr_overrides.read().await.get(&peer_id).copied() {

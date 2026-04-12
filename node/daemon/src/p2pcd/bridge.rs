@@ -291,6 +291,8 @@ pub struct PeersQuery {
 pub struct PeerInfo {
     pub peer_id: String,
     pub capabilities: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wg_address: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -673,7 +675,7 @@ async fn handle_peers(
 ) -> impl IntoResponse {
     let sessions = engine.active_sessions().await;
 
-    let peers: Vec<PeerInfo> = sessions
+    let filtered: Vec<_> = sessions
         .into_iter()
         .filter(|s| {
             // Only expose sessions that are truly active — not Closed, Handshake, etc.
@@ -686,11 +688,19 @@ async fn handle_peers(
                 true
             }
         })
-        .map(|s| PeerInfo {
+        .collect();
+
+    // Resolve WG addresses in parallel-ish (each is a quick local lookup or
+    // cached `wg show` parse).
+    let mut peers: Vec<PeerInfo> = Vec::with_capacity(filtered.len());
+    for s in filtered {
+        let wg_address = engine.peer_wg_ip(&s.peer_id).await;
+        peers.push(PeerInfo {
             peer_id: encode_b64(&s.peer_id),
             capabilities: s.active_set,
-        })
-        .collect();
+            wg_address,
+        });
+    }
 
     (StatusCode::OK, Json(peers))
 }
@@ -1166,19 +1176,22 @@ async fn handle_events(
 
     // Build snapshot of currently active peers for this capability.
     let sessions = engine.active_sessions().await;
-    let snapshot_peers: Vec<_> = sessions
+    let filtered: Vec<_> = sessions
         .into_iter()
         .filter(|s| {
             s.state == p2pcd::session::SessionState::Active && s.active_set.contains(&q.capability)
         })
-        .map(|s| {
-            serde_json::json!({
-                "peer_id":    STANDARD.encode(s.peer_id),
-                "wg_address": serde_json::Value::Null, // wg_address is not stored in SessionSummary; null until a live peer-active event arrives
-                "active_since": s.created_at,
-            })
-        })
         .collect();
+
+    let mut snapshot_peers: Vec<serde_json::Value> = Vec::with_capacity(filtered.len());
+    for s in filtered {
+        let wg_addr = engine.peer_wg_ip(&s.peer_id).await;
+        snapshot_peers.push(serde_json::json!({
+            "peer_id":      STANDARD.encode(s.peer_id),
+            "wg_address":   wg_addr,
+            "active_since": s.created_at,
+        }));
+    }
 
     let snapshot_event = Event::default().event("snapshot").data(
         serde_json::to_string(&serde_json::json!({ "peers": snapshot_peers }))

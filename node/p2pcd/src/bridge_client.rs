@@ -534,6 +534,10 @@ pub struct PeerInfo {
     pub peer_id: String,
     /// Capabilities this peer has negotiated.
     pub capabilities: Vec<String>,
+    /// WG overlay IP address (e.g. "100.222.0.22"). May be absent for peers
+    /// whose address hasn't been resolved yet.
+    #[serde(default)]
+    pub wg_address: Option<String>,
 }
 
 impl PeerInfo {

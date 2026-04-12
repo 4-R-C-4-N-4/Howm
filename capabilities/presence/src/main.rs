@@ -73,10 +73,12 @@ async fn main() -> anyhow::Result<()> {
         let peers_map = Arc::clone(&app_state.peers);
         let addr_map = Arc::clone(&app_state.peer_addresses);
         let hook_tracker = tracker.clone();
+        let hook_bridge = app_state.bridge.clone();
         Arc::new(move |peer_id: String| {
             let peers = Arc::clone(&peers_map);
             let addrs = Arc::clone(&addr_map);
             let tracker = hook_tracker.clone();
+            let bridge = hook_bridge.clone();
             Box::pin(async move {
                 let now = state::now_secs();
                 let mut peers_guard = peers.write().await;
@@ -94,17 +96,38 @@ async fn main() -> anyhow::Result<()> {
                         updated_at: now,
                         last_broadcast_received: now,
                     });
-                // Populate wg_address from the tracker so gossip knows where
-                // to send broadcasts and can identify incoming packets.
+                // Populate wg_address for gossip. Try tracker first (live
+                // peer-active events include it), fall back to bridge query
+                // (needed for SSE snapshot where wg_address is null).
+                let mut resolved_addr = String::new();
                 if let Some(active_peer) = tracker.find_peer(&peer_id).await {
                     if !active_peer.wg_address.is_empty() {
-                        addrs
-                            .write()
-                            .await
-                            .insert(peer_id.clone(), active_peer.wg_address);
+                        resolved_addr = active_peer.wg_address;
                     }
                 }
-                info!("PeerStream: peer active {}", peer_id);
+                if resolved_addr.is_empty() {
+                    // Fallback: ask the bridge for the peer's WG address
+                    if let Ok(peer_list) = bridge.list_peers(Some("howm.social.presence.1")).await {
+                        if let Some(p) = peer_list.iter().find(|p| p.peer_id == peer_id) {
+                            if let Some(ref addr) = p.wg_address {
+                                resolved_addr = addr.clone();
+                            }
+                        }
+                    }
+                }
+                if !resolved_addr.is_empty() {
+                    info!(
+                        "PeerStream: peer active {} wg_addr={}",
+                        &peer_id[..8.min(peer_id.len())],
+                        resolved_addr,
+                    );
+                    addrs.write().await.insert(peer_id.clone(), resolved_addr);
+                } else {
+                    info!(
+                        "PeerStream: peer active {} (no wg_address resolved)",
+                        &peer_id[..8.min(peer_id.len())],
+                    );
+                }
             })
         })
     };
