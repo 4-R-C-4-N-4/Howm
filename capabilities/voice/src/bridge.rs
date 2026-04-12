@@ -114,11 +114,42 @@ fn handle_invite(state: &AppState, from_peer_id: &str, raw: &[u8]) -> StatusCode
         payload.room_id
     );
 
-    // Add to invited list if room exists (for cross-node rooms)
-    // or create a placeholder room entry for the invite
-    let _ = state
-        .rooms
-        .invite_peers(&payload.room_id, vec![from_peer_id.to_string()]);
+    // Create a placeholder room on the invited side if it doesn't exist yet.
+    // The room was created on the inviter's machine; we need a local copy so
+    // GET /rooms shows the invite and the UI can render Join/Decline.
+    {
+        let rooms = state.rooms.rooms.read();
+        if !rooms.contains_key(&payload.room_id) {
+            drop(rooms);
+            // We don't know the real peer_id of the local user here — the
+            // inviter created the room. Use from_peer_id (the inviter) as
+            // created_by since they're the creator.
+            let room_name = if payload.room_name.is_empty() {
+                None
+            } else {
+                Some(payload.room_name.clone())
+            };
+            let placeholder = crate::state::Room {
+                room_id: payload.room_id.clone(),
+                name: room_name,
+                created_by: payload.inviter_peer_id.clone(),
+                created_at: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs(),
+                members: vec![], // inviter is remote, not a local member
+                invited: vec![from_peer_id.to_string()],
+                max_members: 10,
+            };
+            state.rooms.rooms.write().insert(payload.room_id.clone(), placeholder);
+            info!("Created placeholder room {} for invite", payload.room_id);
+        } else {
+            // Room exists — just add to invited list
+            let _ = state
+                .rooms
+                .invite_peers(&payload.room_id, vec![from_peer_id.to_string()]);
+        }
+    }
 
     // Fire notification
     let room_name = if payload.room_name.is_empty() {

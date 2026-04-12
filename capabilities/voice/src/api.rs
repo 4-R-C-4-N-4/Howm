@@ -122,7 +122,8 @@ pub async fn list_rooms(
                 );
                 obj.insert(
                     "is_invited".to_string(),
-                    json!(r.invited.contains(&peer_id)),
+                    json!(r.invited.contains(&peer_id)
+                        || (r.members.is_empty() && !r.invited.is_empty())),
                 );
             }
             v
@@ -420,6 +421,18 @@ pub async fn quick_call(
     });
 
     (StatusCode::CREATED, Json(json!(room))).into_response()
+}
+
+/// GET /me — return the caller's peer identity as seen by the server.
+///
+/// The daemon proxy injects `X-Node-Id` (local) or `X-Peer-Id` (remote).
+/// The UI needs this to identify itself on the direct WebSocket connection
+/// (which bypasses the proxy and has no identity headers).
+pub async fn whoami(headers: axum::http::HeaderMap) -> impl IntoResponse {
+    match extract_peer_id(&headers) {
+        Some(id) => Json(json!({ "peer_id": id })),
+        None => Json(json!({ "peer_id": null })),
+    }
 }
 
 /// GET /peers — list peers active for the voice capability.

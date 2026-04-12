@@ -19,18 +19,20 @@ let availablePeers = [];   // cached from voice tracker
 
 // ── Peer ID ──────────────────────────────────────────────────────────────────
 
-// In production, the daemon proxy injects the peer identity.
-// For now, read from localStorage or prompt.
-function getPeerId() {
-  let id = localStorage.getItem('howm_peer_id');
-  if (!id) {
-    id = 'peer-' + Math.random().toString(36).slice(2, 10);
-    localStorage.setItem('howm_peer_id', id);
-  }
-  return id;
-}
+// The real peer ID is learned from the server via GET /me (which reads the
+// X-Node-Id / X-Peer-Id header injected by the daemon proxy). The WS
+// handshake sends this so the signal server can verify room membership.
+let PEER_ID = null;
 
-const PEER_ID = getPeerId();
+async function fetchMyId() {
+  try {
+    const resp = await fetch(`${BASE}/me`, { headers: apiHeaders() });
+    if (resp.ok) {
+      const data = await resp.json();
+      if (data.peer_id) PEER_ID = data.peer_id;
+    }
+  } catch (_) {}
+}
 
 function apiHeaders() {
   return { 'Content-Type': 'application/json', 'X-Peer-Id': PEER_ID };
@@ -640,8 +642,10 @@ function cleanup() {
 
 // ── Init ─────────────────────────────────────────────────────────────────────
 
-loadRooms();
-loadPeers();
+fetchMyId().then(() => {
+  loadRooms();
+  loadPeers();
+});
 // Poll room list every 10s when not in a call, presence every 30s
 setInterval(() => {
   if (!currentRoom) loadRooms();

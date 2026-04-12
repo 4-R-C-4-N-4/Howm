@@ -170,6 +170,7 @@ async fn main() -> anyhow::Result<()> {
                 .route("/rooms/{room_id}/invite", post(api::invite_peers))
                 .route("/rooms/{room_id}/mute", post(api::mute))
                 .route("/quick-call", post(api::quick_call))
+                .route("/me", get(api::whoami))
                 .route("/peers", get(api::list_peers))
                 .route("/rooms/{room_id}/signal", get(signal::signal_ws))
         })
