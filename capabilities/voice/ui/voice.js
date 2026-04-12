@@ -241,6 +241,11 @@ async function joinRoom(roomId) {
 async function enterRoom(roomId) {
   try {
     const resp = await fetch(`${BASE}/rooms/${roomId}`, { headers: apiHeaders() });
+    if (!resp.ok) {
+      console.error('enterRoom: GET /rooms/' + roomId + ' returned ' + resp.status);
+      alert('Could not enter room (server returned ' + resp.status + ')');
+      return;
+    }
     currentRoom = await resp.json();
 
     document.getElementById('rooms-section').style.display = 'none';
@@ -608,9 +613,13 @@ function removePeer(peerId) {
 }
 
 async function refreshRoom() {
-  if (!currentRoom) return;
+  if (!currentRoom || !currentRoom.room_id) return;
   try {
     const resp = await fetch(`${BASE}/rooms/${currentRoom.room_id}`, { headers: apiHeaders() });
+    if (!resp.ok) {
+      console.warn('refreshRoom: GET /rooms/' + currentRoom.room_id + ' returned ' + resp.status);
+      return; // keep stale currentRoom rather than overwriting with error JSON
+    }
     currentRoom = await resp.json();
     renderCallView();
   } catch (e) {
