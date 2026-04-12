@@ -64,6 +64,9 @@ macro_rules! require_peer_id {
 // ── Handlers ─────────────────────────────────────────────────────────────────
 
 /// POST /rooms — create a new voice room.
+///
+/// If `invite` contains peer IDs, RPC invites are sent to each one
+/// (fire-and-forget, same as quick_call and invite_peers).
 pub async fn create_room(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
@@ -71,11 +74,29 @@ pub async fn create_room(
 ) -> impl IntoResponse {
     let peer_id = require_peer_id!(&headers);
 
+    let invited = req.invite.clone();
     let room = state
         .rooms
-        .create_room(&peer_id, req.name, req.invite, req.max_members);
+        .create_room(&peer_id, req.name, invited.clone(), req.max_members);
 
     info!("Room '{}' created by {}", room.room_id, peer_id);
+
+    // Send invite RPCs to every peer in the invite list.
+    let room_id = room.room_id.clone();
+    let room_name = room.name.clone().unwrap_or_default();
+    let creator = peer_id.clone();
+    for target in &invited {
+        let state_clone = state.clone();
+        let rid = room_id.clone();
+        let rname = room_name.clone();
+        let inviter = creator.clone();
+        let target = target.clone();
+        tokio::spawn(async move {
+            let _ =
+                crate::bridge::send_invite(&state_clone, &target, &rid, &rname, &inviter).await;
+        });
+    }
+
     (StatusCode::CREATED, Json(json!(room))).into_response()
 }
 
