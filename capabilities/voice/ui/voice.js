@@ -521,7 +521,7 @@ function playLeaveCue() { playTone(600, 150); setTimeout(() => playTone(440, 180
 
 function connectSignaling(roomId) {
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const url = `${protocol}//${location.host}/rooms/${roomId}/signal`;
+  const url = `${protocol}//${location.host}${BASE}/rooms/${roomId}/signal`;
   ws = new WebSocket(url);
 
   ws.onopen = () => {

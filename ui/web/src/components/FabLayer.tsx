@@ -128,6 +128,7 @@ function FabButton({ cap, badgeCount, index, side = 'right' }: { cap: Capability
             src={iframeSrc}
             className="flex-1 border-none w-full"
             title={cap.ui!.label}
+            allow="microphone; camera"
           />
         </div>
       )}

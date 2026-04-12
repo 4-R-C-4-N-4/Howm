@@ -169,7 +169,8 @@ export function CapabilityPage() {
         title={cap.ui.label}
         className="w-full h-full border-none block"
         // Restrict iframe capabilities; adjust as needed for specific caps
-        sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox"
+        sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-modals"
+        allow="microphone; camera"
         onError={() => {
           setLoading(false);
           setLoadError(true);
