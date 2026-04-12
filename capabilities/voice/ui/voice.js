@@ -520,8 +520,13 @@ function playLeaveCue() { playTone(600, 150); setTimeout(() => playTone(440, 180
 // ── Signaling WebSocket ──────────────────────────────────────────────────────
 
 function connectSignaling(roomId) {
+  // WebSocket connects directly to the voice cap's port because the daemon
+  // HTTP proxy doesn't support WebSocket upgrade. The cap port (7005) is
+  // read from the manifest at install time; for now hardcoded as the default.
+  // TODO: replace with a /ws-info endpoint or daemon-level WS proxy support.
+  const wsPort = 7005;
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const url = `${protocol}//${location.host}${BASE}/rooms/${roomId}/signal`;
+  const url = `${protocol}//localhost:${wsPort}/rooms/${roomId}/signal`;
   ws = new WebSocket(url);
 
   ws.onopen = () => {
