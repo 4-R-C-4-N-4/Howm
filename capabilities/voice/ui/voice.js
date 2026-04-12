@@ -144,10 +144,9 @@ function renderRooms(rooms) {
   }
 
   list.innerHTML = rooms.map(r => {
-    const isInvited = r.invited.includes(PEER_ID);
     const capacityStr = `${r.members.length}/${r.max_members}`;
 
-    if (isInvited) {
+    if (r.is_invited) {
       return `
         <div class="invite-card">
           <div class="room-name">📞 ${esc(r.name || 'Voice Room')}</div>

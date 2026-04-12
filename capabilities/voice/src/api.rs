@@ -101,13 +101,34 @@ pub async fn create_room(
 }
 
 /// GET /rooms — list rooms for the current peer.
+///
+/// Each room in the response includes `is_member` and `is_invited` flags
+/// so the UI can render join/decline buttons without needing to know the
+/// caller's raw peer ID.
 pub async fn list_rooms(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
 ) -> impl IntoResponse {
     let peer_id = require_peer_id!(&headers);
     let rooms = state.rooms.list_rooms_for_peer(&peer_id);
-    Json(json!({ "rooms": rooms })).into_response()
+    let enriched: Vec<serde_json::Value> = rooms
+        .iter()
+        .map(|r| {
+            let mut v = serde_json::to_value(r).unwrap_or_default();
+            if let Some(obj) = v.as_object_mut() {
+                obj.insert(
+                    "is_member".to_string(),
+                    json!(r.members.iter().any(|m| m.peer_id == peer_id)),
+                );
+                obj.insert(
+                    "is_invited".to_string(),
+                    json!(r.invited.contains(&peer_id)),
+                );
+            }
+            v
+        })
+        .collect();
+    Json(json!({ "rooms": enriched })).into_response()
 }
 
 /// GET /rooms/:room_id — get room details.
