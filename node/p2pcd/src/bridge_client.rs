@@ -534,6 +534,10 @@ pub struct PeerInfo {
     pub peer_id: String,
     /// Capabilities this peer has negotiated.
     pub capabilities: Vec<String>,
+    /// WG overlay IP address (e.g. "100.222.0.22"). May be absent for peers
+    /// whose address hasn't been resolved yet.
+    #[serde(default)]
+    pub wg_address: Option<String>,
 }
 
 impl PeerInfo {
@@ -581,6 +585,7 @@ mod tests {
         let info = PeerInfo {
             peer_id: encode_b64(&id),
             capabilities: vec!["test.cap.1".into()],
+            wg_address: None,
         };
         assert_eq!(info.peer_id_bytes().unwrap(), id);
     }
@@ -590,6 +595,7 @@ mod tests {
         let info = PeerInfo {
             peer_id: encode_b64(&[1, 2, 3]),
             capabilities: vec![],
+            wg_address: None,
         };
         assert!(info.peer_id_bytes().is_err());
     }

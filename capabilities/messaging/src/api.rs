@@ -12,7 +12,7 @@ use uuid::Uuid;
 use crate::db::{self, MessageDb};
 use crate::notifier::DaemonNotifier;
 use p2pcd::bridge_client::BridgeClient;
-use p2pcd::capability_sdk::PeerStream;
+use p2pcd::capability_sdk::{LocalPeerId, PeerStream};
 
 // ── Shared state ─────────────────────────────────────────────────────────────
 
@@ -24,44 +24,20 @@ pub struct AppState {
     pub daemon_port: u16,
     /// SSE-backed peer tracker for "howm.social.messaging.1".
     pub stream: Arc<PeerStream>,
-    /// Our own peer ID (base64), learned at startup or lazily on first use.
-    pub local_peer_id: Arc<tokio::sync::RwLock<String>>,
+    /// Our own peer ID (base64), learned at startup with lazy retry on first use.
+    pub local_peer_id: LocalPeerId,
     /// Fire-and-forget notifier for badge/toast events to the daemon.
     pub notifier: DaemonNotifier,
 }
 
 impl AppState {
-    #[allow(dead_code)]
-    pub fn new(
-        db: MessageDb,
-        bridge: BridgeClient,
-        daemon_port: u16,
-        stream: Arc<PeerStream>,
-        local_peer_id: Arc<tokio::sync::RwLock<String>>,
-    ) -> Self {
-        let db = Arc::new(db);
-        let notifier = DaemonNotifier::new(
-            reqwest::Client::new(),
-            &format!("http://127.0.0.1:{daemon_port}"),
-            db.clone(),
-        );
-        Self {
-            db,
-            bridge,
-            daemon_port,
-            stream,
-            local_peer_id,
-            notifier,
-        }
-    }
-
     pub fn new_with_notifier(
         db: Arc<MessageDb>,
         bridge: BridgeClient,
         daemon_port: u16,
         notifier: DaemonNotifier,
         stream: Arc<PeerStream>,
-        local_peer_id: Arc<tokio::sync::RwLock<String>>,
+        local_peer_id: LocalPeerId,
     ) -> Self {
         Self {
             db,
@@ -75,18 +51,7 @@ impl AppState {
 
     /// Get the local peer ID, retrying once from the daemon if not yet known.
     pub async fn get_local_peer_id(&self) -> Option<String> {
-        let id = self.local_peer_id.read().await.clone();
-        if !id.is_empty() {
-            return Some(id);
-        }
-        // Lazy retry: fetch from daemon now
-        if let Ok(pid) = self.bridge.get_local_peer_id().await {
-            if !pid.is_empty() {
-                *self.local_peer_id.write().await = pid.clone();
-                return Some(pid);
-            }
-        }
-        None
+        self.local_peer_id.get().await
     }
 }
 
@@ -243,13 +208,9 @@ pub struct ConversationResponse {
 
 // PeerActivePayload, PeerInactivePayload, and InboundMessage are re-exported
 // from p2pcd::capability_sdk. Use those directly.
-use p2pcd::capability_sdk::InboundMessage;
+use p2pcd::capability_sdk::{rpc as sdk_rpc, InboundMessage};
 
 // ── Handlers ─────────────────────────────────────────────────────────────────
-
-pub async fn health() -> impl IntoResponse {
-    Json(serde_json::json!({ "status": "ok" }))
-}
 
 /// POST /send — send a DM to a peer.
 pub async fn send_message(
@@ -421,7 +382,7 @@ pub async fn send_message(
 
 /// GET /conversations — list all conversations.
 pub async fn list_conversations(State(state): State<AppState>) -> impl IntoResponse {
-    let local_peer_id = state.local_peer_id.read().await.clone();
+    let local_peer_id = state.get_local_peer_id().await.unwrap_or_default();
 
     match state.db.list_conversations(&local_peer_id) {
         Ok(convs) => (StatusCode::OK, Json(serde_json::json!(convs))),
@@ -438,7 +399,7 @@ pub async fn get_conversation(
     Path(peer_id): Path<String>,
     Query(params): Query<PaginationParams>,
 ) -> impl IntoResponse {
-    let local_peer_id = state.local_peer_id.read().await.clone();
+    let local_peer_id = state.get_local_peer_id().await.unwrap_or_default();
 
     let conversation_id = MessageDb::conversation_id(&local_peer_id, &peer_id);
     let limit = params.limit.clamp(1, 100);
@@ -466,7 +427,7 @@ pub async fn mark_read(
     State(state): State<AppState>,
     Path(peer_id): Path<String>,
 ) -> impl IntoResponse {
-    let local_peer_id = state.local_peer_id.read().await.clone();
+    let local_peer_id = state.get_local_peer_id().await.unwrap_or_default();
 
     let conversation_id = MessageDb::conversation_id(&local_peer_id, &peer_id);
 
@@ -485,55 +446,13 @@ pub async fn delete_message(
     State(state): State<AppState>,
     Path((_peer_id, msg_id)): Path<(String, String)>,
 ) -> impl IntoResponse {
-    let local_peer_id = state.local_peer_id.read().await.clone();
+    let local_peer_id = state.get_local_peer_id().await.unwrap_or_default();
 
     match state.db.delete_message(&msg_id, &local_peer_id) {
         Ok(true) => StatusCode::NO_CONTENT,
         Ok(false) => StatusCode::FORBIDDEN,
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
     }
-}
-
-/// Extract method name from CBOR RPC envelope (key 1 = method).
-fn extract_rpc_method(data: &[u8]) -> Option<String> {
-    use ciborium::value::Value;
-    let value: Value = ciborium::from_reader(data).ok()?;
-    let map = match value {
-        Value::Map(m) => m,
-        _ => return None,
-    };
-    for (k, v) in map {
-        if let Value::Integer(i) = k {
-            let key: i128 = i.into();
-            if key == 1 {
-                if let Value::Text(t) = v {
-                    return Some(t);
-                }
-            }
-        }
-    }
-    None
-}
-
-/// Extract the inner payload from CBOR RPC envelope (key 3 = payload bytes).
-fn extract_rpc_payload(data: &[u8]) -> Option<Vec<u8>> {
-    use ciborium::value::Value;
-    let value: Value = ciborium::from_reader(data).ok()?;
-    let map = match value {
-        Value::Map(m) => m,
-        _ => return None,
-    };
-    for (k, v) in map {
-        if let Value::Integer(i) = k {
-            let key: i128 = i.into();
-            if key == 3 {
-                if let Value::Bytes(b) = v {
-                    return Some(b);
-                }
-            }
-        }
-    }
-    None
 }
 
 /// POST /p2pcd/inbound — receive a forwarded capability message from the daemon.
@@ -567,7 +486,7 @@ pub async fn inbound_message(
 
     // Check if this is an RPC_REQ forwarded by the daemon (message_type 22).
     if payload.message_type == 22 {
-        if let Some(method) = extract_rpc_method(&raw) {
+        if let Some(method) = sdk_rpc::extract_method(&raw) {
             return match method.as_str() {
                 "dm.send" => handle_dm_send_rpc(&state, &payload.peer_id, &raw).await,
                 other => {
@@ -617,7 +536,7 @@ async fn handle_dm_send_rpc(
     use base64::{engine::general_purpose::STANDARD, Engine as _};
 
     // Extract the inner payload from the RPC envelope (CBOR key 3)
-    let inner = match extract_rpc_payload(rpc_envelope) {
+    let inner = match sdk_rpc::extract_inner_payload(rpc_envelope) {
         Some(p) => p,
         None => {
             warn!("dm.send RPC: missing payload");

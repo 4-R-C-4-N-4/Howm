@@ -148,8 +148,17 @@ else
 fi
 
 # ── Start daemon ────────────────────────────────────────────────────────────
+
+# Always pass --data-dir explicitly. The daemon's default uses dirs::data_local_dir()
+# which can resolve differently under sudo (e.g. /root/.local/share/howm vs
+# /home/user/.local/share/howm), causing blobs stored in one session to be
+# invisible in the next. Pinning it here avoids the ambiguity.
+if [[ -z "$DATA_DIR" ]]; then
+    DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/howm"
+fi
+
 DAEMON_ARGS=(--port "$PORT")
-[[ -n "$DATA_DIR" ]]      && DAEMON_ARGS+=(--data-dir "$DATA_DIR")
+DAEMON_ARGS+=(--data-dir "$DATA_DIR")
 [[ -n "$NODE_NAME" ]]     && DAEMON_ARGS+=(--name "$NODE_NAME")
 [[ -n "$DEV_FLAG" ]]      && DAEMON_ARGS+=("$DEV_FLAG")
 [[ -n "$DEBUG_FLAG" ]]    && DAEMON_ARGS+=("$DEBUG_FLAG")
@@ -175,6 +184,24 @@ if [[ -n "$STALE_PIDS" ]]; then
         kill -9 "$_pid" 2>/dev/null || true
     done
     sleep 0.5
+fi
+
+# Tear down any stale howm0 WireGuard interface from a previous run.
+#
+# A killed daemon does NOT automatically delete its WG interface — the kernel
+# keeps the interface (and its UDP listening port) alive until something
+# explicitly removes it. On the next ./howm.sh run, the new daemon's port
+# probe finds 41641 still in use and falls back to 41642, which then bakes a
+# wrong port into the next invite payload and breaks peer connectivity.
+# Removing the interface here forces a clean rebind on every start.
+WG_IFACE=howm0
+if ip link show "$WG_IFACE" &>/dev/null; then
+    warn "Stale $WG_IFACE interface from previous run — removing"
+    if [[ $EUID -eq 0 ]]; then
+        ip link delete "$WG_IFACE" 2>/dev/null || true
+    else
+        sudo ip link delete "$WG_IFACE" 2>/dev/null || true
+    fi
 fi
 
 info "Starting howm on port $PORT..."

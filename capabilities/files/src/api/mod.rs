@@ -128,12 +128,6 @@ fn base64_to_hex(b64: &str) -> Option<String> {
     Some(hex::encode(bytes))
 }
 
-// ── Health ───────────────────────────────────────────────────────────────────
-
-pub async fn health() -> impl IntoResponse {
-    (StatusCode::OK, Json(serde_json::json!({ "status": "ok" })))
-}
-
 // ── Active peers list (for UI) ───────────────────────────────────────────────
 
 /// GET /peers — return active peers for the UI.
@@ -705,22 +699,49 @@ pub async fn initiate_download(
     let hash = hex_to_hash(&req.blob_id)
         .ok_or_else(|| bad_request("invalid blob_id (expected 64-char hex SHA-256)"))?;
 
-    // Check if we already have this blob locally
+    // Check if we already have this blob locally (e.g. from a previous
+    // transfer where the callback was lost). If so, mark any stale
+    // "transferring" record as complete and return it as a success rather
+    // than a confusing CONFLICT error.
     if let Ok(status) = state.bridge.blob_status(&hash).await {
         if status.exists {
-            return Err((
-                StatusCode::CONFLICT,
-                Json(serde_json::json!({ "error": "blob already exists locally" })),
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64;
+            let _ = state
+                .db
+                .update_download_status(&req.blob_id, "complete", Some(now));
+            info!(
+                "download: blob={} already in daemon store, marked complete",
+                &req.blob_id[..8.min(req.blob_id.len())]
+            );
+            // Return the existing download record if present, or a synthetic success.
+            if let Ok(Some(dl)) = state.db.get_download(&req.blob_id) {
+                return Ok((StatusCode::OK, Json(serde_json::json!({ "download": dl }))));
+            }
+            return Ok((
+                StatusCode::OK,
+                Json(serde_json::json!({ "status": "already_complete" })),
             ));
         }
     }
 
     // Check no existing download for this blob_id
-    if let Ok(Some(_)) = state.db.get_download(&req.blob_id) {
-        return Err((
-            StatusCode::CONFLICT,
-            Json(serde_json::json!({ "error": "download already exists for this blob_id" })),
-        ));
+    if let Ok(Some(existing)) = state.db.get_download(&req.blob_id) {
+        if existing.status == "transferring" {
+            // Stale record from a previous attempt — delete it so we can retry.
+            let _ = state.db.delete_download(&req.blob_id);
+            info!(
+                "download: cleared stale 'transferring' record for blob={}",
+                &req.blob_id[..8.min(req.blob_id.len())]
+            );
+        } else {
+            return Err((
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({ "error": "download already exists for this blob_id" })),
+            ));
+        }
     }
 
     // Decode peer_id to bytes

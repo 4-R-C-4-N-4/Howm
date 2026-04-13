@@ -8,10 +8,10 @@ use serde::Deserialize;
 use tracing::{info, warn};
 
 use super::{bad_request, base64_decode, base64_encode, hex_to_hash, AppState};
-use p2pcd::capability_sdk::InboundMessage;
+use p2pcd::capability_sdk::{rpc as sdk_rpc, InboundMessage};
 
-// CBOR keys for catalogue RPC envelopes
-pub(crate) const CBOR_KEY_METHOD: u64 = 1;
+// CBOR keys for catalogue RPC request bodies. The RPC envelope keys
+// (method / request_id / payload) live in `p2pcd::capability_sdk::rpc`.
 pub(crate) const CBOR_KEY_CURSOR: u64 = 2;
 pub(crate) const CBOR_KEY_LIMIT: u64 = 3;
 pub(crate) const CBOR_KEY_BLOB_IDS: u64 = 4;
@@ -50,7 +50,7 @@ pub async fn inbound_message(
     };
 
     // Parse method from CBOR
-    let method = match decode_rpc_method(&payload_bytes) {
+    let method = match sdk_rpc::extract_method(&payload_bytes) {
         Some(m) => m,
         None => {
             warn!("Failed to decode RPC method from payload");
@@ -62,10 +62,10 @@ pub async fn inbound_message(
     };
 
     // For RPC_REQ forwarding (message_type 22) the actual method payload is
-    // nested inside CBOR key 3 of the RPC envelope.  Extract it so method
-    // handlers see the inner CBOR, not the wrapping envelope.
+    // nested inside the RPC envelope. Extract it so method handlers see the
+    // inner CBOR, not the wrapping envelope.
     let method_payload = if msg.message_type == 22 {
-        extract_rpc_inner_payload(&payload_bytes).unwrap_or(payload_bytes)
+        sdk_rpc::extract_inner_payload(&payload_bytes).unwrap_or(payload_bytes)
     } else {
         payload_bytes
     };
@@ -310,51 +310,6 @@ pub(crate) fn cbor_value_to_json(v: ciborium::value::Value) -> serde_json::Value
     }
 }
 
-/// Extract the inner payload bytes (CBOR key 3) from an RPC envelope.
-/// When the daemon forwards an RPC_REQ, the wire format is:
-///   { 1: method, 2: request_id, 3: inner_payload_bytes }
-/// Method handlers expect the inner payload, not the wrapping envelope.
-fn extract_rpc_inner_payload(data: &[u8]) -> Option<Vec<u8>> {
-    use ciborium::value::Value;
-    let value: Value = ciborium::from_reader(data).ok()?;
-    let map = match value {
-        Value::Map(m) => m,
-        _ => return None,
-    };
-    for (k, v) in map {
-        if let Value::Integer(i) = k {
-            let key: i128 = i.into();
-            if key == 3 {
-                if let Value::Bytes(b) = v {
-                    return Some(b);
-                }
-            }
-        }
-    }
-    None
-}
-
-/// Decode the RPC method name from a CBOR payload.
-pub(crate) fn decode_rpc_method(data: &[u8]) -> Option<String> {
-    use ciborium::value::Value;
-    let value: Value = ciborium::from_reader(data).ok()?;
-    let map = match value {
-        Value::Map(m) => m,
-        _ => return None,
-    };
-    for (k, v) in map {
-        if let Value::Integer(i) = k {
-            let key: i128 = i.into();
-            if key as u64 == CBOR_KEY_METHOD {
-                if let Value::Text(t) = v {
-                    return Some(t);
-                }
-            }
-        }
-    }
-    None
-}
-
 /// Decode cursor and limit from a catalogue.list CBOR request.
 pub(crate) fn decode_catalogue_list_params(data: &[u8]) -> (usize, usize) {
     use ciborium::value::Value;
@@ -522,7 +477,7 @@ pub fn encode_catalogue_list_request(cursor: usize, limit: usize) -> Vec<u8> {
     use ciborium::value::Value;
     let map = Value::Map(vec![
         (
-            Value::Integer(CBOR_KEY_METHOD.into()),
+            Value::Integer(sdk_rpc::METHOD.into()),
             Value::Text("catalogue.list".to_string()),
         ),
         (
@@ -546,7 +501,7 @@ pub fn encode_has_blob_request(blob_ids: &[String]) -> Vec<u8> {
     let ids: Vec<Value> = blob_ids.iter().map(|s| Value::Text(s.clone())).collect();
     let map = Value::Map(vec![
         (
-            Value::Integer(CBOR_KEY_METHOD.into()),
+            Value::Integer(sdk_rpc::METHOD.into()),
             Value::Text("catalogue.has_blob".to_string()),
         ),
         (Value::Integer(CBOR_KEY_BLOB_IDS.into()), Value::Array(ids)),

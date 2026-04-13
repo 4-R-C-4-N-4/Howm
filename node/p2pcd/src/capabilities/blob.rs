@@ -143,7 +143,11 @@ pub struct BlobHandler {
     inbound: Arc<RwLock<HashMap<u64, InboundTransfer>>>,
     outbound: Arc<RwLock<HashMap<u64, OutboundTransfer>>>,
     store: Arc<BlobStore>,
-    send_tx: RwLock<Option<tokio::sync::mpsc::Sender<ProtocolMessage>>>,
+    /// Per-peer send channels — keyed by peer_id so messages go through the
+    /// right session.  Populated by the engine on session activation, removed
+    /// on teardown.  The old global `send_tx` was never called in production,
+    /// so every BLOB_OFFER/BLOB_CHUNK was silently dropped.
+    peer_senders: Arc<RwLock<HashMap<PeerId, tokio::sync::mpsc::Sender<ProtocolMessage>>>>,
     /// Channel for transfer completion events (consumed by bridge for callbacks).
     transfer_event_tx: tokio::sync::broadcast::Sender<TransferEvent>,
 }
@@ -155,7 +159,7 @@ impl BlobHandler {
             inbound: Arc::new(RwLock::new(HashMap::new())),
             outbound: Arc::new(RwLock::new(HashMap::new())),
             store: Arc::new(BlobStore::new(&data_dir)),
-            send_tx: RwLock::new(None),
+            peer_senders: Arc::new(RwLock::new(HashMap::new())),
             transfer_event_tx: tx,
         }
     }
@@ -188,29 +192,26 @@ impl BlobHandler {
         &self.store
     }
 
-    pub async fn set_sender(&self, tx: tokio::sync::mpsc::Sender<ProtocolMessage>) {
-        *self.send_tx.write().await = Some(tx);
+    /// Register the send channel for an active peer session.
+    /// Called by the engine when a session reaches Active.
+    pub async fn add_peer_sender(
+        &self,
+        peer_id: PeerId,
+        tx: tokio::sync::mpsc::Sender<ProtocolMessage>,
+    ) {
+        self.peer_senders.write().await.insert(peer_id, tx);
     }
 
-    /// Public API: request a blob from a peer.
-    pub async fn request_blob(&self, transfer_id: u64, blob_hash: [u8; 32]) -> Result<()> {
-        let payload = cbor_encode_map(vec![
-            (
-                keys::TRANSFER_ID,
-                ciborium::value::Value::Integer(transfer_id.into()),
-            ),
-            (
-                keys::BLOB_HASH,
-                ciborium::value::Value::Bytes(blob_hash.to_vec()),
-            ),
-        ]);
-        let msg = make_capability_msg(message_types::BLOB_REQ, payload);
-        if let Some(tx) = self.send_tx.read().await.as_ref() {
-            tx.send(msg)
-                .await
-                .map_err(|e| anyhow::anyhow!("send BLOB_REQ: {}", e))?;
-        }
-        Ok(())
+    /// Remove a peer's send channel on session teardown.
+    pub async fn remove_peer_sender(&self, peer_id: &PeerId) {
+        self.peer_senders.write().await.remove(peer_id);
+    }
+
+    /// Legacy set_sender for tests — sets a sender that responds to any peer.
+    #[cfg(test)]
+    pub async fn set_sender(&self, tx: tokio::sync::mpsc::Sender<ProtocolMessage>) {
+        // Use a dummy peer_id so tests work without a real session.
+        self.peer_senders.write().await.insert([0u8; 32], tx);
     }
 
     /// Resolve max blob size from scope params.
@@ -265,7 +266,8 @@ impl BlobHandler {
                     ciborium::value::Value::Integer(status::NOT_FOUND.into()),
                 ),
             ]);
-            self.send_msg(message_types::BLOB_ACK, ack).await;
+            self.send_msg(&ctx.peer_id, message_types::BLOB_ACK, ack)
+                .await;
             // Emit failed event so bridge callback can notify the requesting capability
             self.emit_transfer_event(
                 transfer_id,
@@ -304,7 +306,8 @@ impl BlobHandler {
                 ciborium::value::Value::Integer(chunk_count.into()),
             ),
         ]);
-        self.send_msg(message_types::BLOB_OFFER, offer).await;
+        self.send_msg(&ctx.peer_id, message_types::BLOB_OFFER, offer)
+            .await;
 
         // Track outbound transfer
         self.outbound.write().await.insert(
@@ -322,8 +325,15 @@ impl BlobHandler {
 
         // Stream chunks (starting from offset)
         let start_chunk = if offset > 0 { offset / chunk_size } else { 0 };
-        self.send_chunks(transfer_id, &hash, start_chunk, chunk_count, chunk_size)
-            .await;
+        self.send_chunks(
+            &ctx.peer_id,
+            transfer_id,
+            &hash,
+            start_chunk,
+            chunk_count,
+            chunk_size,
+        )
+        .await;
 
         Ok(())
     }
@@ -358,7 +368,8 @@ impl BlobHandler {
                     ciborium::value::Value::Integer(status::REJECTED.into()),
                 ),
             ]);
-            self.send_msg(message_types::BLOB_ACK, ack).await;
+            self.send_msg(&ctx.peer_id, message_types::BLOB_ACK, ack)
+                .await;
             return Ok(());
         }
 
@@ -393,7 +404,7 @@ impl BlobHandler {
         Ok(())
     }
 
-    async fn handle_chunk(&self, payload: &[u8], _ctx: &CapabilityContext) -> Result<()> {
+    async fn handle_chunk(&self, payload: &[u8], ctx: &CapabilityContext) -> Result<()> {
         let map = decode_payload(payload)?;
         let transfer_id = cbor_get_int(&map, keys::TRANSFER_ID).unwrap_or(0);
         let chunk_index = cbor_get_int(&map, keys::CHUNK_INDEX).unwrap_or(0);
@@ -457,7 +468,8 @@ impl BlobHandler {
                             ciborium::value::Value::Integer(status::COMPLETE.into()),
                         ),
                     ]);
-                    self.send_msg(message_types::BLOB_ACK, ack).await;
+                    self.send_msg(&ctx.peer_id, message_types::BLOB_ACK, ack)
+                        .await;
                     self.inbound.write().await.remove(&transfer_id);
                 }
                 Err(e) => {
@@ -517,7 +529,8 @@ impl BlobHandler {
                         ),
                         (keys::MISSING_CHUNKS, ciborium::value::Value::Array(all)),
                     ]);
-                    self.send_msg(message_types::BLOB_ACK, ack).await;
+                    self.send_msg(&ctx.peer_id, message_types::BLOB_ACK, ack)
+                        .await;
                 }
             }
         }
@@ -525,7 +538,7 @@ impl BlobHandler {
         Ok(())
     }
 
-    async fn handle_ack(&self, payload: &[u8], _ctx: &CapabilityContext) -> Result<()> {
+    async fn handle_ack(&self, payload: &[u8], ctx: &CapabilityContext) -> Result<()> {
         let map = decode_payload(payload)?;
         let transfer_id = cbor_get_int(&map, keys::TRANSFER_ID).unwrap_or(0);
         let ack_status = cbor_get_int(&map, keys::STATUS).unwrap_or(0);
@@ -563,7 +576,7 @@ impl BlobHandler {
 
                     for idx in indices {
                         if idx < chunk_count {
-                            self.send_one_chunk(transfer_id, &hash, idx, chunk_size)
+                            self.send_one_chunk(&ctx.peer_id, transfer_id, &hash, idx, chunk_size)
                                 .await;
                         }
                     }
@@ -587,6 +600,7 @@ impl BlobHandler {
 
     async fn send_chunks(
         &self,
+        peer_id: &PeerId,
         transfer_id: u64,
         hash: &[u8; 32],
         start: u64,
@@ -594,7 +608,7 @@ impl BlobHandler {
         chunk_size: u64,
     ) {
         for idx in start..count {
-            self.send_one_chunk(transfer_id, hash, idx, chunk_size)
+            self.send_one_chunk(peer_id, transfer_id, hash, idx, chunk_size)
                 .await;
             // Yield between chunks for backpressure
             tokio::task::yield_now().await;
@@ -603,6 +617,7 @@ impl BlobHandler {
 
     async fn send_one_chunk(
         &self,
+        peer_id: &PeerId,
         transfer_id: u64,
         hash: &[u8; 32],
         chunk_index: u64,
@@ -622,7 +637,8 @@ impl BlobHandler {
                     ),
                     (keys::DATA, ciborium::value::Value::Bytes(data)),
                 ]);
-                self.send_msg(message_types::BLOB_CHUNK, chunk_msg).await;
+                self.send_msg(peer_id, message_types::BLOB_CHUNK, chunk_msg)
+                    .await;
             }
             Err(e) => {
                 tracing::warn!(
@@ -635,9 +651,15 @@ impl BlobHandler {
         }
     }
 
-    async fn send_msg(&self, msg_type: u64, payload: Vec<u8>) {
-        if let Some(tx) = self.send_tx.read().await.as_ref() {
+    async fn send_msg(&self, peer_id: &PeerId, msg_type: u64, payload: Vec<u8>) {
+        if let Some(tx) = self.peer_senders.read().await.get(peer_id) {
             let _ = tx.send(make_capability_msg(msg_type, payload)).await;
+        } else {
+            tracing::warn!(
+                "blob: no sender for peer {} — message type {} dropped",
+                hex::encode(&peer_id[..4]),
+                msg_type,
+            );
         }
     }
 

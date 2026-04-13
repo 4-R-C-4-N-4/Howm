@@ -980,10 +980,12 @@ name = "p2pcd"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "axum",
  "base64",
  "ciborium",
  "futures",
  "hex",
+ "include_dir",
  "p2pcd-types",
  "reqwest",
  "reqwest-eventsource",
@@ -991,7 +993,9 @@ dependencies = [
  "serde_json",
  "sha2",
  "tokio",
+ "tower-http",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -1785,6 +1789,7 @@ dependencies = [
  "futures-util",
  "http",
  "http-body",
+ "http-body-util",
  "iri-string",
  "pin-project-lite",
  "tower",

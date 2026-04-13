@@ -8,7 +8,7 @@ use uuid::Uuid;
 #[test]
 fn encode_decode_catalogue_list_request() {
     let cbor = encode_catalogue_list_request(5, 50);
-    let method = decode_rpc_method(&cbor).unwrap();
+    let method = p2pcd::capability_sdk::rpc::extract_method(&cbor).unwrap();
     assert_eq!(method, "catalogue.list");
 
     let (cursor, limit) = decode_catalogue_list_params(&cbor);
@@ -20,7 +20,7 @@ fn encode_decode_catalogue_list_request() {
 fn encode_decode_has_blob_request() {
     let ids = vec!["abc123".to_string(), "def456".to_string()];
     let cbor = encode_has_blob_request(&ids);
-    let method = decode_rpc_method(&cbor).unwrap();
+    let method = p2pcd::capability_sdk::rpc::extract_method(&cbor).unwrap();
     assert_eq!(method, "catalogue.has_blob");
 
     let decoded_ids = decode_has_blob_params(&cbor);
@@ -122,7 +122,7 @@ fn catalogue_list_default_params() {
     // Empty CBOR map
     use ciborium::value::Value;
     let map = Value::Map(vec![(
-        Value::Integer(CBOR_KEY_METHOD.into()),
+        Value::Integer(p2pcd::capability_sdk::rpc::METHOD.into()),
         Value::Text("catalogue.list".to_string()),
     )]);
     let mut buf = Vec::new();
@@ -253,7 +253,6 @@ fn test_app() -> (axum::Router, Arc<crate::db::FilesDb>, tempfile::TempDir) {
     );
 
     let app = axum::Router::new()
-        .route("/health", axum::routing::get(super::health))
         .route(
             "/offerings",
             axum::routing::get(super::list_offerings).post(super::create_offering),
@@ -650,7 +649,7 @@ async fn http_inbound_unknown_method() {
     // Encode a CBOR payload with an unknown method
     use ciborium::value::Value;
     let map = Value::Map(vec![(
-        Value::Integer(CBOR_KEY_METHOD.into()),
+        Value::Integer(p2pcd::capability_sdk::rpc::METHOD.into()),
         Value::Text("unknown.method".to_string()),
     )]);
     let mut buf = Vec::new();

@@ -346,6 +346,65 @@ impl ProtocolEngine {
                 rpc.remove_peer_active_set(&peer_id).await;
             }
         }
+        if let Some(handler) = self.cap_router.handler_by_name("core.data.blob.1") {
+            if let Some(blob) = handler
+                .as_any()
+                .downcast_ref::<p2pcd::capabilities::blob::BlobHandler>()
+            {
+                blob.remove_peer_sender(&peer_id).await;
+            }
+        }
+        if let Some(handler) = self.cap_router.handler_by_name("core.data.stream.1") {
+            if let Some(h) = handler
+                .as_any()
+                .downcast_ref::<p2pcd::capabilities::stream::StreamHandler>()
+            {
+                h.remove_peer_sender(&peer_id).await;
+            }
+        }
+        if let Some(handler) = self.cap_router.handler_by_name("core.session.latency.1") {
+            if let Some(h) = handler
+                .as_any()
+                .downcast_ref::<p2pcd::capabilities::latency::LatencyHandler>()
+            {
+                h.remove_peer_sender(&peer_id).await;
+            }
+        }
+        if let Some(handler) = self.cap_router.handler_by_name("core.session.timesync.1") {
+            if let Some(h) = handler
+                .as_any()
+                .downcast_ref::<p2pcd::capabilities::timesync::TimesyncHandler>()
+            {
+                h.remove_peer_sender(&peer_id).await;
+            }
+        }
+        if let Some(handler) = self.cap_router.handler_by_name("core.session.attest.1") {
+            if let Some(h) = handler
+                .as_any()
+                .downcast_ref::<p2pcd::capabilities::attest::AttestHandler>()
+            {
+                h.remove_peer_sender(&peer_id).await;
+            }
+        }
+        if let Some(handler) = self
+            .cap_router
+            .handler_by_name("core.network.peerexchange.1")
+        {
+            if let Some(h) = handler
+                .as_any()
+                .downcast_ref::<p2pcd::capabilities::peerexchange::PeerExchangeHandler>()
+            {
+                h.remove_peer_sender(&peer_id).await;
+            }
+        }
+        if let Some(handler) = self.cap_router.handler_by_name("core.network.endpoint.1") {
+            if let Some(h) = handler
+                .as_any()
+                .downcast_ref::<p2pcd::capabilities::endpoint::EndpointHandler>()
+            {
+                h.remove_peer_sender(&peer_id).await;
+            }
+        }
         if let Some(handle) = self.mux_handles.lock().await.remove(&peer_id) {
             handle.abort();
         }
@@ -535,6 +594,65 @@ impl ProtocolEngine {
                 rpc.remove_peer_active_set(&peer_id).await;
             }
         }
+        if let Some(handler) = self.cap_router.handler_by_name("core.data.blob.1") {
+            if let Some(blob) = handler
+                .as_any()
+                .downcast_ref::<p2pcd::capabilities::blob::BlobHandler>()
+            {
+                blob.remove_peer_sender(&peer_id).await;
+            }
+        }
+        if let Some(handler) = self.cap_router.handler_by_name("core.data.stream.1") {
+            if let Some(h) = handler
+                .as_any()
+                .downcast_ref::<p2pcd::capabilities::stream::StreamHandler>()
+            {
+                h.remove_peer_sender(&peer_id).await;
+            }
+        }
+        if let Some(handler) = self.cap_router.handler_by_name("core.session.latency.1") {
+            if let Some(h) = handler
+                .as_any()
+                .downcast_ref::<p2pcd::capabilities::latency::LatencyHandler>()
+            {
+                h.remove_peer_sender(&peer_id).await;
+            }
+        }
+        if let Some(handler) = self.cap_router.handler_by_name("core.session.timesync.1") {
+            if let Some(h) = handler
+                .as_any()
+                .downcast_ref::<p2pcd::capabilities::timesync::TimesyncHandler>()
+            {
+                h.remove_peer_sender(&peer_id).await;
+            }
+        }
+        if let Some(handler) = self.cap_router.handler_by_name("core.session.attest.1") {
+            if let Some(h) = handler
+                .as_any()
+                .downcast_ref::<p2pcd::capabilities::attest::AttestHandler>()
+            {
+                h.remove_peer_sender(&peer_id).await;
+            }
+        }
+        if let Some(handler) = self
+            .cap_router
+            .handler_by_name("core.network.peerexchange.1")
+        {
+            if let Some(h) = handler
+                .as_any()
+                .downcast_ref::<p2pcd::capabilities::peerexchange::PeerExchangeHandler>()
+            {
+                h.remove_peer_sender(&peer_id).await;
+            }
+        }
+        if let Some(handler) = self.cap_router.handler_by_name("core.network.endpoint.1") {
+            if let Some(h) = handler
+                .as_any()
+                .downcast_ref::<p2pcd::capabilities::endpoint::EndpointHandler>()
+            {
+                h.remove_peer_sender(&peer_id).await;
+            }
+        }
         if let Some(handle) = self.mux_handles.lock().await.remove(&peer_id) {
             handle.abort();
         }
@@ -696,6 +814,13 @@ impl ProtocolEngine {
             // Clone send_tx for RPC handler registration before heartbeat can move it.
             // Done here (before the heartbeat block) to avoid borrow-after-move.
             let rpc_send_tx = session_mux.send_tx.clone();
+            let blob_send_tx = session_mux.send_tx.clone();
+            let stream_send_tx = session_mux.send_tx.clone();
+            let latency_send_tx = session_mux.send_tx.clone();
+            let timesync_send_tx = session_mux.send_tx.clone();
+            let attest_send_tx = session_mux.send_tx.clone();
+            let pex_send_tx = session_mux.send_tx.clone();
+            let endpoint_send_tx = session_mux.send_tx.clone();
 
             // Store the shared sender so the bridge can send cap messages to this peer
             self.peer_senders
@@ -737,12 +862,77 @@ impl ProtocolEngine {
                 {
                     rpc.add_peer_sender(peer_id, rpc_send_tx).await;
                     rpc.set_peer_active_set(peer_id, s.active_set.clone()).await;
-                    // Wire the forwarder once (idempotent — subsequent calls are no-ops
-                    // since the Arc<CapabilityNotifier> is the same).
                     rpc.set_forwarder(Arc::clone(&self.notifier)
                         as Arc<dyn p2pcd::capabilities::rpc::RpcForwarder>)
                         .await;
                     tracing::debug!("engine: registered RPC sender for {}", short(peer_id));
+                }
+            }
+
+            // Wire blob handler's per-peer sender so BLOB_OFFER/BLOB_CHUNK
+            // messages can reach the peer. Without this, the blob handler's
+            // send_msg silently drops every outbound message (same bug class
+            // as the RPC handler had before add_peer_sender was introduced).
+            if let Some(handler) = self.cap_router.handler_by_name("core.data.blob.1") {
+                if let Some(blob) = handler
+                    .as_any()
+                    .downcast_ref::<p2pcd::capabilities::blob::BlobHandler>()
+                {
+                    blob.add_peer_sender(peer_id, blob_send_tx).await;
+                    tracing::debug!("engine: registered blob sender for {}", short(peer_id));
+                }
+            }
+
+            // Wire remaining capability handlers' per-peer senders
+            if let Some(handler) = self.cap_router.handler_by_name("core.data.stream.1") {
+                if let Some(h) = handler
+                    .as_any()
+                    .downcast_ref::<p2pcd::capabilities::stream::StreamHandler>()
+                {
+                    h.add_peer_sender(peer_id, stream_send_tx).await;
+                }
+            }
+            if let Some(handler) = self.cap_router.handler_by_name("core.session.latency.1") {
+                if let Some(h) = handler
+                    .as_any()
+                    .downcast_ref::<p2pcd::capabilities::latency::LatencyHandler>()
+                {
+                    h.add_peer_sender(peer_id, latency_send_tx).await;
+                }
+            }
+            if let Some(handler) = self.cap_router.handler_by_name("core.session.timesync.1") {
+                if let Some(h) = handler
+                    .as_any()
+                    .downcast_ref::<p2pcd::capabilities::timesync::TimesyncHandler>()
+                {
+                    h.add_peer_sender(peer_id, timesync_send_tx).await;
+                }
+            }
+            if let Some(handler) = self.cap_router.handler_by_name("core.session.attest.1") {
+                if let Some(h) = handler
+                    .as_any()
+                    .downcast_ref::<p2pcd::capabilities::attest::AttestHandler>()
+                {
+                    h.add_peer_sender(peer_id, attest_send_tx).await;
+                }
+            }
+            if let Some(handler) = self
+                .cap_router
+                .handler_by_name("core.network.peerexchange.1")
+            {
+                if let Some(h) = handler
+                    .as_any()
+                    .downcast_ref::<p2pcd::capabilities::peerexchange::PeerExchangeHandler>(
+                ) {
+                    h.add_peer_sender(peer_id, pex_send_tx).await;
+                }
+            }
+            if let Some(handler) = self.cap_router.handler_by_name("core.network.endpoint.1") {
+                if let Some(h) = handler
+                    .as_any()
+                    .downcast_ref::<p2pcd::capabilities::endpoint::EndpointHandler>()
+                {
+                    h.add_peer_sender(peer_id, endpoint_send_tx).await;
                 }
             }
 
@@ -1223,6 +1413,13 @@ impl ProtocolEngine {
     }
 
     // ── Address helpers ───────────────────────────────────────────────────────
+
+    /// Resolve the WG overlay IP for a peer (public wrapper for bridge/SSE use).
+    pub async fn peer_wg_ip(&self, peer_id: &PeerId) -> Option<String> {
+        self.resolve_peer_addr(*peer_id)
+            .await
+            .map(|addr| addr.ip().to_string())
+    }
 
     async fn resolve_peer_addr(&self, peer_id: PeerId) -> Option<SocketAddr> {
         // Check test override map first (bypasses `wg show`).

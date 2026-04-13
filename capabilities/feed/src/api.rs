@@ -452,10 +452,6 @@ pub async fn delete_post(
     }
 }
 
-pub async fn health() -> Json<Value> {
-    Json(json!({ "status": "ok" }))
-}
-
 // ── Inbound capability message handler ───────────────────────────────────────
 
 /// Called by the daemon when it forwards an inbound capability message to us.

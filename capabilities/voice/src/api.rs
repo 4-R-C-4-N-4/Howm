@@ -64,6 +64,9 @@ macro_rules! require_peer_id {
 // ── Handlers ─────────────────────────────────────────────────────────────────
 
 /// POST /rooms — create a new voice room.
+///
+/// If `invite` contains peer IDs, RPC invites are sent to each one
+/// (fire-and-forget, same as quick_call and invite_peers).
 pub async fn create_room(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
@@ -71,22 +74,62 @@ pub async fn create_room(
 ) -> impl IntoResponse {
     let peer_id = require_peer_id!(&headers);
 
+    let invited = req.invite.clone();
     let room = state
         .rooms
-        .create_room(&peer_id, req.name, req.invite, req.max_members);
+        .create_room(&peer_id, req.name, invited.clone(), req.max_members);
 
     info!("Room '{}' created by {}", room.room_id, peer_id);
+
+    // Send invite RPCs to every peer in the invite list.
+    let room_id = room.room_id.clone();
+    let room_name = room.name.clone().unwrap_or_default();
+    let creator = peer_id.clone();
+    for target in &invited {
+        let state_clone = state.clone();
+        let rid = room_id.clone();
+        let rname = room_name.clone();
+        let inviter = creator.clone();
+        let target = target.clone();
+        tokio::spawn(async move {
+            let _ =
+                crate::bridge::send_invite(&state_clone, &target, &rid, &rname, &inviter).await;
+        });
+    }
+
     (StatusCode::CREATED, Json(json!(room))).into_response()
 }
 
 /// GET /rooms — list rooms for the current peer.
+///
+/// Each room in the response includes `is_member` and `is_invited` flags
+/// so the UI can render join/decline buttons without needing to know the
+/// caller's raw peer ID.
 pub async fn list_rooms(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
 ) -> impl IntoResponse {
     let peer_id = require_peer_id!(&headers);
     let rooms = state.rooms.list_rooms_for_peer(&peer_id);
-    Json(json!({ "rooms": rooms })).into_response()
+    let enriched: Vec<serde_json::Value> = rooms
+        .iter()
+        .map(|r| {
+            let mut v = serde_json::to_value(r).unwrap_or_default();
+            if let Some(obj) = v.as_object_mut() {
+                obj.insert(
+                    "is_member".to_string(),
+                    json!(r.members.iter().any(|m| m.peer_id == peer_id)),
+                );
+                obj.insert(
+                    "is_invited".to_string(),
+                    json!(r.invited.contains(&peer_id)
+                        || (r.members.is_empty() && !r.invited.is_empty())),
+                );
+            }
+            v
+        })
+        .collect();
+    Json(json!({ "rooms": enriched })).into_response()
 }
 
 /// GET /rooms/:room_id — get room details.
@@ -380,7 +423,34 @@ pub async fn quick_call(
     (StatusCode::CREATED, Json(json!(room))).into_response()
 }
 
-/// GET /health — health check.
-pub async fn health() -> impl IntoResponse {
-    Json(json!({"status": "ok", "capability": "social.voice"}))
+/// GET /me — return the caller's peer identity as seen by the server.
+///
+/// The daemon proxy injects `X-Node-Id` (local) or `X-Peer-Id` (remote).
+/// The UI needs this to identify itself on the direct WebSocket connection
+/// (which bypasses the proxy and has no identity headers).
+pub async fn whoami(headers: axum::http::HeaderMap) -> impl IntoResponse {
+    match extract_peer_id(&headers) {
+        Some(id) => Json(json!({ "peer_id": id })),
+        None => Json(json!({ "peer_id": null })),
+    }
+}
+
+/// GET /peers — list peers active for the voice capability.
+///
+/// Uses the PeerStream tracker (same pattern as files/messaging) instead of
+/// querying the presence capability, which is a separate service that may not
+/// be running and whose peer list is scoped to its own capability name.
+pub async fn list_peers(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let peers = state.tracker.peers().await;
+    let list: Vec<serde_json::Value> = peers
+        .iter()
+        .map(|p| {
+            json!({
+                "peer_id": p.peer_id,
+                "wg_address": p.wg_address,
+                "active_since": p.active_since,
+            })
+        })
+        .collect();
+    Json(json!({ "peers": list }))
 }

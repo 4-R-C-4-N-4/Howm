@@ -25,7 +25,7 @@ const DEFAULT_WINDOW_SIZE: usize = 20;
 pub struct LatencyHandler {
     samples: Arc<RwLock<HashMap<PeerId, VecDeque<u64>>>>,
     window_size: usize,
-    send_tx: RwLock<Option<tokio::sync::mpsc::Sender<ProtocolMessage>>>,
+    peer_senders: Arc<RwLock<HashMap<PeerId, tokio::sync::mpsc::Sender<ProtocolMessage>>>>,
 }
 
 impl Default for LatencyHandler {
@@ -39,7 +39,7 @@ impl LatencyHandler {
         Self {
             samples: Arc::new(RwLock::new(HashMap::new())),
             window_size: DEFAULT_WINDOW_SIZE,
-            send_tx: RwLock::new(None),
+            peer_senders: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -48,8 +48,21 @@ impl LatencyHandler {
         self
     }
 
+    pub async fn add_peer_sender(
+        &self,
+        peer_id: PeerId,
+        tx: tokio::sync::mpsc::Sender<ProtocolMessage>,
+    ) {
+        self.peer_senders.write().await.insert(peer_id, tx);
+    }
+
+    pub async fn remove_peer_sender(&self, peer_id: &PeerId) {
+        self.peer_senders.write().await.remove(peer_id);
+    }
+
+    #[cfg(test)]
     pub async fn set_sender(&self, tx: tokio::sync::mpsc::Sender<ProtocolMessage>) {
-        *self.send_tx.write().await = Some(tx);
+        self.peer_senders.write().await.insert([0u8; 32], tx);
     }
 
     pub async fn get_samples(&self, peer_id: &PeerId) -> Vec<u64> {
@@ -112,8 +125,13 @@ impl CapabilityHandler for LatencyHandler {
                         ciborium::value::Value::Integer(ciborium::value::Integer::from(ts)),
                     )]);
                     let msg = make_capability_msg(message_types::LAT_PONG, resp);
-                    if let Some(tx) = self.send_tx.read().await.as_ref() {
+                    if let Some(tx) = self.peer_senders.read().await.get(&peer_id) {
                         let _ = tx.send(msg).await;
+                    } else {
+                        tracing::warn!(
+                            "latency: no sender for peer {} — message dropped",
+                            hex::encode(&peer_id[..4])
+                        );
                     }
                 }
                 message_types::LAT_PONG => {

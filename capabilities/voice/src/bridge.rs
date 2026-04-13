@@ -17,7 +17,7 @@ use tracing::{info, warn};
 
 use crate::AppState;
 
-use p2pcd::capability_sdk::InboundMessage;
+use p2pcd::capability_sdk::{rpc as sdk_rpc, InboundMessage};
 
 // ── RPC payload types (CBOR-encoded over bridge) ─────────────────────────────
 
@@ -54,48 +54,6 @@ pub struct VoiceSignalPayload {
 // connection started in main.rs. The on_inactive hook performs room teardown
 // with a generation guard to prevent double-fire on session flaps.
 
-/// Extract RPC method name from a CBOR payload (key 1 = method name).
-fn extract_rpc_method(data: &[u8]) -> Option<String> {
-    use ciborium::value::Value;
-    let value: Value = ciborium::from_reader(data).ok()?;
-    let map = match value {
-        Value::Map(m) => m,
-        _ => return None,
-    };
-    for (k, v) in map {
-        if let Value::Integer(i) = k {
-            let key: i128 = i.into();
-            if key == 1 {
-                if let Value::Text(t) = v {
-                    return Some(t);
-                }
-            }
-        }
-    }
-    None
-}
-
-/// Extract inner payload bytes from a CBOR RPC envelope (key 3 = payload).
-fn extract_rpc_payload(data: &[u8]) -> Option<Vec<u8>> {
-    use ciborium::value::Value;
-    let value: Value = ciborium::from_reader(data).ok()?;
-    let map = match value {
-        Value::Map(m) => m,
-        _ => return None,
-    };
-    for (k, v) in map {
-        if let Value::Integer(i) = k {
-            let key: i128 = i.into();
-            if key == 3 {
-                if let Value::Bytes(b) = v {
-                    return Some(b);
-                }
-            }
-        }
-    }
-    None
-}
-
 /// POST /p2pcd/inbound — receive a forwarded capability message from the daemon.
 pub async fn inbound_message(
     State(state): State<AppState>,
@@ -112,7 +70,7 @@ pub async fn inbound_message(
     // Extract method from CBOR RPC envelope (key 1).
     // For RPC_REQ (message_type 22) the inner payload is in key 3.
     // For direct forwarding the payload may already be the CBOR body.
-    let method = match extract_rpc_method(&raw) {
+    let method = match sdk_rpc::extract_method(&raw) {
         Some(m) => m,
         None => {
             warn!("No RPC method in inbound payload");
@@ -122,7 +80,7 @@ pub async fn inbound_message(
 
     // For RPC_REQ forwarding, the actual payload is nested in CBOR key 3.
     let body = if payload.message_type == 22 {
-        extract_rpc_payload(&raw).unwrap_or(raw)
+        sdk_rpc::extract_inner_payload(&raw).unwrap_or(raw)
     } else {
         raw
     };
@@ -156,11 +114,42 @@ fn handle_invite(state: &AppState, from_peer_id: &str, raw: &[u8]) -> StatusCode
         payload.room_id
     );
 
-    // Add to invited list if room exists (for cross-node rooms)
-    // or create a placeholder room entry for the invite
-    let _ = state
-        .rooms
-        .invite_peers(&payload.room_id, vec![from_peer_id.to_string()]);
+    // Create a placeholder room on the invited side if it doesn't exist yet.
+    // The room was created on the inviter's machine; we need a local copy so
+    // GET /rooms shows the invite and the UI can render Join/Decline.
+    {
+        let rooms = state.rooms.rooms.read();
+        if !rooms.contains_key(&payload.room_id) {
+            drop(rooms);
+            // We don't know the real peer_id of the local user here — the
+            // inviter created the room. Use from_peer_id (the inviter) as
+            // created_by since they're the creator.
+            let room_name = if payload.room_name.is_empty() {
+                None
+            } else {
+                Some(payload.room_name.clone())
+            };
+            let placeholder = crate::state::Room {
+                room_id: payload.room_id.clone(),
+                name: room_name,
+                created_by: payload.inviter_peer_id.clone(),
+                created_at: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs(),
+                members: vec![], // inviter is remote, not a local member
+                invited: vec![from_peer_id.to_string()],
+                max_members: 10,
+            };
+            state.rooms.rooms.write().insert(payload.room_id.clone(), placeholder);
+            info!("Created placeholder room {} for invite", payload.room_id);
+        } else {
+            // Room exists — just add to invited list
+            let _ = state
+                .rooms
+                .invite_peers(&payload.room_id, vec![from_peer_id.to_string()]);
+        }
+    }
 
     // Fire notification
     let room_name = if payload.room_name.is_empty() {
@@ -252,11 +241,27 @@ pub async fn send_invite(
     };
     let cbor = encode_cbor(&payload)?;
 
-    state
+    match state
         .bridge
         .rpc_call(&target_bytes, "voice.invite", &cbor, Some(4000))
         .await
-        .map_err(|e| format!("bridge RPC failed: {e}"))?;
+    {
+        Ok(resp) => {
+            tracing::info!(
+                "voice.invite RPC sent to {} — resp {} bytes",
+                &target_peer_id_b64[..8.min(target_peer_id_b64.len())],
+                resp.len(),
+            );
+        }
+        Err(e) => {
+            tracing::warn!(
+                "voice.invite RPC to {} FAILED: {}",
+                &target_peer_id_b64[..8.min(target_peer_id_b64.len())],
+                e,
+            );
+            return Err(format!("bridge RPC failed: {e}"));
+        }
+    }
 
     Ok(())
 }
