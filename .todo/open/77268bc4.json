@@ -1,13 +1,13 @@
 {
   "id": "77268bc4",
   "type": "refactor",
-  "state": "open",
+  "state": "active",
   "summary": "Split p2pcd-types/src/lib.rs (1248 lines) into submodules: wire.rs, message_types.rs, scope.rs, handler.rs with lib.rs re-exporting",
   "source": {
     "type": "agent"
   },
   "created_at": "2026-04-13T13:44:09.077Z",
-  "updated_at": "2026-04-13T13:44:09.077Z",
+  "updated_at": "2026-04-13T14:15:31.609Z",
   "tags": [
     "tier2"
   ],
