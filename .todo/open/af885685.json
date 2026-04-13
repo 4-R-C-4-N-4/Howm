@@ -1,0 +1,18 @@
+{
+  "id": "af885685",
+  "type": "debt",
+  "state": "open",
+  "summary": "R7 — TrustGate / PeerCache injectable traits for ProtocolEngine (deferred: do only when unit-testing engine logic becomes painful)",
+  "source": {
+    "type": "agent"
+  },
+  "created_at": "2026-04-13T13:44:09.105Z",
+  "updated_at": "2026-04-13T13:44:09.105Z",
+  "tags": [
+    "tier3",
+    "deferred"
+  ],
+  "relationships": {
+    "parent": "b25aecff"
+  }
+}

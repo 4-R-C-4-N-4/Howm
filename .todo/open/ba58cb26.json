@@ -1,0 +1,17 @@
+{
+  "id": "ba58cb26",
+  "type": "refactor",
+  "state": "open",
+  "summary": "R6 — Group connectivity modules (matchmake.rs, punch.rs, stun.rs, lan_discovery.rs, net_detect.rs) into connectivity/ subfolder with re-export mod.rs; move handler wiring out of main.rs",
+  "source": {
+    "type": "agent"
+  },
+  "created_at": "2026-04-13T13:44:09.047Z",
+  "updated_at": "2026-04-13T13:44:09.047Z",
+  "tags": [
+    "tier2"
+  ],
+  "relationships": {
+    "parent": "b25aecff"
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "id": "76106223",
+  "type": "feature",
+  "state": "open",
+  "summary": "Bootstrap wallet + world caps on new SDK (skeleton Cargo.toml, manifest.json, main.rs, schema, state.rs, api.rs for each)",
+  "source": {
+    "type": "agent"
+  },
+  "created_at": "2026-04-13T13:44:08.955Z",
+  "updated_at": "2026-04-13T13:44:08.955Z",
+  "tags": [
+    "tier1",
+    "deferred"
+  ],
+  "relationships": {
+    "parent": "b25aecff"
+  }
+}
