@@ -1,17 +1,23 @@
 {
   "id": "43edcd43",
   "type": "refactor",
-  "state": "open",
+  "state": "active",
   "summary": "R4 — Split engine.rs (2435 lines) into engine/ subdirectory: mod.rs, session_runner.rs, glare.rs, peer_cache.rs, lan_hints.rs, teardown.rs",
   "source": {
     "type": "agent"
   },
   "created_at": "2026-04-13T13:44:08.987Z",
-  "updated_at": "2026-04-13T13:44:08.987Z",
+  "updated_at": "2026-04-13T13:45:51.769Z",
   "tags": [
     "tier2"
   ],
   "relationships": {
     "parent": "b25aecff"
+  },
+  "work": {
+    "branch": "todo/b25aecff",
+    "base_branch": "main",
+    "started_at": "2026-04-13T13:45:51.769Z",
+    "started_by": "anonlessness"
   }
 }
