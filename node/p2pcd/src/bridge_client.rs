@@ -585,6 +585,7 @@ mod tests {
         let info = PeerInfo {
             peer_id: encode_b64(&id),
             capabilities: vec!["test.cap.1".into()],
+            wg_address: None,
         };
         assert_eq!(info.peer_id_bytes().unwrap(), id);
     }
@@ -594,6 +595,7 @@ mod tests {
         let info = PeerInfo {
             peer_id: encode_b64(&[1, 2, 3]),
             capabilities: vec![],
+            wg_address: None,
         };
         assert!(info.peer_id_bytes().is_err());
     }

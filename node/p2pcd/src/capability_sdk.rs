@@ -970,6 +970,7 @@ pub mod app {
         body_limit: usize,
         ui_dir: Option<&'static Dir<'static>>,
         inbound: Option<InboundFn<S>>,
+        #[allow(clippy::type_complexity)]
         routes: Option<Box<dyn FnOnce(Router<S>) -> Router<S> + Send>>,
         background_tasks: Vec<Pin<Box<dyn Future<Output = ()> + Send>>>,
     }
