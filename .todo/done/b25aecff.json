@@ -1,0 +1,28 @@
+{
+  "id": "b25aecff",
+  "type": "refactor",
+  "state": "done",
+  "summary": "cap-sdk refactor — Tier 2 structural cleanup + deferred items",
+  "source": {
+    "type": "agent"
+  },
+  "created_at": "2026-04-13T13:43:53.553Z",
+  "updated_at": "2026-04-13T14:22:18.236Z",
+  "relationships": {
+    "children": [
+      "76106223",
+      "43edcd43",
+      "2578b6a9",
+      "ba58cb26",
+      "77268bc4",
+      "af885685",
+      "86923fde"
+    ]
+  },
+  "resolution": {
+    "commit": "6de2c54615e57965153cd3cbe28c0078cd1f4a90",
+    "resolved_at": "2026-04-13T14:22:18.236Z",
+    "resolved_by": "unknown",
+    "note": "All Tier 2 structural cleanup tasks complete: R4 engine split, R5 bridge split (+ /latency dead route removed), R6 connectivity grouping, p2pcd-types lib.rs split. All cargo test --workspace --no-run gates passed."
+  }
+}
