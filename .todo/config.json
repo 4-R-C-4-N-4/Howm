@@ -1,0 +1,30 @@
+{
+  "project": {
+    "name": ""
+  },
+  "behavior": {
+    "commit_prefix": "todo:"
+  },
+  "intake": {
+    "dedup_strategy": "fingerprint",
+    "scan_patterns": [
+      "TODO",
+      "FIXME",
+      "HACK",
+      "XXX"
+    ],
+    "scan_exclude": [
+      ".todo",
+      "node_modules",
+      ".venv",
+      "__pycache__",
+      ".git",
+      "dist",
+      "build"
+    ]
+  },
+  "display": {
+    "id_length": 8,
+    "date_format": "relative"
+  }
+}
