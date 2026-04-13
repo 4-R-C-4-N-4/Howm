@@ -1,0 +1,11 @@
+{
+  "id": "b25aecff",
+  "type": "refactor",
+  "state": "open",
+  "summary": "cap-sdk refactor — Tier 2 structural cleanup + deferred items",
+  "source": {
+    "type": "agent"
+  },
+  "created_at": "2026-04-13T13:43:53.553Z",
+  "updated_at": "2026-04-13T13:43:53.553Z"
+}
