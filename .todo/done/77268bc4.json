@@ -1,0 +1,23 @@
+{
+  "id": "77268bc4",
+  "type": "refactor",
+  "state": "done",
+  "summary": "Split p2pcd-types/src/lib.rs (1248 lines) into submodules: wire.rs, message_types.rs, scope.rs, handler.rs with lib.rs re-exporting",
+  "source": {
+    "type": "agent"
+  },
+  "created_at": "2026-04-13T13:44:09.077Z",
+  "updated_at": "2026-04-13T14:22:13.661Z",
+  "tags": [
+    "tier2"
+  ],
+  "relationships": {
+    "parent": "b25aecff"
+  },
+  "resolution": {
+    "commit": "04e8cec807852922fcfe17b9443ecca8fbf424e8",
+    "resolved_at": "2026-04-13T14:22:13.661Z",
+    "resolved_by": "unknown",
+    "note": "Split p2pcd-types/src/lib.rs (1253 lines) into wire.rs, scope.rs, handler.rs, message_types.rs. lib.rs keeps PeerId/constants/CapabilityDeclaration/DiscoveryManifest/WgPeerState/tests. pub use re-exports preserve all crate-level paths. cargo test --workspace --no-run passes."
+  }
+}
