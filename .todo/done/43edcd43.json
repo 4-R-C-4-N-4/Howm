@@ -1,13 +1,13 @@
 {
   "id": "43edcd43",
   "type": "refactor",
-  "state": "active",
+  "state": "done",
   "summary": "R4 — Split engine.rs (2435 lines) into engine/ subdirectory: mod.rs, session_runner.rs, glare.rs, peer_cache.rs, lan_hints.rs, teardown.rs",
   "source": {
     "type": "agent"
   },
   "created_at": "2026-04-13T13:44:08.987Z",
-  "updated_at": "2026-04-13T13:45:51.769Z",
+  "updated_at": "2026-04-13T14:03:10.413Z",
   "tags": [
     "tier2"
   ],
@@ -19,5 +19,11 @@
     "base_branch": "main",
     "started_at": "2026-04-13T13:45:51.769Z",
     "started_by": "anonlessness"
+  },
+  "resolution": {
+    "commit": "f4f11c6df817522cfa33ab844aa886ce16cd3d9e",
+    "resolved_at": "2026-04-13T14:03:10.413Z",
+    "resolved_by": "unknown",
+    "note": "Split engine.rs (2636 lines) into engine/ subdirectory: mod.rs, peer_cache.rs, lan_hints.rs, teardown.rs, session_runner.rs. Fields pub(crate). All external API paths preserved. cargo test --workspace --no-run passes."
   }
 }
