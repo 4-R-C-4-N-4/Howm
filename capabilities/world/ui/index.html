@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>howm world</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #000; overflow: hidden; position: relative; }
+    #display { display: block; }
+    #status {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      color: #7090c0;
+      font-family: monospace;
+      font-size: 14px;
+      z-index: 10;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="display"></canvas>
+  <div id="status">Loading...</div>
+  <script src="astral.js"></script>
+</body>
+</html>

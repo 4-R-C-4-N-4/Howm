@@ -1,0 +1,425 @@
+# Howm World Generation — Outside Space Design
+
+**Author:** Ivy Darling  
+**Project:** Howm  
+**Document type:** Design Reference  
+**Status:** Draft  
+**Version:** 0.2  
+**Date:** 2026-03-25  
+**Related BRD:** BRD-004 (`howm.world.room.1`)
+
+---
+
+## 1. Overview
+
+The Outside space in Howm is a navigable city that is a spatial expression of IP address space. Every IP address in existence corresponds to a distinct city district, and the entire address space forms a single continuous world. A peer's Outside is not located in a geographic place — it *is* the place. The city at a given IP address is deterministically generated from that address alone, and is identical for every peer who visits it.
+
+This document specifies the world generation algorithm: how IP addresses map to spatial coordinates, how district boundaries are computed, how districts derive their visual and generative identity, how the road network is generated within and across district boundaries, and how the city remains continuous as the player navigates.
+
+---
+
+## 2. Design Principles
+
+**Determinism above all.** The same IP address must produce the same district on every client, every time, without coordination. No random state, no server authority, no time-dependent values. Generation is a pure function of the IP.
+
+**IP space is the world map.** The address space is not a metaphor for geography — it is the coordinate system. Navigating the city is navigating the address space. Subnets are neighborhoods. Reserved ranges have a distinct character. Dark, unallocated space is wilderness.
+
+**Local rendering only.** No attempt is made to represent the full address space. The renderer is first-person; only the immediate district and its neighbors are ever generated. Districts load on demand as the player navigates.
+
+**Cells are permanent.** A district's shape and identity never change regardless of which cell is the current query center. Jitter and all generative parameters are absolute functions of the cell's key, not relative to any view state.
+
+**IPv4 and IPv6 are separate worlds.** They do not share a coordinate space, do not need to look alike, and are navigated independently. The IPv4 world is dense and fully inhabited. The IPv6 world is vast, mostly dark, with islands of civilization in allocated ranges.
+
+---
+
+## 3. Cell Model
+
+### 3.1 Granularity
+
+Each distinct IP district corresponds to one **cell**. Cell granularity is:
+
+| Mode | Granularity | Cells in space |
+|------|-------------|----------------|
+| IPv4 | `/24` (256 addresses) | ~16.7 million |
+| IPv6 | `/32` (2⁹⁶ addresses) | ~4.3 billion |
+
+A `/24` block is the natural city-block unit for IPv4: large enough to be a coherent place, small enough that transitions between cells happen at a human navigation scale.
+
+### 3.2 Cell Key
+
+Each cell is identified by a compact integer key derived from its base address:
+
+```
+IPv4:  key = (octet1 << 16) | (octet2 << 8) | octet3        // 24-bit
+IPv6:  key = (group0 << 16) | group1                         // 32-bit, top /32
+```
+
+The key is the sole input to all hash functions. It is stable, human-readable, and round-trips cleanly to and from the cell's IP base address.
+
+### 3.3 Grid Coordinates
+
+Each cell has a 2D grid position derived directly from its IP octets — no interleaving, no Morton arithmetic:
+
+```
+IPv4:  gx = octet3
+       gy = (octet1 << 8) | octet2
+
+IPv6:  gx = group1
+       gy = group0
+```
+
+Grid stepping is octet arithmetic: moving east increments `octet3`, wrapping at 255. Moving north increments the combined `octet1:octet2` value. Subnet boundaries (where an octet rolls over) are therefore natural district-scale transitions: crossing from `.255` to `.0` in the third octet is a perceptible neighborhood boundary.
+
+### 3.4 Hash Functions
+
+All per-cell deterministic values are derived from two independent 32-bit hashes of the cell key:
+
+```
+ha(k):  k ^ (k >>> 16)  × 0x45d9f3b  (×2, avalanche)
+hb(k):  k ^ (k >>> 16)  × 0x8da6b343 (×2, avalanche)
+```
+
+`ha` drives X-axis jitter and all color/hue derivation. `hb` drives Y-axis jitter. Keeping these independent prevents axis correlation in cell shapes.
+
+---
+
+## 4. Voronoi District Geometry
+
+### 4.1 Why Voronoi
+
+City districts are generated as Voronoi cells. This choice has several consequences that are all desirable:
+
+- Every cell is a unique polygon whose shape is a function of its IP address and its neighbors' addresses. No two cells look alike.
+- Adjacent cells always share edges exactly — no gaps, no overlaps. The tiling is mathematically guaranteed to be complete.
+- The geometry is purely local: computing a cell requires only its seed point and the seed points of its neighbors. The full world map is never needed.
+- Subnet structure produces emergent geographic clustering: IPs that share a long common prefix have nearby seed points in grid space, so their districts cluster into visually coherent regions.
+
+### 4.2 Seed Point Placement
+
+Each cell's Voronoi seed point is placed at an absolute world-space position:
+
+```
+wx(key) = gx × SCALE + jitter_x(key)
+wy(key) = gy × SCALE + jitter_y(key)
+
+jitter_x(key) = (ha(key) / 0xFFFFFFFF − 0.5) × SCALE × J
+jitter_y(key) = (hb(key) / 0xFFFFFFFF − 0.5) × SCALE × J
+```
+
+Where `SCALE` is the world-space distance per grid unit and `J` is the global jitter factor.
+
+**Critical:** jitter is computed in world space from the cell key alone. It does not depend on which cell is currently centered in the view. When the view pans from cell A to cell B, all neighboring cells retain exactly the shapes they had when viewed from A.
+
+### 4.3 Jitter Factor
+
+`J` is a global protocol constant. Target value is approximately `0.75`. Exact value to be fixed after implementation validation.
+
+| J | Character |
+|---|-----------|
+| 0.0 | Perfect regular grid — cells are near-uniform hexagons |
+| 0.4–0.6 | Gently irregular — organic but not extreme |
+| 0.7–0.85 | Strongly irregular — recommended range for interesting city districts |
+| > 0.9 | Degenerate — some cells become very thin slivers |
+
+### 4.4 Neighbor Set
+
+When computing the Voronoi diagram for a given query cell, seed points are generated for a radius-2 neighborhood: the query cell plus the 24 surrounding cells (a 5×5 grid minus the center). This produces 25 seed points, sufficient to compute correct cell boundaries for the query cell and its 8 immediate neighbors without boundary artifacts.
+
+### 4.5 Cell Identity Values
+
+Each cell carries a set of derived values that drive all subsequent generation:
+
+| Field | Derivation | Use |
+|-------|------------|-----|
+| `cell_key` | IP octets packed | Canonical identifier, hash input |
+| `seed_hash` | `ha(cell_key)` | Master seed for all generation |
+| `popcount` | Count of set bits in key | Density, road count, height profile |
+| `octet_sum` | Sum of non-zero octets | Secondary density parameter |
+| `bit_entropy` | `popcount / key_bits` | Regularity vs. chaos of layout |
+| `subnet_class` | public / private / loopback / multicast / reserved | District archetype |
+| `hue` | `(ha(key) & 0xFFF) / 4096 × 360` | Visual color identity |
+
+---
+
+## 5. Subnet Archetypes
+
+The `subnet_class` of a cell drives its district archetype — the high-level identity that shapes what kind of place it feels like. This is a coarse categorical assignment; finer variation within each archetype comes from the per-cell hash values.
+
+| Class | Archetype | Character |
+|-------|-----------|-----------|
+| Public | City | Normal inhabited city district. Density from `popcount`. |
+| Private (`10.x`, `172.16-31.x`, `192.168.x`) | Walled garden | Enclosed, inward-facing. High walls, internal courtyards. Feels domestic. |
+| Loopback (`127.x`) | Mirror district | A city that refers only to itself. Recursive or self-similar geometry. |
+| Multicast (`224–239.x`) | Broadcast plaza | Open, performative spaces. Amphitheatres, transmission towers, wide avenues. |
+| Reserved / unallocated | Ruins / wilderness | Degraded structures, overgrown. The further into reserved space, the more derelict. |
+| Documentation (`192.0.2.x`, `2001:db8::/32`) | Library / archive | Dense with text, signage, reference structures. |
+
+---
+
+## 6. Street Alignment Across District Boundaries
+
+This is the central continuity problem: how do roads leaving one district connect to roads entering the next?
+
+The challenge is that each district generates its road network independently from its own seed. Without coordination, a road that exits the east edge of district A has no reason to align with any road entering the west edge of district B.
+
+### 6.1 Shared-Edge Crossing Points (Implemented)
+
+The boundary between two adjacent cells is a shared Voronoi edge. The road crossing points on that edge are determined by a canonical edge hash — so both cells independently derive the same crossing positions without communicating.
+
+```
+edge_hash(A, B) = ha(min(key_A, key_B) XOR ((max(key_A, key_B) & 0xFFFF) << 8))
+```
+
+The crossing count on each edge is derived dynamically from the density of both neighboring cells and the physical length of the shared edge:
+
+```
+edge_density    = min(popcount(key_A), popcount(key_B))
+base_count      = 1 + floor(edge_density / 8)         // 1–4
+max_by_length   = floor(edge_length / MIN_SPACING)     // MIN_SPACING = 28 world units
+crossing_count  = max(1, min(base_count, max_by_length))
+```
+
+Crossing positions are placed within equal segments of the edge, jittered within each segment by successive bytes of `edge_hash`:
+
+```
+for i in 0..crossing_count:
+  seg_start = i / (crossing_count + 1)
+  seg_end   = (i + 1) / (crossing_count + 1)
+  byte      = (edge_hash >>> (i × 8)) & 0xFF
+  t         = seg_start + (byte / 255) × (seg_end − seg_start)
+  position  = edge_start + t × (edge_end − edge_start)
+```
+
+This produces 1–4 crossing points per shared edge, deterministically positioned, with both neighbors in agreement.
+
+### 6.2 Orientation Inheritance with Blending (Phase W2)
+
+Each district has a primary road grid orientation angle `θ`, derived from its seed:
+
+```
+θ(key) = (ha(key) / 0xFFFFFFFF) × 90°
+```
+
+At borders between cells with different orientations, a transition zone blends between them. Deferred to phase W2.
+
+### 6.3 Hierarchical Road Network (Phase W3)
+
+Major arteries at `/16` granularity pass through multiple `/24` districts unchanged. Deferred to phase W3.
+
+---
+
+## 7. Road Network Generation
+
+This section specifies how roads are generated within a single cell. The algorithm is fully implemented in the current prototype.
+
+### 7.1 Terminals
+
+A **terminal** is a crossing point on the cell's boundary — a point where a road enters or exits the cell. Every crossing point on every shared edge of the cell is a terminal.
+
+Terminals are collected by walking the cell's polygon perimeter in order, identifying shared edges, and recording the position of each crossing point along the perimeter. Each terminal carries:
+
+- `x, y` — screen/world position
+- `edgeIdx` — which polygon edge it sits on (0 to n−1)
+- `perimOrder` — continuous value `edgeIdx + t` where `t` is the fractional position along that edge, used for sorting
+
+Terminals are sorted by `perimOrder` to establish their clockwise perimeter sequence.
+
+### 7.2 Terminal Matching
+
+Each terminal is matched with exactly one other terminal to form a road. The matching rules are:
+
+**Constraint:** Two terminals may only be matched if they sit on **different polygon edges**. A road entering and exiting through the same edge would loop back on itself, which is not valid. This is the only hard constraint.
+
+**Note:** There is no constraint preventing matched road segments from crossing each other. When two roads cross inside a cell, their intersection becomes a road intersection node. This is intentional and desirable — it produces organic four-way intersections and T-junctions without explicit design.
+
+Matching proceeds greedily by affinity score, highest affinity first:
+
+```
+affinity(i, j) = ha(cell_key XOR (i << 8) XOR j)
+
+for each pair (i, j) sorted by affinity descending:
+  if terminals[i] and terminals[j] are unmatched
+  and terminals[i].edgeIdx ≠ terminals[j].edgeIdx:
+    match(i, j)
+```
+
+Unmatched terminals (when the count is odd, or when no valid cross-edge partner remains) become dead-end stubs.
+
+### 7.3 Road Fate
+
+Each matched pair is assigned a fate determined by a hash of the pair:
+
+```
+fate_hash = hb(cell_key XOR min(i,j) XOR (max(i,j) << 4))
+fate_byte = fate_hash & 0xFF
+```
+
+| Range | Probability | Fate |
+|-------|-------------|------|
+| `0x00–0xBF` | 75% | **Through road** — straight line between the two terminals |
+| `0xC0–0xE7` | 15% | **Meeting point** — both terminals connect to a shared interior junction, forming a T or Y |
+| `0xE8–0xFF` | 10% | **Dead ends** — both terminals stub inward toward the cell seed point, terminating before meeting |
+
+**Through road** geometry: a straight line segment from terminal A to terminal B.
+
+**Meeting point** geometry: the junction is placed at the midpoint of A and B, offset perpendicularly by an amount derived from the fate hash:
+
+```
+midpoint    = (A + B) / 2
+perp_offset = ((fate_hash >>> 8) & 0xFF) / 255 × 20 − 10   // ±10 world units
+junction    = midpoint + perpendicular(A→B) × perp_offset
+```
+
+Both terminals connect to the junction with straight segments, forming an elbow. The junction point is rendered as an intersection node.
+
+**Dead end** geometry: each terminal extends inward as a stub, terminating at `35%` of the distance from the terminal to the cell seed point.
+
+Unmatched terminals (odd count or exhausted partners) are always dead ends, extending `30%` toward the cell seed.
+
+### 7.4 Road Intersections
+
+After all road segments are placed within a cell, every pair of segments is tested for intersection. Two segments intersect if they cross strictly in their interiors — endpoint-to-endpoint contact is not counted.
+
+```
+for each pair of road segments (R1, R2):
+  pt = segment_intersect(R1.a, R1.b, R2.a, R2.b)
+  if pt exists (t ∈ (0.02, 0.98) and u ∈ (0.02, 0.98)):
+    intersections.append(pt)
+```
+
+The `0.02` margin at each end prevents false positives from near-endpoint crossings. Each detected intersection is an organic road crossing — two through-roads crossing produce a four-way intersection; a through-road crossing a meeting-point leg produces a T off an existing road.
+
+**Intersection nodes are not pre-planned.** They emerge from the geometry of the matching and fate assignments. This means the road network has genuine complexity: the number and position of intersections within a cell is a deterministic consequence of the cell's terminals and their matchings, not a separately-designed layer.
+
+### 7.5 Density Variation
+
+Road density varies with `popcount(cell_key)`:
+
+- **High popcount** (e.g. `255.128.64.x`, pc ≈ 16–20): many terminals per cell, dense matching, frequent intersections. Reads as a busy urban core.
+- **Median popcount** (pc ≈ 10–14): moderate terminal count, mix of through roads and dead ends, occasional intersections.
+- **Low popcount** (e.g. `1.0.0.x`, pc ≈ 1–4): few terminals, sparse matching, rare intersections. Reads as a quiet suburban or rural district.
+
+The density gradient is automatic: it follows from the edge crossing count formula in §6.1, which is itself driven by `min(popcount_A, popcount_B)`. No additional density parameter is needed.
+
+---
+
+## 8. IPv4 vs IPv6 World Character
+
+The two modes are separate and need not be consistent with each other.
+
+### 8.1 IPv4 World
+
+The IPv4 space has ~16.7 million `/24` cells — dense, fully mapped, almost entirely inhabited. The world feels like a vast but knowable metropolis. Every address has a city. The scale of the space is comprehensible.
+
+Notable regions:
+- `0.0.0.0/8` — the void. Reserved, mostly dark. The western edge of the known world.
+- `10.0.0.0/8` — a vast private interior. Walled gardens as far as one can see.
+- `127.0.0.0/8` — the loopback district. A strange, self-referential neighborhood.
+- `192.168.0.0/16` — dense private housing. Domestic and enclosed.
+- `224.0.0.0/4` — the broadcast quarter. Performative, wide-open.
+- `255.255.255.255` — the broadcast limit. A single cell at the edge of everything. Should be rendered as a landmark.
+
+### 8.2 IPv6 World
+
+IPv6 has ~4.3 billion `/32` cells — but the vast majority of the space is unallocated. The world feels like deep space with islands of civilization. Walking in any direction from an inhabited cell will quickly bring you into empty wilderness. The scale is incomprehensible by design.
+
+Notable regions:
+- `::1` — loopback. A single room. The smallest possible place.
+- `fe80::/10` — link-local. A liminal zone, always local, never routable beyond its immediate context.
+- `fc00::/7` — the private interior. Enormous and inward-facing.
+- `2001:db8::/32` — documentation space. A library district.
+- `2001::/32` — Teredo. A transitional zone; structures that bridge two worlds.
+- Unallocated ranges — genuine wilderness. No roads, no buildings, no light.
+
+---
+
+## 9. Data Contract Extension
+
+The current `OutsideDescription` schema (BRD-004 §9.4) should be extended to carry the generation inputs explicitly:
+
+```
+OutsideDescription {
+  host_peer_id  : bstr
+  ip_address    : tstr          ; human-readable IP string
+  ip_bytes      : bstr          ; 4 bytes (IPv4) or 16 bytes (IPv6) — canonical seed input
+  ip_mode       : tstr          ; "v4" | "v6"
+  cell_key      : uint          ; packed cell identifier (see §3.2)
+  neighbor_keys : [uint]        ; keys of the 8 immediate neighbors (for client-side stitching)
+
+  ; deprecated / flavor-only in future phases:
+  geo_city      : tstr
+  geo_country   : tstr
+  geo_lat       : float
+  geo_lon       : float
+}
+```
+
+`ip_bytes` is the canonical seed. All generation is derived from `cell_key` (computed from `ip_bytes`) and the neighbor keys. Geo fields are retained for flavor labeling only and have no generative role.
+
+**Invariant:** All Outside seed inputs are public fields of `OutsideDescription`. Visitors can independently re-derive any district's geometry from the same inputs. No host-private values are used in generation.
+
+---
+
+## 10. Open Questions
+
+| # | Question | Status |
+|---|----------|--------|
+| OQ-W1 | Jitter factor `J`: global constant or per-cell derived? | **Closed** — global constant. Value TBD, targeting ~0.75. |
+| OQ-W2 | Street crossing count per edge: fixed or derived from edge hash? | **Closed** — derived dynamically. See §6.1. |
+| OQ-W3 | Scale constant `SCALE`: world units per grid step. | **Closed** — see §11 World Scale. Exact numbers TBD; structure is fixed. |
+| OQ-W4 | IPv4 `/24` vs `/16` granularity. | **Closed** — `/24`. |
+| OQ-W5 | Transition zone width for orientation blending. | **Deferred** — phase W2. |
+| OQ-W6 | Jitter slider as protocol constant vs. debug tool. | **Closed** — global constant, debug slider is development tooling only. |
+| OQ-W7 | IPv6 wilderness rendering. | **Deferred** — phase W5 implementation detail. |
+| OQ-W8 | Road fate probabilities (75/15/10 split): are these the right ratios? | **Open** — to be validated during W1 implementation and adjusted by feel. |
+| OQ-W9 | Dead-end stub length (currently 30–35% toward seed): does this produce visually satisfying stubs at all cell sizes? | **Open** — to be validated during W1. |
+
+---
+
+## 11. World Scale
+
+Scale is expressed as a derivation chain from a single desired perceptual property: **how many road crossings does a player encounter when traversing a district?**
+
+```
+SCALE (world units / grid step)  =  road_spacing × desired_crossings_per_axis
+```
+
+### 11.1 Baseline Parameters
+
+Starting-point values to be refined during implementation:
+
+| Parameter | Value | Notes |
+|-----------|-------|-------|
+| `SCALE` | 200 world units | One grid step (one `/24` cell width) |
+| `road_spacing` | ~40 world units | Distance between parallel roads at median density |
+| `crossings_per_axis` | ~4–6 | At median `popcount`; varies with density |
+| `player_speed` | ~8 world units/second | Comfortable walking pace |
+| `district_traversal` | ~25 seconds straight across | ~2–4 minutes of actual exploration |
+
+### 11.2 Density Modulation
+
+`SCALE` is a fixed constant. Road spacing and crossing count vary per district based on `popcount`:
+
+```
+road_spacing(key) = SCALE / (base_crossings + density_bonus(key))
+density_bonus(key) = floor(popcount(key) / 32 × max_bonus)
+```
+
+High-`popcount` addresses are dense urban cores; low-`popcount` addresses are sparse. `SCALE` stays constant; internal subdivision changes.
+
+### 11.3 Relationship to the Renderer
+
+The world unit is an abstract distance. Its relationship to the renderer's scene units is set at the renderer integration layer. The generation algorithm emits geometry in world units; the renderer scales to its own coordinate system. This keeps generation and rendering decoupled.
+
+---
+
+## 12. Implementation Phases
+
+| Phase | Scope |
+|-------|-------|
+| **W0 (complete)** | Voronoi cell prototype: IP → cell key → grid coords → jittered seed points → Voronoi diagram. Click navigation. Cell identity values. IPv4 and IPv6 modes. Shared edge detection and crossing point placement. Road network generation: terminal collection, cross-edge matching by affinity, fate assignment (through/meeting/dead-end), organic intersection detection. |
+| **W1** | First-person renderer integration: port road geometry to scene units, basic block fill between roads, building placeholder volumes scaled by `popcount` and `bit_entropy`. World scale as per §11. |
+| **W2** | Cross-border continuity: orientation blending in transition zones, visual seam treatment at district borders. |
+| **W3** | Hierarchical road network: major arteries at `/16` granularity passing through multiple `/24` districts. |
+| **W4** | Subnet archetype differentiation: distinct visual treatment for private, loopback, multicast, reserved ranges. |
+| **W5** | IPv6 world: wilderness rendering, inhabited island detection, scale adjustment for the larger coordinate space. |
