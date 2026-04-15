@@ -207,13 +207,6 @@ impl BlobHandler {
         self.peer_senders.write().await.remove(peer_id);
     }
 
-    /// Legacy set_sender for tests — sets a sender that responds to any peer.
-    #[cfg(test)]
-    pub async fn set_sender(&self, tx: tokio::sync::mpsc::Sender<ProtocolMessage>) {
-        // Use a dummy peer_id so tests work without a real session.
-        self.peer_senders.write().await.insert([0u8; 32], tx);
-    }
-
     /// Resolve max blob size from scope params.
     fn max_bytes(params: &ScopeParams) -> u64 {
         params
@@ -795,8 +788,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let handler = BlobHandler::new(dir.path().to_path_buf());
 
+        let peer = [1u8; 32];
         let (tx, mut rx) = tokio::sync::mpsc::channel(16);
-        handler.set_sender(tx).await;
+        handler.add_peer_sender(peer, tx).await;
 
         let hash = [0xAAu8; 32];
         let req_payload = cbor_encode_map(vec![
@@ -810,7 +804,7 @@ mod tests {
             ),
         ]);
 
-        let ctx = make_ctx([1u8; 32]);
+        let ctx = make_ctx(peer);
         handler.handle_req(&req_payload, &ctx).await.unwrap();
 
         // Should receive a NOT_FOUND ACK
@@ -845,13 +839,13 @@ mod tests {
         let provider = BlobHandler::new(provider_dir.path().to_path_buf());
         let consumer = BlobHandler::new(consumer_dir.path().to_path_buf());
 
-        let (provider_tx, mut provider_rx) = tokio::sync::mpsc::channel(64);
-        let (consumer_tx, mut consumer_rx) = tokio::sync::mpsc::channel(64);
-        provider.set_sender(provider_tx).await;
-        consumer.set_sender(consumer_tx).await;
-
         let peer_a = [1u8; 32];
         let peer_b = [2u8; 32];
+        let (provider_tx, mut provider_rx) = tokio::sync::mpsc::channel(64);
+        let (consumer_tx, mut consumer_rx) = tokio::sync::mpsc::channel(64);
+        provider.add_peer_sender(peer_a, provider_tx).await;
+        consumer.add_peer_sender(peer_b, consumer_tx).await;
+
         let ctx_from_a = make_ctx(peer_a);
         let ctx_from_b = make_ctx(peer_b);
 
@@ -948,8 +942,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let handler = BlobHandler::new(dir.path().to_path_buf());
 
+        let peer = [1u8; 32];
         let (tx, mut rx) = tokio::sync::mpsc::channel(16);
-        handler.set_sender(tx).await;
+        handler.add_peer_sender(peer, tx).await;
 
         // Craft an OFFER with size > default max
         let offer = cbor_encode_map(vec![
@@ -975,7 +970,7 @@ mod tests {
             ),
         ]);
 
-        let ctx = make_ctx([1u8; 32]);
+        let ctx = make_ctx(peer);
         handler.handle_offer(&offer, &ctx).await.unwrap();
 
         // Should get REJECTED ACK
@@ -1006,16 +1001,16 @@ mod tests {
         let provider = BlobHandler::new(provider_dir.path().to_path_buf());
         let consumer = BlobHandler::new(consumer_dir.path().to_path_buf());
 
+        let peer_a = [1u8; 32];
+        let peer_b = [2u8; 32];
+
         let (provider_tx, mut provider_rx) = tokio::sync::mpsc::channel(64);
         let (consumer_tx, mut consumer_rx) = tokio::sync::mpsc::channel(64);
-        provider.set_sender(provider_tx).await;
-        consumer.set_sender(consumer_tx).await;
+        provider.add_peer_sender(peer_a, provider_tx).await;
+        consumer.add_peer_sender(peer_b, consumer_tx).await;
 
         // Subscribe to transfer events on the consumer side
         let mut event_rx = consumer.subscribe_transfer_events();
-
-        let peer_a = [1u8; 32];
-        let peer_b = [2u8; 32];
 
         // Use small chunk size (32 bytes) so we get 4 chunks for 128 bytes
         let mut params = ScopeParams::default();
