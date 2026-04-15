@@ -5,15 +5,14 @@ use axum::{
     Json,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::RwLock;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::db::{self, MessageDb};
 use crate::notifier::DaemonNotifier;
 use p2pcd::bridge_client::BridgeClient;
+use p2pcd::capability_sdk::{LocalPeerId, PeerStream};
 
 // ── Shared state ─────────────────────────────────────────────────────────────
 
@@ -23,72 +22,40 @@ pub struct AppState {
     pub bridge: BridgeClient,
     #[allow(dead_code)]
     pub daemon_port: u16,
-    /// Active peers with messaging capability: peer_id_b64 → wg_address.
-    pub active_peers: Arc<RwLock<HashMap<String, String>>>,
-    /// Our own peer ID (base64), learned from X-Node-Id header or daemon.
-    pub local_peer_id: Arc<RwLock<Option<String>>>,
+    /// SSE-backed peer tracker for "howm.social.messaging.1".
+    pub stream: Arc<PeerStream>,
+    /// Our own peer ID (base64), learned at startup with lazy retry on first use.
+    pub local_peer_id: LocalPeerId,
     /// Fire-and-forget notifier for badge/toast events to the daemon.
     pub notifier: DaemonNotifier,
 }
 
 impl AppState {
-    #[allow(dead_code)]
-    pub fn new(db: MessageDb, bridge: BridgeClient, daemon_port: u16) -> Self {
-        let db = Arc::new(db);
-        let notifier = DaemonNotifier::new(
-            reqwest::Client::new(),
-            &format!("http://127.0.0.1:{daemon_port}"),
-            db.clone(),
-        );
-        Self {
-            db,
-            bridge,
-            daemon_port,
-            active_peers: Arc::new(RwLock::new(HashMap::new())),
-            local_peer_id: Arc::new(RwLock::new(None)),
-            notifier,
-        }
-    }
-
     pub fn new_with_notifier(
         db: Arc<MessageDb>,
         bridge: BridgeClient,
         daemon_port: u16,
         notifier: DaemonNotifier,
+        stream: Arc<PeerStream>,
+        local_peer_id: LocalPeerId,
     ) -> Self {
         Self {
             db,
             bridge,
             daemon_port,
-            active_peers: Arc::new(RwLock::new(HashMap::new())),
-            local_peer_id: Arc::new(RwLock::new(None)),
+            stream,
+            local_peer_id,
             notifier,
         }
     }
-}
 
-/// Initialise active peers from the daemon on startup.
-pub async fn init_peers_from_daemon(state: AppState) {
-    match state
-        .bridge
-        .list_peers(Some("howm.social.messaging.1"))
-        .await
-    {
-        Ok(peers) => {
-            let mut active = state.active_peers.write().await;
-            for p in peers {
-                active.insert(p.peer_id.clone(), String::new());
-            }
-            info!(
-                "Initialised {} active messaging peers from daemon",
-                active.len()
-            );
-        }
-        Err(e) => {
-            warn!("Failed to fetch initial peers from daemon: {}", e);
-        }
+    /// Get the local peer ID, retrying once from the daemon if not yet known.
+    pub async fn get_local_peer_id(&self) -> Option<String> {
+        self.local_peer_id.get().await
     }
 }
+
+
 
 // ── CBOR envelope helpers ────────────────────────────────────────────────────
 
@@ -237,42 +204,13 @@ pub struct ConversationResponse {
     pub next_cursor: Option<i64>,
 }
 
-// ── P2P-CD lifecycle payloads (from cap_notify) ──────────────────────────────
+// ── P2P-CD lifecycle payloads (from capability_sdk) ─────────────────────────
 
-#[derive(Deserialize)]
-#[allow(dead_code)]
-pub struct PeerActivePayload {
-    pub peer_id: String,
-    pub wg_address: String,
-    pub capability: String,
-    #[serde(default)]
-    pub scope: serde_json::Value,
-    #[serde(default)]
-    pub active_since: u64,
-}
-
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)]
-pub struct PeerInactivePayload {
-    pub peer_id: String,
-    pub capability: String,
-    pub reason: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)]
-pub struct InboundMessage {
-    pub peer_id: String,
-    pub message_type: u64,
-    pub payload: String,
-    pub capability: String,
-}
+// PeerActivePayload, PeerInactivePayload, and InboundMessage are re-exported
+// from p2pcd::capability_sdk. Use those directly.
+use p2pcd::capability_sdk::{rpc as sdk_rpc, InboundMessage};
 
 // ── Handlers ─────────────────────────────────────────────────────────────────
-
-pub async fn health() -> impl IntoResponse {
-    Json(serde_json::json!({ "status": "ok" }))
-}
 
 /// POST /send — send a DM to a peer.
 pub async fn send_message(
@@ -297,50 +235,33 @@ pub async fn send_message(
     }
 
     // Check peer is online with messaging capability
-    {
-        let active = state.active_peers.read().await;
-        if !active.contains_key(&req.to) {
-            // Also try checking the bridge directly
-            match state
-                .bridge
-                .list_peers(Some("howm.social.messaging.1"))
-                .await
-            {
-                Ok(peers) => {
-                    if !peers.iter().any(|p| p.peer_id == req.to) {
-                        return (
-                            StatusCode::BAD_REQUEST,
-                            Json(serde_json::json!({
-                                "error": "capability_unsupported",
-                                "capability": "howm.social.messaging.1",
-                            })),
-                        );
-                    }
-                }
-                Err(_) => {
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        Json(serde_json::json!({
-                            "error": "capability_unsupported",
-                            "capability": "howm.social.messaging.1",
-                        })),
-                    );
-                }
-            }
+    if state.stream.tracker().find_peer(&req.to).await.is_none() {
+        // Fallback for the ~1ms startup window before first snapshot.
+        let is_reachable = state
+            .bridge
+            .list_peers(Some("howm.social.messaging.1"))
+            .await
+            .map(|ps| ps.iter().any(|p| p.peer_id == req.to))
+            .unwrap_or(false);
+        if !is_reachable {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": "capability_unsupported",
+                    "capability": "howm.social.messaging.1",
+                })),
+            );
         }
     }
 
-    // Get local peer ID
-    let local_peer_id = {
-        let local = state.local_peer_id.read().await;
-        match local.clone() {
-            Some(id) => id,
-            None => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({ "error": "local peer ID not available" })),
-                );
-            }
+    // Get local peer ID (lazy retry if startup fetch failed)
+    let local_peer_id = match state.get_local_peer_id().await {
+        Some(id) => id,
+        None => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": "local peer ID not available" })),
+            );
         }
     };
 
@@ -379,6 +300,7 @@ pub async fn send_message(
         sent_at: now_ms,
         body: req.body.clone(),
         delivery_status: "pending".into(),
+        recipient_peer_id: Some(req.to.clone()),
     };
 
     if let Err(e) = state.db.insert_message(&msg) {
@@ -411,6 +333,12 @@ pub async fn send_message(
     };
 
     // Send via bridge RPC with 4s timeout
+    info!(
+        "send_message: RPC dm.send → peer={} msg_id={} body_len={}",
+        &req.to[..8.min(req.to.len())],
+        msg_id_hex,
+        req.body.len(),
+    );
     match state
         .bridge
         .rpc_call(&target_peer_id, "dm.send", &cbor, Some(4000))
@@ -454,10 +382,7 @@ pub async fn send_message(
 
 /// GET /conversations — list all conversations.
 pub async fn list_conversations(State(state): State<AppState>) -> impl IntoResponse {
-    let local_peer_id = {
-        let local = state.local_peer_id.read().await;
-        local.clone().unwrap_or_default()
-    };
+    let local_peer_id = state.get_local_peer_id().await.unwrap_or_default();
 
     match state.db.list_conversations(&local_peer_id) {
         Ok(convs) => (StatusCode::OK, Json(serde_json::json!(convs))),
@@ -474,10 +399,7 @@ pub async fn get_conversation(
     Path(peer_id): Path<String>,
     Query(params): Query<PaginationParams>,
 ) -> impl IntoResponse {
-    let local_peer_id = {
-        let local = state.local_peer_id.read().await;
-        local.clone().unwrap_or_default()
-    };
+    let local_peer_id = state.get_local_peer_id().await.unwrap_or_default();
 
     let conversation_id = MessageDb::conversation_id(&local_peer_id, &peer_id);
     let limit = params.limit.clamp(1, 100);
@@ -505,10 +427,7 @@ pub async fn mark_read(
     State(state): State<AppState>,
     Path(peer_id): Path<String>,
 ) -> impl IntoResponse {
-    let local_peer_id = {
-        let local = state.local_peer_id.read().await;
-        local.clone().unwrap_or_default()
-    };
+    let local_peer_id = state.get_local_peer_id().await.unwrap_or_default();
 
     let conversation_id = MessageDb::conversation_id(&local_peer_id, &peer_id);
 
@@ -527,10 +446,7 @@ pub async fn delete_message(
     State(state): State<AppState>,
     Path((_peer_id, msg_id)): Path<(String, String)>,
 ) -> impl IntoResponse {
-    let local_peer_id = {
-        let local = state.local_peer_id.read().await;
-        local.clone().unwrap_or_default()
-    };
+    let local_peer_id = state.get_local_peer_id().await.unwrap_or_default();
 
     match state.db.delete_message(&msg_id, &local_peer_id) {
         Ok(true) => StatusCode::NO_CONTENT,
@@ -539,85 +455,57 @@ pub async fn delete_message(
     }
 }
 
-// ── P2P-CD lifecycle handlers ────────────────────────────────────────────────
-
-/// POST /p2pcd/peer-active — a peer with messaging capability came online.
-pub async fn peer_active(
-    State(state): State<AppState>,
-    Json(payload): Json<PeerActivePayload>,
-) -> impl IntoResponse {
-    info!(
-        "Peer active: {} ({}) for {}",
-        &payload.peer_id[..8.min(payload.peer_id.len())],
-        payload.wg_address,
-        payload.capability
-    );
-
-    state
-        .active_peers
-        .write()
-        .await
-        .insert(payload.peer_id, payload.wg_address);
-
-    StatusCode::OK
-}
-
-/// POST /p2pcd/peer-inactive — a peer went offline.
-pub async fn peer_inactive(
-    State(state): State<AppState>,
-    Json(payload): Json<PeerInactivePayload>,
-) -> impl IntoResponse {
-    info!(
-        "Peer inactive: {} ({})",
-        &payload.peer_id[..8.min(payload.peer_id.len())],
-        payload.reason
-    );
-
-    state.active_peers.write().await.remove(&payload.peer_id);
-
-    // Fail any pending messages to this peer (FEAT-002-C)
-    let local_peer_id = {
-        let local = state.local_peer_id.read().await;
-        local.clone().unwrap_or_default()
-    };
-
-    if !local_peer_id.is_empty() {
-        let conv_id = MessageDb::conversation_id(&local_peer_id, &payload.peer_id);
-        if let Ok(failed) = state.db.fail_pending_to_peer(&conv_id, "peer_offline") {
-            if failed > 0 {
-                info!(
-                    "Marked {} pending messages as failed (peer_offline)",
-                    failed
-                );
-            }
-        }
-    }
-
-    StatusCode::OK
-}
-
 /// POST /p2pcd/inbound — receive a forwarded capability message from the daemon.
+///
+/// Handles two flows:
+/// 1. **RPC forwarding** (message_type 22): The daemon forwarded an RPC_REQ because
+///    the method (e.g. "dm.send") has no in-process handler. We decode the RPC
+///    envelope, dispatch by method name, and return `{ "response": base64_cbor }`
+///    so the daemon can build the RPC_RESP.
+/// 2. **Capability broadcast** (message_type 100+): Fire-and-forget event from a peer.
 pub async fn inbound_message(
     State(state): State<AppState>,
     Json(payload): Json<InboundMessage>,
-) -> impl IntoResponse {
+) -> axum::response::Response {
     use base64::{engine::general_purpose::STANDARD, Engine as _};
+
+    debug!(
+        "inbound_message: type={} from {}",
+        payload.message_type,
+        &payload.peer_id[..8.min(payload.peer_id.len())],
+    );
 
     // Decode the payload
     let raw = match STANDARD.decode(&payload.payload) {
         Ok(b) => b,
         Err(e) => {
             warn!("Failed to decode inbound payload: {}", e);
-            return StatusCode::BAD_REQUEST;
+            return StatusCode::BAD_REQUEST.into_response();
         }
     };
+
+    // Check if this is an RPC_REQ forwarded by the daemon (message_type 22).
+    if payload.message_type == 22 {
+        if let Some(method) = sdk_rpc::extract_method(&raw) {
+            return match method.as_str() {
+                "dm.send" => handle_dm_send_rpc(&state, &payload.peer_id, &raw).await,
+                other => {
+                    warn!("Unknown RPC method: {}", other);
+                    StatusCode::BAD_REQUEST.into_response()
+                }
+            };
+        }
+        warn!("inbound_message: type=22 but no method in CBOR payload");
+    }
+
+    // ── Legacy / broadcast path (message_type 100+) ──────────────────────────
 
     // Decode CBOR envelope
     let envelope = match decode_dm_envelope(&raw) {
         Ok(env) => env,
         Err(e) => {
             warn!("Failed to decode DM envelope: {}", e);
-            return StatusCode::BAD_REQUEST;
+            return StatusCode::BAD_REQUEST.into_response();
         }
     };
 
@@ -629,86 +517,150 @@ pub async fn inbound_message(
             &claimed_sender_b64[..8.min(claimed_sender_b64.len())],
             &payload.peer_id[..8.min(payload.peer_id.len())]
         );
-        return StatusCode::BAD_REQUEST;
+        return StatusCode::BAD_REQUEST.into_response();
     }
 
-    // Get local peer ID
-    let local_peer_id = {
-        let local = state.local_peer_id.read().await;
-        local.clone().unwrap_or_default()
+    if let Err(resp) = persist_inbound_dm(&state, &payload.peer_id, envelope).await {
+        return resp;
+    }
+
+    StatusCode::OK.into_response()
+}
+
+/// Handle an inbound dm.send RPC: persist the message and return an ack.
+async fn handle_dm_send_rpc(
+    state: &AppState,
+    sender_peer_id: &str,
+    rpc_envelope: &[u8],
+) -> axum::response::Response {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+
+    // Extract the inner payload from the RPC envelope (CBOR key 3)
+    let inner = match sdk_rpc::extract_inner_payload(rpc_envelope) {
+        Some(p) => p,
+        None => {
+            warn!("dm.send RPC: missing payload");
+            return StatusCode::BAD_REQUEST.into_response();
+        }
     };
 
-    let conversation_id = MessageDb::conversation_id(&local_peer_id, &payload.peer_id);
+    let envelope = match decode_dm_envelope(&inner) {
+        Ok(env) => env,
+        Err(e) => {
+            warn!("dm.send RPC: failed to decode DM envelope: {}", e);
+            return StatusCode::BAD_REQUEST.into_response();
+        }
+    };
+
+    // Validate sender matches session peer
+    let claimed_sender_b64 = STANDARD.encode(&envelope.sender_peer_id);
+    if claimed_sender_b64 != sender_peer_id {
+        warn!(
+            "dm.send RPC: sender mismatch: envelope={} session={}",
+            &claimed_sender_b64[..8.min(claimed_sender_b64.len())],
+            &sender_peer_id[..8.min(sender_peer_id.len())]
+        );
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+
+    if let Err(resp) = persist_inbound_dm(state, sender_peer_id, envelope).await {
+        return resp;
+    }
+
+    // Return an ack response so the daemon can build an RPC_RESP.
+    // Encode a tiny CBOR "ok" as the response payload.
+    let ack = {
+        use ciborium::value::Value;
+        let mut buf = Vec::new();
+        let _ = ciborium::into_writer(
+            &Value::Map(vec![(Value::Text("status".into()), Value::Text("ok".into()))]),
+            &mut buf,
+        );
+        buf
+    };
+    let resp_b64 = STANDARD.encode(&ack);
+    Json(serde_json::json!({ "response": resp_b64 })).into_response()
+}
+
+/// Persist a received DM and fire notifications.  Shared between the RPC and
+/// broadcast inbound paths.
+async fn persist_inbound_dm(
+    state: &AppState,
+    sender_peer_id: &str,
+    envelope: DmEnvelope,
+) -> Result<(), axum::response::Response> {
+    let local_peer_id = match state.get_local_peer_id().await {
+        Some(id) => id,
+        None => {
+            warn!("Inbound message dropped: local peer ID not available");
+            return Err(StatusCode::SERVICE_UNAVAILABLE.into_response());
+        }
+    };
+
+    let conversation_id = MessageDb::conversation_id(&local_peer_id, sender_peer_id);
     let msg_id_hex = hex::encode(envelope.msg_id);
 
-    // Persist received message
     let msg = db::Message {
         msg_id: msg_id_hex.clone(),
         conversation_id,
         direction: "received".into(),
-        sender_peer_id: payload.peer_id.clone(),
+        sender_peer_id: sender_peer_id.to_string(),
         sent_at: envelope.sent_at as i64,
         body: envelope.body.clone(),
         delivery_status: "delivered".into(),
+        recipient_peer_id: None,
     };
 
     if let Err(e) = state.db.insert_message(&msg) {
         warn!("Failed to persist inbound message: {}", e);
-        return StatusCode::INTERNAL_SERVER_ERROR;
+        return Err(StatusCode::INTERNAL_SERVER_ERROR.into_response());
     }
 
     info!(
         "Received DM {} from {}",
         &msg_id_hex[..8],
-        &payload.peer_id[..8.min(payload.peer_id.len())]
+        &sender_peer_id[..8.min(sender_peer_id.len())]
     );
 
     // Notify daemon: toast + badge update (fire-and-forget)
     {
-        let preview = if envelope.body.len() > 128 {
-            format!("{}…", &envelope.body[..128])
-        } else {
-            envelope.body.clone()
+        let preview = {
+            let truncated = envelope.body.char_indices().nth(128).map(|(i, _)| &envelope.body[..i]);
+            match truncated {
+                Some(s) => format!("{}…", s),
+                None => envelope.body.clone(),
+            }
         };
-        let short_sender = &payload.peer_id[..8.min(payload.peer_id.len())];
+        let short_sender = &sender_peer_id[..8.min(sender_peer_id.len())];
         state.notifier.notify_new_message(short_sender, &preview);
     }
 
-    // FEAT-002-G: Emit event notification (fire-and-forget)
+    // Emit event notification (fire-and-forget)
     let bridge = state.bridge.clone();
-    let peer_id_clone = payload.peer_id.clone();
-    let body_preview = if envelope.body.len() > 128 {
-        format!("{}…", &envelope.body[..128])
-    } else {
-        envelope.body.clone()
+    let peer_id_clone = sender_peer_id.to_string();
+    let body_preview = {
+        let truncated = envelope.body.char_indices().nth(128).map(|(i, _)| &envelope.body[..i]);
+        match truncated {
+            Some(s) => format!("{}…", s),
+            None => envelope.body.clone(),
+        }
     };
 
     tokio::spawn(async move {
-        // Build event payload as CBOR
         use ciborium::value::Value;
         let event = Value::Map(vec![
             (Value::Text("msg_id".into()), Value::Text(msg_id_hex)),
-            (
-                Value::Text("sender_peer_id".into()),
-                Value::Text(peer_id_clone),
-            ),
-            (
-                Value::Text("sent_at".into()),
-                Value::Integer((envelope.sent_at).into()),
-            ),
-            (
-                Value::Text("body_preview".into()),
-                Value::Text(body_preview),
-            ),
+            (Value::Text("sender_peer_id".into()), Value::Text(peer_id_clone)),
+            (Value::Text("sent_at".into()), Value::Integer((envelope.sent_at).into())),
+            (Value::Text("body_preview".into()), Value::Text(body_preview)),
         ]);
         let mut buf = Vec::new();
         if ciborium::into_writer(&event, &mut buf).is_ok() {
-            // Use message_type 100 for DM notification events
             let _ = bridge
                 .broadcast_event("howm.social.messaging.1", 100, &buf)
                 .await;
         }
     });
 
-    StatusCode::OK
+    Ok(())
 }

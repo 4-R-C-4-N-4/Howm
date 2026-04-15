@@ -217,7 +217,7 @@ When an inbound post has attachments, trigger blob fetches and track status.
 - `GET /posts/{id}/attachments` → returns per-blob status from `blob_transfers`
 
 **Event emission:**
-- Call `bridge.broadcast_event("howm.feed.1", MSG_TYPE_MEDIA_READY, payload)`
+- Call `bridge.broadcast_event("howm.social.feed.1", MSG_TYPE_MEDIA_READY, payload)`
 - Payload: `{ post_id, attachment_count }`
 - The UI (or any subscriber) listens for this to swap thumbnails → full media
 

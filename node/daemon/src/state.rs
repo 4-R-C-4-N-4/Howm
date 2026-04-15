@@ -5,7 +5,7 @@ use crate::{
     identity::NodeIdentity,
     lan_discovery::LanDiscovery,
     notifications::{NotificationBuffer, PushRateLimiter},
-    p2pcd::engine::ProtocolEngine,
+    p2pcd::{self, engine::ProtocolEngine},
     peers::Peer,
 };
 use howm_access::AccessDb;
@@ -45,6 +45,8 @@ pub struct AppState {
     pub push_rate_limiter: Arc<RwLock<PushRateLimiter>>,
     /// LAN mDNS discovery handle (None if lan_discoverable=false).
     pub lan_discovery: Arc<RwLock<Option<LanDiscovery>>>,
+    /// In-process broadcast bus for peer lifecycle events.
+    pub event_bus: Arc<p2pcd::event_bus::EventBus>,
 }
 
 impl AppState {
@@ -55,6 +57,7 @@ impl AppState {
         config: Config,
         api_token: String,
         access_db: Arc<AccessDb>,
+        event_bus: Arc<p2pcd::event_bus::EventBus>,
     ) -> Self {
         let open_join_rate_limiter =
             Arc::new(RateLimiter::new(config.open_invite_rate_limit, 3600));
@@ -77,6 +80,7 @@ impl AppState {
             notifications: Arc::new(RwLock::new(NotificationBuffer::new())),
             push_rate_limiter: Arc::new(RwLock::new(PushRateLimiter::new(10, 10_000))),
             lan_discovery: Arc::new(RwLock::new(None)),
+            event_bus,
         }
     }
 }

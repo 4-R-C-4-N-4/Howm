@@ -14,6 +14,8 @@
 pub mod blob_store;
 #[cfg(feature = "bridge-client")]
 pub mod bridge_client;
+#[cfg(feature = "cap-db")]
+pub mod cap_db;
 pub mod capabilities;
 #[cfg(feature = "bridge-client")]
 pub mod capability_sdk;

@@ -3,11 +3,13 @@
 // Allows a peer to discover its own externally-visible IP address
 // by asking another peer what address it sees.
 
+use std::collections::HashMap;
 use std::pin::Pin;
+use std::sync::Arc;
 
 use tokio::sync::RwLock;
 
-use p2pcd_types::{message_types, CapabilityContext, CapabilityHandler, ProtocolMessage};
+use p2pcd_types::{message_types, CapabilityContext, CapabilityHandler, PeerId, ProtocolMessage};
 
 use crate::cbor_helpers::{cbor_encode_map, cbor_get_text, decode_payload, make_capability_msg};
 
@@ -20,7 +22,7 @@ mod keys {
 
 #[allow(dead_code)]
 pub struct EndpointHandler {
-    send_tx: RwLock<Option<tokio::sync::mpsc::Sender<ProtocolMessage>>>,
+    peer_senders: Arc<RwLock<HashMap<PeerId, tokio::sync::mpsc::Sender<ProtocolMessage>>>>,
 }
 
 impl Default for EndpointHandler {
@@ -32,12 +34,25 @@ impl Default for EndpointHandler {
 impl EndpointHandler {
     pub fn new() -> Self {
         Self {
-            send_tx: RwLock::new(None),
+            peer_senders: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
+    pub async fn add_peer_sender(
+        &self,
+        peer_id: PeerId,
+        tx: tokio::sync::mpsc::Sender<ProtocolMessage>,
+    ) {
+        self.peer_senders.write().await.insert(peer_id, tx);
+    }
+
+    pub async fn remove_peer_sender(&self, peer_id: &PeerId) {
+        self.peer_senders.write().await.remove(peer_id);
+    }
+
+    #[cfg(test)]
     pub async fn set_sender(&self, tx: tokio::sync::mpsc::Sender<ProtocolMessage>) {
-        *self.send_tx.write().await = Some(tx);
+        self.peer_senders.write().await.insert([0u8; 32], tx);
     }
 }
 
@@ -74,8 +89,13 @@ impl CapabilityHandler for EndpointHandler {
                         ciborium::value::Value::Text(observed),
                     )]);
                     let msg = make_capability_msg(message_types::WHOAMI_RESP, resp);
-                    if let Some(tx) = self.send_tx.read().await.as_ref() {
+                    if let Some(tx) = self.peer_senders.read().await.get(&peer_id) {
                         let _ = tx.send(msg).await;
+                    } else {
+                        tracing::warn!(
+                            "endpoint: no sender for peer {} — message dropped",
+                            hex::encode(&peer_id[..4])
+                        );
                     }
                 }
                 message_types::WHOAMI_RESP => {

@@ -126,9 +126,6 @@ mod tests {
             .resolve_permission(&peer, "howm.social.files.1")
             .is_allowed());
         assert!(!db
-            .resolve_permission(&peer, "howm.world.room.1")
-            .is_allowed());
-        assert!(!db
             .resolve_permission(&peer, "core.network.peerexchange.1")
             .is_allowed());
         assert!(!db
@@ -169,10 +166,18 @@ mod tests {
             .resolve_permission(&peer, "howm.social.files.1")
             .is_allowed());
         assert!(db
-            .resolve_permission(&peer, "howm.world.room.1")
+            .resolve_permission(&peer, "core.network.peerexchange.1")
+            .is_allowed());
+        // Data transport caps (rpc, blob, event, stream) granted at friends tier
+        assert!(db.resolve_permission(&peer, "core.data.rpc.1").is_allowed());
+        assert!(db
+            .resolve_permission(&peer, "core.data.blob.1")
             .is_allowed());
         assert!(db
-            .resolve_permission(&peer, "core.network.peerexchange.1")
+            .resolve_permission(&peer, "core.data.event.1")
+            .is_allowed());
+        assert!(db
+            .resolve_permission(&peer, "core.data.stream.1")
             .is_allowed());
 
         // Relay still denied
@@ -206,10 +211,12 @@ mod tests {
             .resolve_permission(&peer, "howm.social.files.1")
             .is_allowed());
         assert!(db
-            .resolve_permission(&peer, "howm.world.room.1")
-            .is_allowed());
-        assert!(db
             .resolve_permission(&peer, "core.network.peerexchange.1")
+            .is_allowed());
+        // Data caps inherited via friends
+        assert!(db.resolve_permission(&peer, "core.data.rpc.1").is_allowed());
+        assert!(db
+            .resolve_permission(&peer, "core.data.blob.1")
             .is_allowed());
     }
 

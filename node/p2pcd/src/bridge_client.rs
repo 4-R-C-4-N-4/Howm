@@ -17,8 +17,8 @@
 // use p2pcd::bridge_client::BridgeClient;
 //
 // let client = BridgeClient::new(7000);
-// let peers = client.list_peers(Some("howm.feed.1")).await?;
-// client.broadcast_event("howm.feed.1", 100, &payload).await?;
+// let peers = client.list_peers(Some("howm.social.feed.1")).await?;
+// client.broadcast_event("howm.social.feed.1", 100, &payload).await?;
 // ```
 
 use base64::Engine;
@@ -34,6 +34,10 @@ use serde::{Deserialize, Serialize};
 pub struct BridgeClient {
     http: reqwest::Client,
     base_url: String,
+    /// Daemon root URL (e.g. "http://127.0.0.1:7000") for non-bridge endpoints.
+    daemon_url: String,
+    /// The daemon port this client connects to.
+    daemon_port: u16,
 }
 
 impl BridgeClient {
@@ -46,16 +50,42 @@ impl BridgeClient {
         Self {
             http,
             base_url: format!("http://127.0.0.1:{}/p2pcd/bridge", daemon_port),
+            daemon_url: format!("http://127.0.0.1:{}", daemon_port),
+            daemon_port,
         }
+    }
+
+    /// The daemon port this client connects to.
+    pub fn daemon_port(&self) -> u16 {
+        self.daemon_port
+    }
+
+    /// The URL for the daemon's SSE event stream for a given capability.
+    ///
+    /// Safe to call on URL-based runtimes (with_bridge_url) because it derives
+    /// from base_url, not daemon_port. Port-based runtimes also use base_url, so
+    /// this is the canonical way to build the SSE URL in all cases.
+    pub fn events_url(&self, cap_name: &str) -> String {
+        format!("{}/events?capability={}", self.base_url, cap_name)
     }
 
     /// Create with a custom base URL (for testing or non-standard setups).
     pub fn with_base_url(base_url: String) -> Self {
+        // Derive daemon_url by stripping the /p2pcd/bridge suffix if present
+        let daemon_url = base_url
+            .strip_suffix("/p2pcd/bridge")
+            .map(str::to_owned)
+            .unwrap_or_else(|| base_url.clone());
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .build()
             .unwrap_or_default();
-        Self { http, base_url }
+        Self {
+            http,
+            base_url,
+            daemon_url,
+            daemon_port: 0,
+        }
     }
 
     // ── Send ────────────────────────────────────────────────────────────────
@@ -212,6 +242,37 @@ impl BridgeClient {
     /// Check if the daemon bridge is reachable.
     pub async fn is_available(&self) -> bool {
         self.list_peers(None).await.is_ok()
+    }
+
+    /// Fetch the local node's WireGuard public key (base64) from the daemon.
+    /// This is the local peer ID used as the "self" side of conversation IDs.
+    /// Returns None if the daemon is unreachable or the key is not yet set.
+    pub async fn get_local_peer_id(&self) -> Result<String, BridgeError> {
+        let url = format!("{}/node/info", self.daemon_url);
+        let resp = self
+            .http
+            .get(&url)
+            .send()
+            .await
+            .map_err(BridgeError::Http)?;
+
+        if resp.status().is_success() {
+            let info: serde_json::Value = resp.json().await.map_err(BridgeError::Http)?;
+            let pubkey = info
+                .get("wg_pubkey")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+                .ok_or_else(|| BridgeError::Decode("wg_pubkey missing from /node/info".into()))?;
+            Ok(pubkey)
+        } else {
+            let status = resp.status().as_u16();
+            let text = resp.text().await.unwrap_or_default();
+            Err(BridgeError::Bridge {
+                status,
+                message: text,
+            })
+        }
     }
 
     // ── Blob operations ──────────────────────────────────────────────────────
@@ -473,6 +534,10 @@ pub struct PeerInfo {
     pub peer_id: String,
     /// Capabilities this peer has negotiated.
     pub capabilities: Vec<String>,
+    /// WG overlay IP address (e.g. "100.222.0.22"). May be absent for peers
+    /// whose address hasn't been resolved yet.
+    #[serde(default)]
+    pub wg_address: Option<String>,
 }
 
 impl PeerInfo {
@@ -520,6 +585,7 @@ mod tests {
         let info = PeerInfo {
             peer_id: encode_b64(&id),
             capabilities: vec!["test.cap.1".into()],
+            wg_address: None,
         };
         assert_eq!(info.peer_id_bytes().unwrap(), id);
     }
@@ -529,6 +595,7 @@ mod tests {
         let info = PeerInfo {
             peer_id: encode_b64(&[1, 2, 3]),
             capabilities: vec![],
+            wg_address: None,
         };
         assert!(info.peer_id_bytes().is_err());
     }

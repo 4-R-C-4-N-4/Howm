@@ -1,7 +1,7 @@
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useState, useCallback, useRef } from 'react';
-import { getPeers } from '../api/nodes';
+import { getPeers, removePeer } from '../api/nodes';
 import {
   getPeerGroups, getPeerPermissions, getAccessGroups,
   movePeerToTier, denyPeer, assignPeerToGroup, removePeerFromGroup,
@@ -89,6 +89,23 @@ export function PeerDetail() {
     },
     onError: () => showToast('error', 'Failed to deny peer'),
   });
+
+  const forgetMutation = useMutation({
+    mutationFn: () => removePeer(peer!.node_id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['peers'] });
+      queryClient.invalidateQueries({ queryKey: ['peer-groups'] });
+      navigate('/peers');
+    },
+    onError: () => showToast('error', 'Failed to forget peer'),
+  });
+
+  const handleForget = () => {
+    if (!peer) return;
+    if (confirm(`Forget ${peer.name}? This removes the peer from peers.json, all access groups, the WireGuard interface, and any active session. They can be re-invited later.`)) {
+      forgetMutation.mutate();
+    }
+  };
 
   const addGroupMutation = useMutation({
     mutationFn: (groupId: string) => assignPeerToGroup(peerId!, groupId),
@@ -225,6 +242,15 @@ export function PeerDetail() {
       {/* Deny */}
       <button onClick={() => setShowDenyModal(true)} className='py-2.5 px-5 bg-[rgba(239,68,68,0.12)] border border-[rgba(239,68,68,0.3)] rounded-lg text-howm-error cursor-pointer text-sm font-semibold w-full'>
         🔴 Deny Peer
+      </button>
+
+      {/* Forget */}
+      <button
+        onClick={handleForget}
+        disabled={forgetMutation.isPending}
+        className='mt-2 py-2.5 px-5 bg-[rgba(239,68,68,0.12)] border border-[rgba(239,68,68,0.3)] rounded-lg text-howm-error cursor-pointer text-sm font-semibold w-full disabled:opacity-50'
+      >
+        🗑 {forgetMutation.isPending ? 'Forgetting…' : 'Forget Peer'}
       </button>
 
       {showDenyModal && (

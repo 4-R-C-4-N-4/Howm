@@ -139,15 +139,25 @@ impl P2pcdTransport {
         tokio::spawn(async move {
             while let Some(msg) = send_rx.recv().await {
                 let encoded = msg.encode();
-                if let Err(e) = tokio::time::timeout(io_timeout, async {
+                match tokio::time::timeout(io_timeout, async {
                     write_half.write_all(&encoded).await?;
                     write_half.flush().await?;
                     Ok::<(), std::io::Error>(())
                 })
                 .await
                 {
-                    tracing::debug!("p2pcd channel write error: {:?}", e);
-                    break;
+                    Ok(Ok(())) => {} // success, continue
+                    Ok(Err(e)) => {
+                        // TCP I/O error (broken pipe, connection reset, etc.)
+                        // Previously this was silently swallowed because `if let Err`
+                        // only matched the outer timeout Elapsed, not Ok(Err(io)).
+                        tracing::warn!("p2pcd transport write error: {}", e);
+                        break;
+                    }
+                    Err(_elapsed) => {
+                        tracing::warn!("p2pcd transport write timeout ({}s)", io_timeout.as_secs());
+                        break;
+                    }
                 }
             }
         });
@@ -307,7 +317,7 @@ mod tests {
         let mut client = connect(addr).await.unwrap();
         let msg = ProtocolMessage::Confirm {
             personal_hash: vec![1u8; 32],
-            active_set: vec!["howm.feed.1".to_string()],
+            active_set: vec!["howm.social.feed.1".to_string()],
             accepted_params: None,
         };
         client.send(&msg).await.unwrap();
@@ -315,7 +325,7 @@ mod tests {
         let received = accept_task.await.unwrap();
         match received {
             ProtocolMessage::Confirm { active_set, .. } => {
-                assert_eq!(active_set, vec!["howm.feed.1"]);
+                assert_eq!(active_set, vec!["howm.social.feed.1"]);
             }
             other => panic!("expected Confirm, got {:?}", other),
         }
@@ -418,7 +428,7 @@ mod tests {
 
         let mut params = BTreeMap::new();
         params.insert(
-            "howm.feed.1".to_string(),
+            "howm.social.feed.1".to_string(),
             ScopeParams {
                 rate_limit: 10,
                 ttl: 3600,
@@ -429,7 +439,7 @@ mod tests {
         let mut client = connect(addr).await.unwrap();
         let msg = ProtocolMessage::Confirm {
             personal_hash: vec![2u8; 32],
-            active_set: vec!["howm.feed.1".to_string()],
+            active_set: vec!["howm.social.feed.1".to_string()],
             accepted_params: Some(params),
         };
         client.send(&msg).await.unwrap();
@@ -440,7 +450,7 @@ mod tests {
                 accepted_params: Some(p),
                 ..
             } => {
-                let scope = p.get("howm.feed.1").unwrap();
+                let scope = p.get("howm.social.feed.1").unwrap();
                 assert_eq!(scope.rate_limit, 10);
                 assert_eq!(scope.ttl, 3600);
             }

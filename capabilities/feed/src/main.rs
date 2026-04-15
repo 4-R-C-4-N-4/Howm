@@ -1,17 +1,9 @@
-use axum::{
-    body::Body,
-    extract::DefaultBodyLimit,
-    http::{header, Request, StatusCode},
-    response::{IntoResponse, Response},
-    routing::{delete, get, post},
-    Router,
-};
+use axum::routing::{delete, get, post};
 use clap::Parser;
 use include_dir::{include_dir, Dir};
-use std::net::SocketAddr;
 use std::path::PathBuf;
-use tracing::info;
-use tracing_subscriber::EnvFilter;
+
+use p2pcd::capability_sdk::{init_tracing, CapabilityApp};
 
 static UI_ASSETS: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/ui");
 
@@ -48,15 +40,14 @@ struct Config {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env().add_directive("info".parse()?))
-        .init();
+    init_tracing();
 
     let config = Config::parse();
 
-    std::fs::create_dir_all(&config.data_dir)?;
-
-    // Open SQLite database and run JSON migration if needed
+    // Open SQLite database and run JSON migration if needed. feed keeps its
+    // own DB opener because it layers a one-time JSON-to-SQLite migration on
+    // top of the standard open; the SDK's `cap_db::open_sqlite` handles the
+    // pragmas but not that legacy import step.
     let feed_db = db::FeedDb::open(&config.data_dir)?;
     feed_db.migrate_from_json(&config.data_dir)?;
 
@@ -69,100 +60,40 @@ async fn main() -> anyhow::Result<()> {
     let state = api::FeedState::new(config.data_dir.clone(), feed_db, config.daemon_port)
         .with_limits(limits);
 
-    // Restore active peers from daemon on startup
-    {
-        let state_clone = state.clone();
-        tokio::spawn(async move {
-            api::init_peers_from_daemon(state_clone).await;
-        });
-    }
+    // Start SSE stream — PeerStream keeps the tracker current via daemon events.
+    state.runtime.start_event_stream();
 
-    // Resume any pending blob transfers from a previous run
-    {
+    // Resume any pending blob transfers from a previous run.
+    let resume_fut = {
         let db_clone = state.db.clone();
         let bridge_clone = state.bridge().clone();
-        tokio::spawn(async move {
+        async move {
             blob_fetcher::resume_active_transfers(db_clone, bridge_clone).await;
-        });
-    }
-
-    let app = Router::new()
-        // Feed endpoints (all paginated via ?limit=N&offset=N)
-        .route("/feed", get(api::get_feed))
-        .route("/feed/mine", get(api::get_my_feed))
-        .route("/feed/peer/{peer_id}", get(api::get_peer_feed))
-        // Post CRUD — JSON for text-only, multipart for media attachments
-        .route("/post", post(api::create_post))
-        .route("/post/upload", post(api::create_post_multipart))
-        .route("/post/limits", get(api::get_limits))
-        .route("/post/{id}", delete(api::delete_post))
-        .route("/post/{id}/attachments", get(api::get_attachment_status))
-        // Blob serving (content-addressed media)
-        .route("/blob/{hash}", get(api::serve_blob))
-        // Utility
-        .route("/health", get(api::health))
-        .route("/peers", get(api::list_peers))
-        // P2P-CD daemon callbacks
-        .route("/p2pcd/peer-active", post(api::p2pcd_peer_active))
-        .route("/p2pcd/peer-inactive", post(api::p2pcd_peer_inactive))
-        .route("/p2pcd/inbound", post(api::p2pcd_inbound))
-        .with_state(state)
-        .layer(DefaultBodyLimit::max(50 * 1024 * 1024)) // 50 MB for media uploads
-        // Embedded capability UI — served at /ui/*
-        .fallback(serve_ui);
-
-    let addr: SocketAddr = format!("127.0.0.1:{}", config.port).parse()?;
-    info!("Social feed capability starting on {}", addr);
-
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
-
-    Ok(())
-}
-
-// ── Embedded UI ──────────────────────────────────────────────────────────────
-
-async fn serve_ui(req: Request<Body>) -> Response {
-    let path = req.uri().path();
-    // Strip /ui prefix; treat /ui and /ui/ as index.html
-    let rel = path.strip_prefix("/ui").unwrap_or(path);
-    let rel = rel.trim_start_matches('/');
-    let rel = if rel.is_empty() { "index.html" } else { rel };
-
-    match UI_ASSETS.get_file(rel) {
-        Some(file) => (
-            [(header::CONTENT_TYPE, ui_mime(rel))],
-            Body::from(file.contents()),
-        )
-            .into_response(),
-        None => {
-            // SPA fallback to index.html for unknown paths under /ui
-            if path.starts_with("/ui") {
-                match UI_ASSETS.get_file("index.html") {
-                    Some(index) => (
-                        [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
-                        Body::from(index.contents()),
-                    )
-                        .into_response(),
-                    None => StatusCode::NOT_FOUND.into_response(),
-                }
-            } else {
-                StatusCode::NOT_FOUND.into_response()
-            }
         }
-    }
-}
+    };
 
-fn ui_mime(path: &str) -> &'static str {
-    match path.rsplit('.').next() {
-        Some("html") => "text/html; charset=utf-8",
-        Some("css") => "text/css; charset=utf-8",
-        Some("js") => "application/javascript; charset=utf-8",
-        Some("json") => "application/json",
-        Some("png") => "image/png",
-        Some("svg") => "image/svg+xml",
-        Some("ico") => "image/x-icon",
-        Some("woff2") => "font/woff2",
-        _ => "application/octet-stream",
-    }
+    CapabilityApp::new("howm.social.feed.1", config.port, state)
+        .with_body_limit(50 * 1024 * 1024) // 50 MiB for media uploads
+        .with_ui(&UI_ASSETS)
+        .with_inbound_handler(api::p2pcd_inbound)
+        .with_routes(|router| {
+            router
+                // Feed endpoints (paginated via ?limit=N&offset=N)
+                .route("/feed", get(api::get_feed))
+                .route("/feed/mine", get(api::get_my_feed))
+                .route("/feed/peer/{peer_id}", get(api::get_peer_feed))
+                // Post CRUD — JSON for text-only, multipart for media attachments
+                .route("/post", post(api::create_post))
+                .route("/post/upload", post(api::create_post_multipart))
+                .route("/post/limits", get(api::get_limits))
+                .route("/post/{id}", delete(api::delete_post))
+                .route("/post/{id}/attachments", get(api::get_attachment_status))
+                // Blob serving (content-addressed media)
+                .route("/blob/{hash}", get(api::serve_blob))
+                // Peer list
+                .route("/peers", get(api::list_peers))
+        })
+        .spawn_task(resume_fut)
+        .run()
+        .await
 }

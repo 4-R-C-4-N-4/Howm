@@ -2,6 +2,7 @@ import { useNavigate } from 'react-router-dom';
 import { useState, useRef, useEffect } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { movePeerToTier, denyPeer } from '../api/access';
+import { removePeer } from '../api/nodes';
 import {
   effectiveTier, peerIdToHex, formatLastSeen, isOnline,
   GROUP_DEFAULT, GROUP_FRIENDS, GROUP_TRUSTED,
@@ -56,6 +57,22 @@ export function PeerRow({ peer, groups, now, onToast, presence }: PeerRowProps) 
     },
     onError: () => onToast?.('error', 'Failed to deny peer'),
   });
+
+  const forgetMutation = useMutation({
+    mutationFn: () => removePeer(peer.node_id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['peer-groups'] });
+      queryClient.invalidateQueries({ queryKey: ['peers'] });
+      onToast?.('success', `${peer.name} forgotten`);
+    },
+    onError: () => onToast?.('error', 'Failed to forget peer'),
+  });
+
+  const handleForget = () => {
+    if (confirm(`Forget ${peer.name}? This removes the peer from peers.json, all access groups, the WireGuard interface, and any active session. They can be re-invited later.`)) {
+      forgetMutation.mutate();
+    }
+  };
 
   const currentTier = badge.label;
   const tierOptions = [
@@ -124,6 +141,13 @@ export function PeerRow({ peer, groups, now, onToast, presence }: PeerRowProps) 
               className='block w-full text-left bg-none border-none py-2 px-3.5 cursor-pointer text-sm text-red-500'
             >
               🔴 Deny Peer
+            </button>
+            <button
+              onClick={() => { handleForget(); setMenuOpen(false); }}
+              disabled={forgetMutation.isPending}
+              className='block w-full text-left bg-none border-none py-2 px-3.5 cursor-pointer text-sm text-red-500'
+            >
+              🗑 Forget Peer
             </button>
           </div>
         )}

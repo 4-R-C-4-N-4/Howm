@@ -10,7 +10,6 @@ use howm::config;
 use howm::executor;
 use howm::identity;
 use howm::lan_discovery;
-use howm::matchmake;
 use howm::net_detect;
 use howm::p2pcd;
 use howm::peers;
@@ -96,6 +95,42 @@ async fn main() -> anyhow::Result<()> {
     let peers = peers::load(&config.data_dir)?;
     let mut capabilities = capabilities::load(&config.data_dir)?;
 
+    // Prune capabilities whose manifest no longer exists on disk.
+    // This cleans up WIP capabilities that exist on other branches but not this one,
+    // preventing the watchdog and PID loop from crash-looping a binary that isn't here.
+    let before = capabilities.len();
+    capabilities.retain(|cap| {
+        let exists = std::path::Path::new(&cap.manifest_path).exists();
+        if !exists {
+            tracing::info!(
+                "Removing capability '{}' — manifest no longer on disk ({})",
+                cap.name,
+                cap.manifest_path
+            );
+        }
+        exists
+    });
+    if capabilities.len() < before {
+        capabilities::save(&config.data_dir, &capabilities)?;
+    }
+
+    // Migrate stale p2pcd_name entries: software major version 0 was incorrectly used
+    // as the protocol version, producing "howm.social.messaging.0" instead of ".1".
+    // All capabilities speak protocol version 1 regardless of their software version.
+    let mut migrated = false;
+    for cap in capabilities.iter_mut() {
+        if let Some(ref mut name) = cap.p2pcd_name {
+            if name.ends_with(".0") {
+                *name = format!("{}.1", &name[..name.len() - 2]);
+                migrated = true;
+            }
+        }
+    }
+    if migrated {
+        tracing::info!("Migrated capability p2pcd_names from .0 to .1 protocol version");
+        capabilities::save(&config.data_dir, &capabilities)?;
+    }
+
     // Restart capability processes that were running before daemon shutdown
     for cap in capabilities.iter_mut() {
         if matches!(cap.status, capabilities::CapStatus::Stopped) {
@@ -169,24 +204,35 @@ async fn main() -> anyhow::Result<()> {
     };
     info!("Access control database initialised");
 
+    // Build the single canonical EventBus; shared by AppState and CapabilityNotifier.
+    let event_bus = Arc::new(p2pcd::event_bus::EventBus::new());
+
     // Build app state
     let mut state = state::AppState::new(
         identity.clone(),
-        peers,
+        peers.clone(),
         capabilities,
         config.clone(),
         api_token,
         Arc::clone(&access_db),
+        Arc::clone(&event_bus),
     );
-
-    // Build capability notifier and register running capabilities
-    let cap_notifier = p2pcd::cap_notify::CapabilityNotifier::new();
+    let cap_notifier = p2pcd::cap_notify::CapabilityNotifier::new(Arc::clone(&event_bus));
     {
         let caps = state.capabilities.read().await;
         for cap in caps.iter() {
             if matches!(cap.status, capabilities::CapStatus::Running) {
-                cap_notifier.register(cap.name.clone(), cap.port).await;
-                tracing::debug!("cap_notify: registered '{}' on port {}", cap.name, cap.port);
+                // Register under the p2pcd name (e.g. "howm.social.messaging.1") so
+                // notify_peer_active can match it against the session's active_set.
+                if let Some(ref p2pcd_name) = cap.p2pcd_name {
+                    cap_notifier.register(p2pcd_name.clone(), cap.port).await;
+                    tracing::debug!(
+                        "cap_notify: registered '{}' (p2pcd: {}) on port {}",
+                        cap.name,
+                        p2pcd_name,
+                        cap.port
+                    );
+                }
             }
         }
     }
@@ -214,6 +260,36 @@ async fn main() -> anyhow::Result<()> {
         None
     };
     state.p2pcd_engine = p2pcd_engine.clone();
+
+    // Restore LAN transport hints from persisted peers so that P2P-CD can
+    // reach LAN peers directly after a daemon restart without waiting for a
+    // new scan or invite.  `lan_transport_hints` is in-memory only, so we
+    // re-populate it here from the `lan_ip` field stored in peers.json.
+    if let Some(ref engine) = p2pcd_engine {
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
+        let mut restored = 0u32;
+        for peer in &peers {
+            if let Some(ref lan_ip) = peer.lan_ip {
+                if let Ok(bytes) = STANDARD.decode(&peer.wg_pubkey) {
+                    if bytes.len() == 32 {
+                        let mut peer_id = [0u8; 32];
+                        peer_id.copy_from_slice(&bytes);
+                        if let Ok(ip) = lan_ip.parse::<std::net::IpAddr>() {
+                            let addr = std::net::SocketAddr::new(ip, 7654);
+                            engine.set_lan_hint(peer_id, addr).await;
+                            restored += 1;
+                        }
+                    }
+                }
+            }
+        }
+        if restored > 0 {
+            info!(
+                "Restored {} LAN transport hint(s) from peers.json",
+                restored
+            );
+        }
+    }
 
     // Store WG active state
     {
@@ -263,56 +339,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Register matchmake circuit event handler
-    if let Some(ref engine) = p2pcd_engine {
-        if let Some(handler) = engine.cap_router().handler_by_name("core.network.relay.1") {
-            if let Some(relay_handler) = handler
-                .as_any()
-                .downcast_ref::<::p2pcd::capabilities::relay::RelayHandler>()
-            {
-                let (tx, mut rx) = tokio::sync::mpsc::channel(64);
-                relay_handler.set_event_callback(tx).await;
-                let mm_state = state.clone();
-                let mm_counter = Arc::clone(&state.matchmake_counter);
-                tokio::spawn(async move {
-                    while let Some(event) = rx.recv().await {
-                        if let ::p2pcd::capabilities::relay::CircuitEvent::Data {
-                            circuit_id,
-                            data,
-                            ..
-                        } = event
-                        {
-                            match matchmake::decode_message(&data) {
-                                Ok(matchmake::MatchmakeMessage::Request(req)) => {
-                                    let s = mm_state.clone();
-                                    let c = Arc::clone(&mm_counter);
-                                    tokio::spawn(async move {
-                                        if let Err(e) = matchmake::handle_incoming_matchmake(
-                                            &s, circuit_id, req, c,
-                                        )
-                                        .await
-                                        {
-                                            tracing::warn!("matchmake handler error: {}", e);
-                                        }
-                                    });
-                                }
-                                Ok(_) => {
-                                    tracing::debug!(
-                                        "matchmake: ignoring non-request on circuit {}",
-                                        circuit_id
-                                    );
-                                }
-                                Err(_) => {
-                                    // Not a matchmake message — ignore
-                                }
-                            }
-                        }
-                    }
-                    tracing::debug!("matchmake: circuit event channel closed");
-                });
-                info!("Matchmake circuit event handler registered");
-            }
-        }
-    }
+    howm::connectivity::register_handlers(state.clone()).await;
 
     // Background: capability health check loop (every 30s)
     {
@@ -326,15 +353,16 @@ async fn main() -> anyhow::Result<()> {
                 let mut any_changed = false;
                 for cap in caps.iter_mut() {
                     if !matches!(cap.status, capabilities::CapStatus::Running) {
+                        // Skip Stopped, Crashed, Error — watchdog handles Crashed.
                         continue;
                     }
                     let alive = cap.pid.map(executor::check_health).unwrap_or(false);
                     if !alive {
-                        tracing::warn!(
-                            "Capability '{}' (pid={:?}) crashed — restarting",
-                            cap.name,
-                            cap.pid
-                        );
+                        // Mark Crashed immediately so the HTTP watchdog skips it on its
+                        // next tick and doesn't double-restart the same capability.
+                        cap.status = capabilities::CapStatus::Crashed;
+                        cap.pid = None;
+                        tracing::warn!("Capability '{}' process died — restarting", cap.name,);
                         let data_dir = &cap.data_dir;
                         match executor::start_capability(
                             &cap.binary_path,
@@ -352,6 +380,7 @@ async fn main() -> anyhow::Result<()> {
                                     new_pid
                                 );
                                 cap.pid = Some(new_pid);
+                                cap.status = capabilities::CapStatus::Running;
                             }
                             Err(e) => {
                                 tracing::error!(
@@ -378,6 +407,10 @@ async fn main() -> anyhow::Result<()> {
         });
         info!("Capability health check loop started (30s interval)");
     }
+
+    // Start the HTTP health watchdog (polls /health, restarts unresponsive caps).
+    // Complements the PID loop above: PID loop = hard crashes, watchdog = soft failures.
+    howm::watchdog::start(state.clone());
 
     // Start HTTP server with graceful shutdown
     let addr: SocketAddr = format!("0.0.0.0:{}", config.port).parse()?;
@@ -472,11 +505,49 @@ fn build_p2pcd_engine(
     // Load or generate p2pcd-peer.toml
     let toml_path = config.data_dir.join("p2pcd-peer.toml");
     let peer_config = if toml_path.exists() {
-        p2pcd_types::config::PeerConfig::load(&toml_path)
-            .map_err(|e| anyhow::anyhow!("Failed to load p2pcd-peer.toml: {}", e))?
+        let mut loaded = p2pcd_types::config::PeerConfig::load(&toml_path)
+            .map_err(|e| anyhow::anyhow!("Failed to load p2pcd-peer.toml: {}", e))?;
+
+        // ── Auto-migration: ensure all expected capabilities are present ──
+        // If the TOML was generated by an older version, it may have wrong
+        // names or be missing capabilities. Merge in any missing caps from
+        // the current defaults.
+        let defaults = p2pcd_types::config::PeerConfig::generate_default(&config.data_dir);
+        let mut migrated = false;
+
+        for (key, default_cap) in &defaults.capabilities {
+            let needs_add = match loaded.capabilities.get(key) {
+                None => true,
+                Some(existing) => existing.name != default_cap.name,
+            };
+            if needs_add {
+                if let Some(old) = loaded.capabilities.get(key) {
+                    info!(
+                        "p2pcd-peer.toml migration: replacing '{}' cap name '{}' → '{}'",
+                        key, old.name, default_cap.name
+                    );
+                } else {
+                    info!(
+                        "p2pcd-peer.toml migration: adding missing capability '{}'  ({})",
+                        key, default_cap.name
+                    );
+                }
+                loaded.capabilities.insert(key.clone(), default_cap.clone());
+                migrated = true;
+            }
+        }
+
+        if migrated {
+            // Write the migrated config back
+            if let Ok(toml_str) = toml::to_string_pretty(&loaded) {
+                let _ = std::fs::write(&toml_path, toml_str);
+                info!("p2pcd-peer.toml migrated with updated capabilities");
+            }
+        }
+
+        loaded
     } else {
         let default_cfg = p2pcd_types::config::PeerConfig::generate_default(&config.data_dir);
-        // Write the default config for the user to inspect/modify
         if let Ok(toml_str) = toml::to_string_pretty(&default_cfg) {
             let _ = std::fs::write(&toml_path, toml_str);
             info!(
@@ -499,6 +570,7 @@ fn build_p2pcd_engine(
 /// One-time migration: map peers.json TrustLevel to access.db group memberships.
 /// Runs only when the access database has no existing memberships (first startup).
 fn migrate_trust_levels(db: &howm_access::AccessDb, peers: &[peers::Peer]) {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
     use howm_access::{GROUP_DEFAULT, GROUP_FRIENDS};
 
     // Skip if there are already memberships (migration already ran)
@@ -508,7 +580,7 @@ fn migrate_trust_levels(db: &howm_access::AccessDb, peers: &[peers::Peer]) {
 
     // Check if any memberships exist
     let has_any = peers.iter().any(|p| {
-        let peer_id = hex::decode(&p.wg_pubkey).unwrap_or_default();
+        let peer_id = STANDARD.decode(&p.wg_pubkey).unwrap_or_default();
         db.peer_has_memberships(&peer_id).unwrap_or(false)
     });
 
@@ -518,7 +590,7 @@ fn migrate_trust_levels(db: &howm_access::AccessDb, peers: &[peers::Peer]) {
 
     let mut migrated = 0u32;
     for peer in peers {
-        let peer_id = match hex::decode(&peer.wg_pubkey) {
+        let peer_id = match STANDARD.decode(&peer.wg_pubkey) {
             Ok(id) if id.len() == 32 => id,
             _ => {
                 tracing::warn!(

@@ -76,7 +76,7 @@ pub struct Room {
 
 #[derive(Clone)]
 pub struct RoomStore {
-    rooms: Arc<RwLock<HashMap<String, Room>>>,
+    pub(crate) rooms: Arc<RwLock<HashMap<String, Room>>>,
     config: VoiceConfig,
 }
 
@@ -135,6 +135,10 @@ impl RoomStore {
             .filter(|r| {
                 r.members.iter().any(|m| m.peer_id == peer_id)
                     || r.invited.iter().any(|i| i == peer_id)
+                    // Placeholder rooms from incoming invites have no local
+                    // members — show them to the local user so they can
+                    // see the invite card and join/decline.
+                    || (r.members.is_empty() && !r.invited.is_empty())
             })
             .cloned()
             .collect()
@@ -147,8 +151,10 @@ impl RoomStore {
             .get_mut(room_id)
             .ok_or_else(|| "room not found".to_string())?;
 
-        // Must be invited
-        if !room.invited.iter().any(|i| i == peer_id) {
+        // Must be invited, OR this is a placeholder room from an incoming invite
+        // (members is empty = remote room, local user is implicitly the invitee).
+        let is_placeholder = room.members.is_empty() && !room.invited.is_empty();
+        if !is_placeholder && !room.invited.iter().any(|i| i == peer_id) {
             return Err("not invited to this room".to_string());
         }
 

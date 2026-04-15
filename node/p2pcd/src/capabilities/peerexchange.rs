@@ -2,6 +2,7 @@
 //
 // Allows peers to share their known peer lists for mesh discovery.
 
+use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -22,7 +23,7 @@ mod keys {
 #[allow(dead_code)]
 pub struct PeerExchangeHandler {
     known_peers: Arc<RwLock<Vec<PeerId>>>,
-    send_tx: RwLock<Option<tokio::sync::mpsc::Sender<ProtocolMessage>>>,
+    peer_senders: Arc<RwLock<HashMap<PeerId, tokio::sync::mpsc::Sender<ProtocolMessage>>>>,
 }
 
 impl Default for PeerExchangeHandler {
@@ -35,12 +36,25 @@ impl PeerExchangeHandler {
     pub fn new() -> Self {
         Self {
             known_peers: Arc::new(RwLock::new(Vec::new())),
-            send_tx: RwLock::new(None),
+            peer_senders: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
+    pub async fn add_peer_sender(
+        &self,
+        peer_id: PeerId,
+        tx: tokio::sync::mpsc::Sender<ProtocolMessage>,
+    ) {
+        self.peer_senders.write().await.insert(peer_id, tx);
+    }
+
+    pub async fn remove_peer_sender(&self, peer_id: &PeerId) {
+        self.peer_senders.write().await.remove(peer_id);
+    }
+
+    #[cfg(test)]
     pub async fn set_sender(&self, tx: tokio::sync::mpsc::Sender<ProtocolMessage>) {
-        *self.send_tx.write().await = Some(tx);
+        self.peer_senders.write().await.insert([0u8; 32], tx);
     }
 
     pub async fn set_known_peers(&self, peers: Vec<PeerId>) {
@@ -90,8 +104,13 @@ impl CapabilityHandler for PeerExchangeHandler {
                         ciborium::value::Value::Array(to_share),
                     )]);
                     let msg = make_capability_msg(message_types::PEX_RESP, resp);
-                    if let Some(tx) = self.send_tx.read().await.as_ref() {
+                    if let Some(tx) = self.peer_senders.read().await.get(&peer_id) {
                         let _ = tx.send(msg).await;
+                    } else {
+                        tracing::warn!(
+                            "pex: no sender for peer {} — message dropped",
+                            hex::encode(&peer_id[..4])
+                        );
                     }
                 }
                 message_types::PEX_RESP => {

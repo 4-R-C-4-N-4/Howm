@@ -8,3 +8,4 @@
 pub mod bridge;
 pub mod cap_notify;
 pub mod engine;
+pub mod event_bus;

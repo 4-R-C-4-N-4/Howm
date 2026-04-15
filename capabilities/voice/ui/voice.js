@@ -1,9 +1,13 @@
 // Voice capability UI — room management + WebRTC audio
 'use strict';
 
-const API = '';  // relative to capability base path
-// Presence API is accessed via daemon proxy — relative to document origin
-const PRESENCE_API = '/cap/presence';
+// Base path detection — when loaded in the daemon proxy iframe at
+// /cap/voice/ui/, API calls need to target /cap/voice/rooms etc.
+const BASE = (function () {
+  const path = window.location.pathname;
+  const uiIdx = path.indexOf('/ui');
+  return uiIdx > 0 ? path.substring(0, uiIdx) : '';
+})();
 let currentRoom = null;
 let isMuted = false;
 let ws = null;
@@ -11,22 +15,24 @@ let peerConnections = {};  // peer_id -> RTCPeerConnection
 let localStream = null;
 let audioAnalysers = {};   // peer_id -> { analyser, dataArray }
 let levelAnimFrame = null; // requestAnimationFrame id
-let availablePeers = [];   // cached from presence
+let availablePeers = [];   // cached from voice tracker
 
 // ── Peer ID ──────────────────────────────────────────────────────────────────
 
-// In production, the daemon proxy injects the peer identity.
-// For now, read from localStorage or prompt.
-function getPeerId() {
-  let id = localStorage.getItem('howm_peer_id');
-  if (!id) {
-    id = 'peer-' + Math.random().toString(36).slice(2, 10);
-    localStorage.setItem('howm_peer_id', id);
-  }
-  return id;
-}
+// The real peer ID is learned from the server via GET /me (which reads the
+// X-Node-Id / X-Peer-Id header injected by the daemon proxy). The WS
+// handshake sends this so the signal server can verify room membership.
+let PEER_ID = null;
 
-const PEER_ID = getPeerId();
+async function fetchMyId() {
+  try {
+    const resp = await fetch(`${BASE}/me`, { headers: apiHeaders() });
+    if (resp.ok) {
+      const data = await resp.json();
+      if (data.peer_id) PEER_ID = data.peer_id;
+    }
+  } catch (_) {}
+}
 
 function apiHeaders() {
   return { 'Content-Type': 'application/json', 'X-Peer-Id': PEER_ID };
@@ -42,16 +48,15 @@ function esc(s) {
   return d.innerHTML;
 }
 
-// ── Presence peer list ───────────────────────────────────────────────────────
+// ── Active peer list (from voice tracker, not presence) ─────────────────────
 
-async function loadPresencePeers() {
+async function loadPeers() {
   try {
-    const resp = await fetch(`${PRESENCE_API}/peers`);
+    const resp = await fetch(`${BASE}/peers`, { headers: apiHeaders() });
     if (!resp.ok) return;
     const data = await resp.json();
     availablePeers = (data.peers || []).filter(p => p.peer_id !== PEER_ID);
   } catch (_) {
-    // Presence capability may not be running
     availablePeers = [];
   }
 }
@@ -125,7 +130,7 @@ function showPeerPicker(title, excludeIds) {
 
 async function loadRooms() {
   try {
-    const resp = await fetch(`${API}/rooms`, { headers: apiHeaders() });
+    const resp = await fetch(`${BASE}/rooms`, { headers: apiHeaders() });
     const data = await resp.json();
     renderRooms(data.rooms || []);
   } catch (e) {
@@ -141,10 +146,9 @@ function renderRooms(rooms) {
   }
 
   list.innerHTML = rooms.map(r => {
-    const isInvited = r.invited.includes(PEER_ID);
     const capacityStr = `${r.members.length}/${r.max_members}`;
 
-    if (isInvited) {
+    if (r.is_invited) {
       return `
         <div class="invite-card">
           <div class="room-name">📞 ${esc(r.name || 'Voice Room')}</div>
@@ -167,14 +171,14 @@ function renderRooms(rooms) {
 // ── Room actions ─────────────────────────────────────────────────────────────
 
 async function createRoom() {
-  await loadPresencePeers();
+  await loadPeers();
   const name = prompt('Room name (optional):') || undefined;
 
   // Pick peers to invite
   const invitees = await showPeerPicker('Invite peers to room');
 
   try {
-    const resp = await fetch(`${API}/rooms`, {
+    const resp = await fetch(`${BASE}/rooms`, {
       method: 'POST',
       headers: apiHeaders(),
       body: JSON.stringify({ name, invite: invitees, max_members: 10 }),
@@ -187,12 +191,12 @@ async function createRoom() {
 }
 
 async function quickCall() {
-  await loadPresencePeers();
+  await loadPeers();
   const peers = await showPeerPicker('Quick call — select a peer');
   if (!peers.length) return;
 
   try {
-    const resp = await fetch(`${API}/quick-call`, {
+    const resp = await fetch(`${BASE}/quick-call`, {
       method: 'POST',
       headers: apiHeaders(),
       body: JSON.stringify({ peer_id: peers[0] }),
@@ -211,7 +215,7 @@ async function quickCall() {
 
 async function joinRoom(roomId) {
   try {
-    const resp = await fetch(`${API}/rooms/${roomId}/join`, {
+    const resp = await fetch(`${BASE}/rooms/${roomId}/join`, {
       method: 'POST',
       headers: apiHeaders(),
     });
@@ -236,7 +240,12 @@ async function joinRoom(roomId) {
 
 async function enterRoom(roomId) {
   try {
-    const resp = await fetch(`${API}/rooms/${roomId}`, { headers: apiHeaders() });
+    const resp = await fetch(`${BASE}/rooms/${roomId}`, { headers: apiHeaders() });
+    if (!resp.ok) {
+      console.error('enterRoom: GET /rooms/' + roomId + ' returned ' + resp.status);
+      alert('Could not enter room (server returned ' + resp.status + ')');
+      return;
+    }
     currentRoom = await resp.json();
 
     document.getElementById('rooms-section').style.display = 'none';
@@ -254,7 +263,7 @@ async function enterRoom(roomId) {
 async function leaveRoom() {
   if (!currentRoom) return;
   try {
-    await fetch(`${API}/rooms/${currentRoom.room_id}/leave`, {
+    await fetch(`${BASE}/rooms/${currentRoom.room_id}/leave`, {
       method: 'POST',
       headers: apiHeaders(),
     });
@@ -271,7 +280,7 @@ async function toggleMute() {
   if (!currentRoom) return;
   isMuted = !isMuted;
   try {
-    await fetch(`${API}/rooms/${currentRoom.room_id}/mute`, {
+    await fetch(`${BASE}/rooms/${currentRoom.room_id}/mute`, {
       method: 'POST',
       headers: apiHeaders(),
       body: JSON.stringify({ muted: isMuted }),
@@ -289,7 +298,7 @@ async function toggleMute() {
 
 async function inviteMore() {
   if (!currentRoom) return;
-  await loadPresencePeers();
+  await loadPeers();
 
   const currentMembers = currentRoom.members.map(m => m.peer_id);
   const currentInvited = currentRoom.invited || [];
@@ -299,7 +308,7 @@ async function inviteMore() {
   if (!peerIds.length) return;
 
   try {
-    const resp = await fetch(`${API}/rooms/${currentRoom.room_id}/invite`, {
+    const resp = await fetch(`${BASE}/rooms/${currentRoom.room_id}/invite`, {
       method: 'POST',
       headers: apiHeaders(),
       body: JSON.stringify({ peer_ids: peerIds }),
@@ -518,8 +527,13 @@ function playLeaveCue() { playTone(600, 150); setTimeout(() => playTone(440, 180
 // ── Signaling WebSocket ──────────────────────────────────────────────────────
 
 function connectSignaling(roomId) {
+  // WebSocket connects directly to the voice cap's port because the daemon
+  // HTTP proxy doesn't support WebSocket upgrade. The cap port (7005) is
+  // read from the manifest at install time; for now hardcoded as the default.
+  // TODO: replace with a /ws-info endpoint or daemon-level WS proxy support.
+  const wsPort = 7005;
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const url = `${protocol}//${location.host}/rooms/${roomId}/signal`;
+  const url = `${protocol}//localhost:${wsPort}/rooms/${roomId}/signal`;
   ws = new WebSocket(url);
 
   ws.onopen = () => {
@@ -599,9 +613,13 @@ function removePeer(peerId) {
 }
 
 async function refreshRoom() {
-  if (!currentRoom) return;
+  if (!currentRoom || !currentRoom.room_id) return;
   try {
-    const resp = await fetch(`${API}/rooms/${currentRoom.room_id}`, { headers: apiHeaders() });
+    const resp = await fetch(`${BASE}/rooms/${currentRoom.room_id}`, { headers: apiHeaders() });
+    if (!resp.ok) {
+      console.warn('refreshRoom: GET /rooms/' + currentRoom.room_id + ' returned ' + resp.status);
+      return; // keep stale currentRoom rather than overwriting with error JSON
+    }
     currentRoom = await resp.json();
     renderCallView();
   } catch (e) {
@@ -633,10 +651,12 @@ function cleanup() {
 
 // ── Init ─────────────────────────────────────────────────────────────────────
 
-loadRooms();
-loadPresencePeers();
+fetchMyId().then(() => {
+  loadRooms();
+  loadPeers();
+});
 // Poll room list every 10s when not in a call, presence every 30s
 setInterval(() => {
   if (!currentRoom) loadRooms();
 }, 10000);
-setInterval(loadPresencePeers, 30000);
+setInterval(loadPeers, 30000);

@@ -17,27 +17,7 @@ use tracing::{info, warn};
 
 use crate::AppState;
 
-// ── Inbound payloads (from daemon cap_notify) ────────────────────────────────
-
-#[derive(Deserialize)]
-pub struct PeerActivePayload {
-    pub peer_id: String,
-    pub wg_address: String,
-    pub capability: String,
-}
-
-#[derive(Deserialize)]
-pub struct PeerInactivePayload {
-    pub peer_id: String,
-    pub reason: String,
-}
-
-#[derive(Deserialize)]
-pub struct InboundMessage {
-    pub peer_id: String,
-    pub method: String,
-    pub payload: String,
-}
+use p2pcd::capability_sdk::{rpc as sdk_rpc, InboundMessage};
 
 // ── RPC payload types (CBOR-encoded over bridge) ─────────────────────────────
 
@@ -69,52 +49,10 @@ pub struct VoiceSignalPayload {
 }
 
 // ── Lifecycle handlers ───────────────────────────────────────────────────────
-
-/// POST /p2pcd/peer-active — a peer with voice capability came online.
-pub async fn peer_active(
-    State(_state): State<AppState>,
-    Json(payload): Json<PeerActivePayload>,
-) -> impl IntoResponse {
-    info!(
-        "Peer active: {} ({}) for {}",
-        &payload.peer_id[..8.min(payload.peer_id.len())],
-        payload.wg_address,
-        payload.capability
-    );
-    StatusCode::OK
-}
-
-/// POST /p2pcd/peer-inactive — a peer went offline.
-pub async fn peer_inactive(
-    State(state): State<AppState>,
-    Json(payload): Json<PeerInactivePayload>,
-) -> impl IntoResponse {
-    info!(
-        "Peer inactive: {} ({})",
-        &payload.peer_id[..8.min(payload.peer_id.len())],
-        payload.reason
-    );
-
-    // Auto-remove the peer from any rooms they're in
-    let rooms_affected = state.rooms.remove_peer_from_all(&payload.peer_id);
-    for (room_id, destroyed) in &rooms_affected {
-        if *destroyed {
-            info!("Room {} destroyed (last member went offline)", room_id);
-            state.signal_hub.close_room(room_id);
-        } else {
-            // Broadcast peer-left via signaling
-            let msg = serde_json::to_string(&crate::signal::SignalMessage {
-                msg_type: "peer-left".to_string(),
-                peer_id: Some(payload.peer_id.clone()),
-                ..Default::default()
-            })
-            .unwrap_or_default();
-            state.signal_hub.broadcast_all(room_id, &msg);
-        }
-    }
-
-    StatusCode::OK
-}
+//
+// peer-active and peer-inactive are now handled by the PeerStream SSE
+// connection started in main.rs. The on_inactive hook performs room teardown
+// with a generation guard to prevent double-fire on session flaps.
 
 /// POST /p2pcd/inbound — receive a forwarded capability message from the daemon.
 pub async fn inbound_message(
@@ -129,11 +67,29 @@ pub async fn inbound_message(
         }
     };
 
-    match payload.method.as_str() {
-        "voice.invite" => handle_invite(&state, &payload.peer_id, &raw),
-        "voice.join" => handle_join_notify(&state, &raw),
-        "voice.leave" => handle_leave_notify(&state, &raw),
-        "voice.signal" => handle_signal_relay(&state, &raw),
+    // Extract method from CBOR RPC envelope (key 1).
+    // For RPC_REQ (message_type 22) the inner payload is in key 3.
+    // For direct forwarding the payload may already be the CBOR body.
+    let method = match sdk_rpc::extract_method(&raw) {
+        Some(m) => m,
+        None => {
+            warn!("No RPC method in inbound payload");
+            return StatusCode::BAD_REQUEST;
+        }
+    };
+
+    // For RPC_REQ forwarding, the actual payload is nested in CBOR key 3.
+    let body = if payload.message_type == 22 {
+        sdk_rpc::extract_inner_payload(&raw).unwrap_or(raw)
+    } else {
+        raw
+    };
+
+    match method.as_str() {
+        "voice.invite" => handle_invite(&state, &payload.peer_id, &body),
+        "voice.join" => handle_join_notify(&state, &body),
+        "voice.leave" => handle_leave_notify(&state, &body),
+        "voice.signal" => handle_signal_relay(&state, &body),
         other => {
             warn!("Unknown voice RPC method: {}", other);
             StatusCode::BAD_REQUEST
@@ -158,11 +114,42 @@ fn handle_invite(state: &AppState, from_peer_id: &str, raw: &[u8]) -> StatusCode
         payload.room_id
     );
 
-    // Add to invited list if room exists (for cross-node rooms)
-    // or create a placeholder room entry for the invite
-    let _ = state
-        .rooms
-        .invite_peers(&payload.room_id, vec![from_peer_id.to_string()]);
+    // Create a placeholder room on the invited side if it doesn't exist yet.
+    // The room was created on the inviter's machine; we need a local copy so
+    // GET /rooms shows the invite and the UI can render Join/Decline.
+    {
+        let rooms = state.rooms.rooms.read();
+        if !rooms.contains_key(&payload.room_id) {
+            drop(rooms);
+            // We don't know the real peer_id of the local user here — the
+            // inviter created the room. Use from_peer_id (the inviter) as
+            // created_by since they're the creator.
+            let room_name = if payload.room_name.is_empty() {
+                None
+            } else {
+                Some(payload.room_name.clone())
+            };
+            let placeholder = crate::state::Room {
+                room_id: payload.room_id.clone(),
+                name: room_name,
+                created_by: payload.inviter_peer_id.clone(),
+                created_at: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs(),
+                members: vec![], // inviter is remote, not a local member
+                invited: vec![from_peer_id.to_string()],
+                max_members: 10,
+            };
+            state.rooms.rooms.write().insert(payload.room_id.clone(), placeholder);
+            info!("Created placeholder room {} for invite", payload.room_id);
+        } else {
+            // Room exists — just add to invited list
+            let _ = state
+                .rooms
+                .invite_peers(&payload.room_id, vec![from_peer_id.to_string()]);
+        }
+    }
 
     // Fire notification
     let room_name = if payload.room_name.is_empty() {
@@ -254,11 +241,27 @@ pub async fn send_invite(
     };
     let cbor = encode_cbor(&payload)?;
 
-    state
+    match state
         .bridge
         .rpc_call(&target_bytes, "voice.invite", &cbor, Some(4000))
         .await
-        .map_err(|e| format!("bridge RPC failed: {e}"))?;
+    {
+        Ok(resp) => {
+            tracing::info!(
+                "voice.invite RPC sent to {} — resp {} bytes",
+                &target_peer_id_b64[..8.min(target_peer_id_b64.len())],
+                resp.len(),
+            );
+        }
+        Err(e) => {
+            tracing::warn!(
+                "voice.invite RPC to {} FAILED: {}",
+                &target_peer_id_b64[..8.min(target_peer_id_b64.len())],
+                e,
+            );
+            return Err(format!("bridge RPC failed: {e}"));
+        }
+    }
 
     Ok(())
 }
@@ -312,6 +315,7 @@ pub async fn send_leave_notify(
 }
 
 /// Relay a signaling message to a remote peer via bridge RPC.
+#[allow(dead_code)]
 pub async fn send_signal_relay(
     state: &AppState,
     target_peer_id_b64: &str,

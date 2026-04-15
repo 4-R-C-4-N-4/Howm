@@ -1,0 +1,23 @@
+{
+  "id": "2578b6a9",
+  "type": "refactor",
+  "state": "done",
+  "summary": "R5 — Split bridge.rs (1652 lines) into bridge/ subdirectory: mod.rs, messaging.rs, blob.rs, events.rs, peers.rs, latency.rs (investigate /latency for deletion)",
+  "source": {
+    "type": "agent"
+  },
+  "created_at": "2026-04-13T13:44:09.019Z",
+  "updated_at": "2026-04-13T14:11:41.754Z",
+  "tags": [
+    "tier2"
+  ],
+  "relationships": {
+    "parent": "b25aecff"
+  },
+  "resolution": {
+    "commit": "036b3cb14d48e26281a7fb5c2bf213f73e8be868",
+    "resolved_at": "2026-04-13T14:11:41.754Z",
+    "resolved_by": "unknown",
+    "note": "Split bridge.rs (1665 lines) into bridge/ subdirectory: mod.rs, messaging.rs, blob.rs, events.rs, peers.rs. /latency route confirmed dead and removed. cargo test --workspace --no-run passes."
+  }
+}

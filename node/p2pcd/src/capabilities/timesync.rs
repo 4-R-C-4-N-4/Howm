@@ -25,7 +25,7 @@ mod keys {
 pub struct TimesyncHandler {
     /// Clock offset per peer in milliseconds (positive = peer is ahead).
     offsets: Arc<RwLock<HashMap<PeerId, i64>>>,
-    send_tx: RwLock<Option<tokio::sync::mpsc::Sender<ProtocolMessage>>>,
+    peer_senders: Arc<RwLock<HashMap<PeerId, tokio::sync::mpsc::Sender<ProtocolMessage>>>>,
 }
 
 impl Default for TimesyncHandler {
@@ -38,12 +38,25 @@ impl TimesyncHandler {
     pub fn new() -> Self {
         Self {
             offsets: Arc::new(RwLock::new(HashMap::new())),
-            send_tx: RwLock::new(None),
+            peer_senders: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
+    pub async fn add_peer_sender(
+        &self,
+        peer_id: PeerId,
+        tx: tokio::sync::mpsc::Sender<ProtocolMessage>,
+    ) {
+        self.peer_senders.write().await.insert(peer_id, tx);
+    }
+
+    pub async fn remove_peer_sender(&self, peer_id: &PeerId) {
+        self.peer_senders.write().await.remove(peer_id);
+    }
+
+    #[cfg(test)]
     pub async fn set_sender(&self, tx: tokio::sync::mpsc::Sender<ProtocolMessage>) {
-        *self.send_tx.write().await = Some(tx);
+        self.peer_senders.write().await.insert([0u8; 32], tx);
     }
 
     pub async fn get_offset(&self, peer_id: &PeerId) -> Option<i64> {
@@ -74,16 +87,22 @@ impl CapabilityHandler for TimesyncHandler {
 
     fn on_activated(
         &self,
-        _ctx: &CapabilityContext,
+        ctx: &CapabilityContext,
     ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + '_>> {
+        let peer_id = ctx.peer_id;
         Box::pin(async move {
             let payload = cbor_encode_map(vec![(
                 keys::LOCAL_TIMESTAMP_MS,
                 ciborium::value::Value::Integer(ciborium::value::Integer::from(now_ms())),
             )]);
             let msg = make_capability_msg(message_types::TIME_REQ, payload);
-            if let Some(tx) = self.send_tx.read().await.as_ref() {
+            if let Some(tx) = self.peer_senders.read().await.get(&peer_id) {
                 let _ = tx.send(msg).await;
+            } else {
+                tracing::warn!(
+                    "timesync: no sender for peer {} — message dropped",
+                    hex::encode(&peer_id[..4])
+                );
             }
             Ok(())
         })
@@ -119,8 +138,13 @@ impl CapabilityHandler for TimesyncHandler {
                         ),
                     ]);
                     let msg = make_capability_msg(message_types::TIME_RESP, resp_payload);
-                    if let Some(tx) = self.send_tx.read().await.as_ref() {
+                    if let Some(tx) = self.peer_senders.read().await.get(&peer_id) {
                         let _ = tx.send(msg).await;
+                    } else {
+                        tracing::warn!(
+                            "timesync: no sender for peer {} — message dropped",
+                            hex::encode(&peer_id[..4])
+                        );
                     }
                 }
                 message_types::TIME_RESP => {

@@ -280,3 +280,348 @@ node/daemon/src/p2pcd/engine.rs      — P2P-CD session initiation
 node/p2pcd/src/transport.rs          — TCP connect (10s timeout)
 node/daemon/src/api/mod.rs           — route registration + auth layers
 ```
+
+
+### PROGRESS
+Updated todo list ✓                                                                                                                                                                                           
+   **Bug #1**: Add the race condition tiebreaking block after the expiry check and before the "already peered" check.                                                                                              
+   ├ Edited lan_routes.rs (node/daemon/src/api/lan_routes.rs) +39 ✓                                                                                                                                                
+   └ Completed todo bug1 ✓                                                                                                                                                                                         
+   **Bug #7**: Fix the `peer_info_url` to use `req.from_lan_ip` instead of `decoded.their_wg_address`.                                                                                                             
+   ├ Edited lan_routes.rs (node/daemon/src/api/lan_routes.rs) +1 -1 ✓                                                                                                                                              
+   └ Completed todo bug7 ✓                                                                                                                                                                                         
+   **Bug #8**: The fallback defaults already use `req.from_name` (`.unwrap_or(&req.from_name)` and `req.from_name.clone()`). Let me verify the current state of the fallback section:                              
+   ├ Searched for "peer_info|from_name|unwrap_or|unknown" lan_routes.rs ✓                                                                                                                                          
+   └ Read lan_routes.rs (node/daemon/src/api/lan_routes.rs) ✓                                                                                                                                                      
+   The fallback defaults already use `req.from_name` correctly — `unwrap_or(&req.from_name)` for the success path and `req.from_name.clone()` for the error/missing paths. The `node_id` fallback uses `"...       
+   └ Completed todo bug8 ✓ 
+
+   **Bug #3 (P2P-CD LAN awareness)**: P2P-CD now resolves peer addresses via LAN transport hints before falling back to WG overlay.
+   ├ Added `lan_transport_hints: Arc<RwLock<HashMap<PeerId, SocketAddr>>>` to ProtocolEngine
+   ├ Added `set_lan_hint(peer_id, addr)` public method
+   ├ `resolve_peer_addr()` checks LAN hints before `wg show dump` (engine.rs)
+   ├ `lan_accept` registers LAN hint after peering completes (lan_routes.rs)
+   └ Completed ✓
+
+   **Bug #4 (Sequencing fix)**: P2P-CD initiator sessions suppressed during invite flow.
+   ├ Added `peering_in_progress: Arc<Mutex<HashSet<PeerId>>>` to ProtocolEngine
+   ├ Added `set_peering_in_progress()` / `clear_peering_in_progress()` methods
+   ├ `on_peer_visible()` skips if peer is in peering_in_progress set
+   ├ `lan_accept` calls `clear_peering_in_progress()` after peering completes
+   └ Completed ✓
+
+   **Bug #5 (mdns-sd interface scoping)**: mDNS now scoped to LAN IP only.
+   ├ After `ServiceDaemon::new()`, calls `enable_interface(IfKind::Addr(lan_ip))`
+   ├ This excludes howm0/WG, tailscale0, docker0 from multicast
+   ├ Eliminates "Required key not available (os error 126)" errors on howm0
+   ├ Eliminates "Cannot find valid addrs" errors on tailscale0/docker0
+   └ Completed ✓
+
+   **Bug #2 (WG address coordination)**: Addressed indirectly via LAN transport hints.
+   ├ P2P-CD no longer depends on WG overlay IP routing for LAN peers
+   ├ `resolve_peer_addr()` → LAN hint → direct TCP to LAN IP:7654
+   ├ WG tunnel still used for encrypted data, but P2P-CD connection isn't blocked by address mismatch
+   └ Completed ✓
+
+   **Additional fixes**:
+   ├ Added `lan_ip: Option<String>` field to `Peer` struct (peers.rs)
+   ├ All Peer constructions updated (node_routes.rs ×5, lan_routes.rs ×1)
+   ├ LAN-discovered peers store `lan_ip: Some(ip)` for future use
+   ├ Fixed Bug #1 compile error: `remove_peer()` missing `node_id` arg → added "pending"
+   └ All 111 tests pass ✓
+
+### Round 2 fixes (2026-04-01 post-test)
+
+   Log analysis from howm.log.2026-04-01 revealed three remaining issues:
+
+   **Fix A: `identify_peer_by_addr` must check LAN hints (responder path)**
+   The laptop connected inbound to archlinux from 192.168.1.169:34726.
+   `identify_peer_by_addr(192.168.1.169)` only checked WG allowed-ips (overlay IPs).
+   It couldn't identify the peer → "inbound from unknown addr, dropping".
+   ├ Added LAN transport hints reverse-lookup in `identify_peer_by_addr()`
+   └ Now checks `lan_transport_hints` map after test overrides, before WG dump
+
+   **Fix B: Inviter side never registered LAN hints**
+   Only `lan_accept` (responder) set LAN hints. The inviter (`lan_invite`)
+   knew the peer's LAN IP from scan results but didn't register it.
+   ├ Added `wg_pubkey: Option<String>` to `LanInviteRequest` (serde default, backward-compat)
+   ├ `lan_invite` now calls `engine.set_lan_hint()` after successful invite send
+   ├ Also calls `engine.clear_peering_in_progress()` since complete-invite has fired by then
+
+   **Fix C: mdns-sd `enable_interface` doesn't exclude others**
+   `enable_interface(IfKind::Addr(ip))` adds to the enabled set but by default
+   ALL interfaces are enabled. Must first `disable_interface(IfKind::All)` to
+   exclude everything, then re-enable only the LAN IP.
+   ├ Added `daemon.disable_interface(IfKind::All)` before `enable_interface`
+   └ Eliminates error-126 on howm0 and invalid-addr errors on tailscale0/docker0
+
+   All 111 tests pass ✓
+
+   (See Round 2 fixes above for the 3 issues found in the 2026-04-01 session.)
+
+---
+
+## Round 3 findings (2026-04-01 evening session)
+
+Log analyzed: howm.log.2026-04-01 (19:05:22 session)
+Peer in peers.json: `pending` / pubkey `CBy/HugQWdioSmS/LBZhT380+YxN8Bd0f/9iPAQxOjs=` / LAN 192.168.1.169 / WG 100.222.0.7
+Symptom: peer registered but shows offline. P2P-CD connect timeout at 19:05:34.
+
+### Timeline
+
+```
+19:05:22  Daemon starts. Loaded 1 peer, 6 capabilities.
+19:05:22  WARN: skipping migration for peer 'pending': invalid WG pubkey
+19:05:22  WG restored 1 WG peer (CBy/Hg==)
+19:05:22  P2P-CD engine initialised, listening on 0.0.0.0:7654
+19:05:22  LAN discovery active on 192.168.1.163
+19:05:24  WgPeerMonitor: peer visible CBy/Hg== (WG handshake succeeded)
+19:05:24  engine: PEER_VISIBLE CBy/Hg==
+19:05:34  engine: initiator CBy/Hg== FAILED: connect timeout (deadline elapsed)
+19:08:22  WgPeerMonitor: peer unreachable CBy/Hg== (tunnel dead, no keepalive)
+```
+
+### What happened
+
+1. Daemon restarted after a previous LAN peering session. The peer from that
+   session is in peers.json with `node_id: "pending"`, `name: "pending"`, and
+   `wg_pubkey: "CBy/HugQWdioSmS/LBZhT380+YxN8Bd0f/9iPAQxOjs="` (base64, 32 bytes).
+
+2. `migrate_trust_levels()` tried to hex-decode the wg_pubkey. Base64 is NOT
+   valid hex — it fails, and the peer is skipped with "invalid WG pubkey".
+   This is a bug in the migration code (see Bug #9 below).
+
+3. WireGuard restored the peer's config (the tunnel had been saved) and the
+   WG handshake succeeded almost immediately (peer visible at 19:05:24).
+
+4. P2P-CD engine saw PEER_VISIBLE and immediately tried to TCP-connect to the
+   peer via `resolve_peer_addr`. But:
+   - The `lan_transport_hints` map is in-memory only. It is NOT persisted.
+   - On restart it is empty. No code in main.rs re-populates it from peers.json.
+   - `resolve_peer_addr` found no LAN hint, fell back to WG `allowed-ips`
+     (100.222.0.7/32), tried TCP to 100.222.0.7:7654 — timeout.
+   - The peer's howm0 is NOT bound to 100.222.0.7. Each node assigns its own
+     WG address independently. The peer's actual WG address is likely 100.222.0.1
+     from its own perspective. So the packet enters the WG tunnel, reaches the
+     peer, but the peer's IP stack drops it (no interface with 100.222.0.7).
+
+5. With no P2P-CD session established, no keepalive traffic flows through the
+   WG tunnel. WG times out and marks the peer unreachable (19:08:22).
+
+6. Peer is stuck as "pending" forever — no background task refreshes the
+   node_id/name, and no retry mechanism reconnects P2P-CD after the tunnel
+   goes down.
+
+### Bug #9: migrate_trust_levels decodes wg_pubkey as hex, not base64
+
+Location: node/daemon/src/main.rs `migrate_trust_levels()`
+
+```rust
+let peer_id = match hex::decode(&peer.wg_pubkey) {
+    Ok(id) if id.len() == 32 => id,
+    _ => {
+        tracing::warn!("skipping migration for peer '{}': invalid WG pubkey", peer.name);
+        continue;
+    }
+};
+```
+
+The `wg_pubkey` field in peers.json is base64 (WireGuard key format), not hex.
+`hex::decode("CBy/HugQ...")` fails silently. The peer is skipped with a
+misleading warning. The peer never gets assigned to an access.db group, so it
+may not get access grants that other code expects to be present.
+
+Fix: decode with `base64::engine::general_purpose::STANDARD.decode()` instead
+of `hex::decode`. The same pattern is used correctly in lan_routes.rs and
+node_routes.rs. This is a copy-paste error from an earlier non-WG peer scheme.
+
+### Bug #10: LAN transport hints not restored on daemon restart
+
+Location: node/daemon/src/main.rs (startup), node/daemon/src/p2pcd/engine.rs
+
+The `lan_transport_hints` HashMap lives only in memory. After a restart, the
+P2P-CD engine has no knowledge of which peers are reachable via LAN vs WG
+overlay. peers.json stores `lan_ip` for LAN-discovered peers, but startup
+code never re-populates the engine's hint table from it.
+
+Consequence: after restart, if WG handshake fires before the user does a new
+LAN scan (or before any new LAN invite), P2P-CD falls through to WG overlay
+routing and times out (exactly what happened in this session).
+
+Fix: after `build_p2pcd_engine()` in main.rs, iterate loaded peers and
+re-register any with `lan_ip: Some(...)`:
+
+```rust
+if let Some(ref engine) = p2pcd_engine {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    for peer in &peers {
+        if let Some(ref lan_ip) = peer.lan_ip {
+            if let Ok(bytes) = STANDARD.decode(&peer.wg_pubkey) {
+                if bytes.len() == 32 {
+                    let mut peer_id = [0u8; 32];
+                    peer_id.copy_from_slice(&bytes);
+                    if let Ok(ip) = lan_ip.parse::<std::net::IpAddr>() {
+                        let addr = std::net::SocketAddr::new(ip, 7654);
+                        engine.set_lan_hint(peer_id, addr).await;
+                    }
+                }
+            }
+        }
+    }
+}
+```
+
+### Bug #11: No P2P-CD retry after WG tunnel loss
+
+Location: node/daemon/src/p2pcd/engine.rs `on_peer_visible` / WgPeerMonitor
+
+When the WG tunnel drops (PEER_UNREACHABLE at 19:08:22), the engine logs it
+but takes no reconnection action. If the peer comes back online later and WG
+re-handshakes (PEER_VISIBLE fires again), the initiator will retry — but only
+if the peer is still in the WG config. For LAN peers, the WG keepalive interval
+may not be set, so the tunnel dies quickly with no traffic.
+
+The deeper issue: P2P-CD is the primary channel for application-level comms.
+If P2P-CD never connects, there's no keepalive → WG times out → peer goes
+offline → no automatic recovery.
+
+Fix options:
+  a. When `on_peer_visible` fires and P2P-CD connect fails, schedule a retry
+     with exponential backoff (1s, 2s, 4s... up to ~60s).
+  b. Set WG `persistent-keepalive = 25` for LAN peers so the tunnel stays up
+     regardless of P2P-CD status, giving P2P-CD more time to connect.
+  c. Both.
+
+Option (b) is trivially cheap and solves the immediate tunnel-death problem.
+`wg set howm0 peer <pubkey> persistent-keepalive 25` in `add_peer()` for LAN
+peers (detected by endpoint being a private/RFC1918 IP).
+
+### Summary of new issues
+
+| # | Bug | Severity | File |
+|---|-----|----------|------|
+| 9 | migrate_trust_levels decodes wg_pubkey as hex instead of base64 | Medium | main.rs:521 |
+| 10 | LAN transport hints not restored from peers.json on daemon restart | **High** | main.rs startup |
+| 11 | No P2P-CD retry / no WG keepalive for LAN peers → tunnel dies, peer stays offline | **High** | engine.rs + wireguard.rs |
+
+Bug #10 is the primary cause of "peer registered but offline" in this session.
+Bug #11 is the reason it doesn't recover. Bug #9 is a latent correctness issue
+that could cause access control problems for the pending peer.
+
+Not interested in #11 atm.
+
+## Session 4
+Now I have a clear picture. Let me look at the full flow in the last session (starting at line       
+   604). Here's my analysis:                                                                            
+                                                                                                        
+   ---                                                                                                  
+                                                                                                        
+   ANALYSIS OF THE LAST SESSION (21:32 - 21:38)                                                         
+   =============================================                                                        
+                                                                                                        
+   TIMELINE:                                                                                            
+     21:32:13  Alice starts with "Loaded 0 peers" (peers were cleared)                                  
+     21:32:15  WgPeerMonitor sees CBy/Hg== visible (WG config has Bob from wg-peers.json)               
+     21:32:25  P2P-CD initiator TIMES OUT connecting to CBy/Hg== (Bob)                                  
+     21:32:29  LAN scan: 0 peers (Bob not yet advertising)                                              
+     21:34:22  LAN scan: 1 peer found (Bob is up now)                                                   
+     21:34:28  LAN invite sent to 192.168.1.169:7000 (Bob)                                              
+     21:34:39  LAN invite sent again (second attempt from UI)                                           
+     21:35:23  >>> INBOUND FROM UNKNOWN ADDR 192.168.1.169:40200, DROPPING <<<                          
+     21:35:31  P2P-CD initiator times out again                                                         
+     21:36:17  LAN invite sent (third attempt)                                                          
+     21:38:32  Shutdown, no session ever established                                                    
+                                                                                                        
+   THE SMOKING GUN: Line 717                                                                            
+     "engine: inbound from unknown addr 192.168.1.169:40200, dropping"                                  
+                                                                                                        
+   This means Bob (192.168.1.169) successfully connected to Alice via P2P-CD,                           
+   but Alice's identify_peer_by_addr() couldn't map 192.168.1.169 back to                               
+   any known peer, so it DROPPED the connection.                                                        
+                                                                                                        
+                                                                                                        
+   ROOT CAUSE: complete_invite doesn't set LAN transport hints                                          
+   =============================================================                                        
+                                                                                                        
+   The LAN invite flow has an asymmetry:                                                                
+                                                                                                        
+     ALICE (inviter) calls lan_invite:                                                                  
+       1. Generates invite code                                                                         
+       2. POSTs to Bob's /node/lan-accept                                                               
+       3. Bob's lan_accept calls Alice's /node/complete-invite                                          
+       4. Alice's complete_invite adds Bob as WG peer, adds to peers list                               
+       5. Back in lan_invite, sets LAN transport hint (IF wg_pubkey in request)                         
+                                                                                                        
+     BOB (acceptor) in lan_accept:                                                                      
+       - Adds Alice as WG peer                                                                          
+       - Calls Alice's /node/complete-invite                                                            
+       - Gets Alice's /node/info → proper name/node_id                                                  
+       - Adds Alice to peers list with correct info                                                     
+       - Sets LAN transport hint for Alice ← WORKS                                                      
+                                                                                                        
+   The problem is Alice's complete_invite (node_routes.rs:311-374):                                     
+                                                                                                        
+     1. It adds Bob with name="pending", node_id="pending"                                              
+     2. It sets lan_ip: None  ← NO LAN IP                                                               
+     3. It does NOT register a LAN transport hint with P2P-CD engine                                    
+     4. It logs NOTHING (no tracing::info! on success)                                                  
+                                                                                                        
+   So after the invite completes:                                                                       
+     - identify_peer_by_addr(192.168.1.169) checks:                                                     
+       a) peer_addr_overrides → nothing                                                                 
+       b) lan_transport_hints → nothing (never set!)                                                    
+       c) WG allowed_ips → 100.222.x.x (overlay IP, doesn't match LAN IP!)                              
+     → Returns None → "inbound from unknown addr, dropping"                                             
+                                                                                                        
+   Meanwhile resolve_peer_addr for outbound tries:                                                      
+     - LAN hints → nothing                                                                              
+     - WG overlay IP 100.222.x.x → tries to connect via WG tunnel                                       
+     → But WG tunnel may not be handshaking properly → timeout                                          
+                                                                                                        
+                                                                                                        
+   SECONDARY ISSUES:                                                                                    
+     - Alice's peer has name="pending" → shows wrong in UI                                              
+     - Warning at startup: "skipping migration for peer 'pending': invalid WG pubkey"                   
+     - No P2P-CD session = no heartbeats = both show "offline"                                          
+                                                                                                        
+                                                                                                        
+   THE FIX: complete_invite needs to register LAN transport hints                                       
+   ==============================================================                                       
+                                                                                                        
+   In complete_invite (node_routes.rs), after adding the peer, it should:                               
+   1. Use ConnectInfo(addr) to detect the caller's LAN IP                                               
+   2. Set lan_ip on the peer                                                                            
+   3. Register a LAN transport hint with the P2P-CD engine                                              
+   4. Try to fetch peer info (name/node_id) instead of leaving "pending"  
+
+                                           
+   ANSWER TO YOUR QUESTION: Yes, WAN invites had the same class of bug.                                 
+   ============================================================                                         
+                                                                                                        
+   The original `complete_invite` never registered LAN transport hints                                  
+   OR resolved peer names — regardless of LAN or WAN. My first fix                                      
+   naively treated all non-loopback IPs as LAN, which would have:                                       
+                                                                                                        
+     WAN scenario: Bob at 73.x.x.x calls Alice's /node/complete-invite                                  
+     → My first fix would set LAN hint to 73.x.x.x:7654                                                 
+     → resolve_peer_addr would prefer this hint over WG overlay                                         
+     → P2P-CD tries to connect to 73.x.x.x:7654 through NAT → fails                                     
+     → WORSE than before (WG overlay path would have worked)                                            
+                                                                                                        
+   THE FIX: Private IP detection guards the LAN hint path                                               
+     - Only RFC 1918 IPv4 (10.x, 172.16-31.x, 192.168.x) gets LAN hints                                 
+     - IPv6 fe80::/10 link-local gets LAN hints                                                         
+     - Public IPs (WAN path) → no LAN hint, no endpoint override                                        
+     - WAN peers use WG overlay routing via allowed_ips (the existing path)                             
+                                                                                                        
+   TESTS ADDED (3 new, all passing):                                                                    
+     1. lan_hint_enables_identify_peer_by_addr                                                          
+        — Verifies LAN IP → peer_id resolution via hints                                                
+     2. lan_hint_enables_resolve_peer_addr                                                              
+        — Verifies outbound address resolution prefers LAN hint                                         
+     3. lan_hint_inbound_session_accepted                                                               
+        — Full engine integration: Alice uses set_lan_hint (not set_peer_addr),                         
+          Bob connects inbound, both reach Active. This is the exact scenario                           
+          that was failing in production ("inbound from unknown addr, dropping").                       
+                                                                                                        
+   Full test suite: 80+ unit tests + 13 integration + 18 punch tests — all pass.

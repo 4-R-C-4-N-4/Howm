@@ -1,15 +1,11 @@
-use axum::{
-    extract::Path as AxumPath,
-    http::StatusCode,
-    response::{Html, IntoResponse, Response},
-    routing::{get, post},
-    Router,
-};
+use axum::routing::{get, post};
 use clap::Parser;
 use include_dir::{include_dir, Dir};
-use std::net::SocketAddr;
+use std::sync::Arc;
 use tracing::info;
-use tracing_subscriber::EnvFilter;
+
+use p2pcd::bridge_client::BridgeClient;
+use p2pcd::capability_sdk::{init_tracing, CapabilityApp, HookFn, PeerStream, PeerTracker};
 
 mod api;
 mod bridge;
@@ -21,7 +17,7 @@ use notifier::VoiceNotifier;
 use signal::SignalHub;
 use state::{RoomStore, VoiceConfig};
 
-static UI_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/ui");
+static UI_DIR: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/ui");
 
 #[derive(Parser, Debug)]
 #[command(name = "voice", about = "Howm voice chat capability")]
@@ -46,17 +42,16 @@ struct Config {
 pub struct AppState {
     pub rooms: RoomStore,
     pub signal_hub: SignalHub,
-    pub bridge: p2pcd::bridge_client::BridgeClient,
+    pub bridge: BridgeClient,
     pub notifier: VoiceNotifier,
+    pub tracker: PeerTracker,
     #[allow(dead_code)]
     pub daemon_port: u16,
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env().add_directive("info".parse()?))
-        .init();
+    init_tracing();
 
     let config = Config::parse();
     std::fs::create_dir_all(&config.data_dir)?;
@@ -69,22 +64,82 @@ async fn main() -> anyhow::Result<()> {
         voice_config.invite_timeout_secs
     );
 
-    let bridge = p2pcd::bridge_client::BridgeClient::new(config.daemon_port);
-    let http_client = reqwest::Client::new();
-    let notifier = VoiceNotifier::new(http_client, &config.daemon_url);
+    let bridge = BridgeClient::new(config.daemon_port);
+    let notifier = VoiceNotifier::new(reqwest::Client::new(), &config.daemon_url);
+
+    // Build the tracker BEFORE constructing state so we can share it with
+    // PeerStream and the on_inactive hook while also exposing it in AppState
+    // for the /peers endpoint.
+    let tracker = PeerTracker::new("howm.social.voice.1");
+    let hook_tracker = tracker.clone();
 
     let state = AppState {
         rooms: RoomStore::new(voice_config),
         signal_hub: SignalHub::new(),
         bridge,
         notifier,
+        tracker: tracker.clone(),
         daemon_port: config.daemon_port,
     };
 
-    // Background: room + invite cleanup loop
-    {
+    // ── Type-3 PeerStream: pre-built tracker shared with on_inactive guard ──
+
+    let on_inactive: HookFn = {
+        let state_for_hook = state.clone();
+        Arc::new(move |peer_id: String| {
+            let state = state_for_hook.clone();
+            let tracker = hook_tracker.clone();
+            Box::pin(async move {
+                // Generation guard: peer flapped and reconnected before this
+                // hook ran — skip teardown.
+                if tracker.find_peer(&peer_id).await.is_some() {
+                    tracing::debug!(
+                        "voice: skipping teardown for {} — peer already reconnected",
+                        &peer_id[..8.min(peer_id.len())]
+                    );
+                    return;
+                }
+
+                info!(
+                    "voice: peer {} went offline, removing from rooms",
+                    &peer_id[..8.min(peer_id.len())]
+                );
+
+                let rooms_affected = state.rooms.remove_peer_from_all(&peer_id);
+                for (room_id, destroyed) in &rooms_affected {
+                    if *destroyed {
+                        info!("Room {} destroyed (last member went offline)", room_id);
+                        state.signal_hub.close_room(room_id);
+                    } else {
+                        let msg = serde_json::to_string(&signal::SignalMessage {
+                            msg_type: "peer-left".to_string(),
+                            peer_id: Some(peer_id.clone()),
+                            ..Default::default()
+                        })
+                        .unwrap_or_default();
+                        state.signal_hub.broadcast_all(room_id, &msg);
+                    }
+                }
+            })
+        })
+    };
+
+    // PeerStream's SSE loop is detached internally — handle isn't needed
+    // beyond construction.
+    let _stream = PeerStream::drive_existing(
+        tracker,
+        format!(
+            "http://127.0.0.1:{}/p2pcd/bridge/events?capability=howm.social.voice.1",
+            config.daemon_port
+        ),
+        None, // no on_active hook needed
+        Some(on_inactive),
+    );
+
+    // Background: room + invite cleanup loop (every 60s).
+    let cleanup_fut = {
         let cleanup_state = state.clone();
-        tokio::spawn(async move {
+        async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
             loop {
                 interval.tick().await;
@@ -97,72 +152,29 @@ async fn main() -> anyhow::Result<()> {
                     info!("Expired {} stale invite(s)", expired);
                 }
             }
-        });
-    }
-
-    let app = Router::new()
-        // Room management API
-        .route("/rooms", post(api::create_room).get(api::list_rooms))
-        .route(
-            "/rooms/{room_id}",
-            get(api::get_room).delete(api::close_room),
-        )
-        .route("/rooms/{room_id}/join", post(api::join_room))
-        .route("/rooms/{room_id}/leave", post(api::leave_room))
-        .route("/rooms/{room_id}/invite", post(api::invite_peers))
-        .route("/rooms/{room_id}/mute", post(api::mute))
-        // Quick call
-        .route("/quick-call", post(api::quick_call))
-        // WebSocket signaling
-        .route("/rooms/{room_id}/signal", get(signal::signal_ws))
-        // P2P-CD lifecycle hooks (called by daemon cap_notify)
-        .route("/p2pcd/peer-active", post(bridge::peer_active))
-        .route("/p2pcd/peer-inactive", post(bridge::peer_inactive))
-        .route("/p2pcd/inbound", post(bridge::inbound_message))
-        // Embedded UI
-        .route("/ui", get(serve_ui_index))
-        .route("/ui/", get(serve_ui_index))
-        .route("/ui/{*path}", get(serve_ui_asset))
-        // Health
-        .route("/health", get(api::health))
-        .with_state(state);
-
-    let addr = SocketAddr::from(([127, 0, 0, 1], config.port));
-    info!("Voice capability listening on {}", addr);
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
-    Ok(())
-}
-
-async fn serve_ui_index() -> impl IntoResponse {
-    match UI_DIR.get_file("index.html") {
-        Some(f) => Html(f.contents_utf8().unwrap_or("")).into_response(),
-        None => StatusCode::NOT_FOUND.into_response(),
-    }
-}
-
-async fn serve_ui_asset(AxumPath(path): AxumPath<String>) -> impl IntoResponse {
-    let rel = path.strip_prefix("/ui").unwrap_or(&path);
-    let rel = rel.strip_prefix('/').unwrap_or(rel);
-    if rel.is_empty() {
-        return serve_ui_index().await.into_response();
-    }
-    match UI_DIR.get_file(rel) {
-        Some(f) => {
-            let mime = if rel.ends_with(".js") {
-                "application/javascript"
-            } else if rel.ends_with(".css") {
-                "text/css"
-            } else if rel.ends_with(".html") {
-                "text/html"
-            } else {
-                "application/octet-stream"
-            };
-            Response::builder()
-                .header("content-type", mime)
-                .body(axum::body::Body::from(f.contents().to_vec()))
-                .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
         }
-        None => StatusCode::NOT_FOUND.into_response(),
-    }
+    };
+
+    CapabilityApp::new("howm.social.voice.1", config.port, state)
+        .with_ui(&UI_DIR)
+        .with_inbound_handler(bridge::inbound_message)
+        .with_routes(|router| {
+            router
+                .route("/rooms", post(api::create_room).get(api::list_rooms))
+                .route(
+                    "/rooms/{room_id}",
+                    get(api::get_room).delete(api::close_room),
+                )
+                .route("/rooms/{room_id}/join", post(api::join_room))
+                .route("/rooms/{room_id}/leave", post(api::leave_room))
+                .route("/rooms/{room_id}/invite", post(api::invite_peers))
+                .route("/rooms/{room_id}/mute", post(api::mute))
+                .route("/quick-call", post(api::quick_call))
+                .route("/me", get(api::whoami))
+                .route("/peers", get(api::list_peers))
+                .route("/rooms/{room_id}/signal", get(signal::signal_ws))
+        })
+        .spawn_task(cleanup_fut)
+        .run()
+        .await
 }

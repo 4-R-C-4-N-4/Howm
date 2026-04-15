@@ -194,8 +194,8 @@ pub trait StreamDataSink: Send + Sync {
 pub struct StreamHandler {
     /// Active streams indexed by (peer_id, stream_id).
     streams: Arc<RwLock<HashMap<(PeerId, u64), StreamState>>>,
-    /// Send channel for outbound messages.
-    send_tx: RwLock<Option<tokio::sync::mpsc::Sender<ProtocolMessage>>>,
+    /// Per-peer send channels for outbound messages.
+    peer_senders: Arc<RwLock<HashMap<PeerId, tokio::sync::mpsc::Sender<ProtocolMessage>>>>,
     /// Application-level callback.
     data_sink: Arc<RwLock<Option<Box<dyn StreamDataSink>>>>,
 }
@@ -210,13 +210,26 @@ impl StreamHandler {
     pub fn new() -> Self {
         Self {
             streams: Arc::new(RwLock::new(HashMap::new())),
-            send_tx: RwLock::new(None),
+            peer_senders: Arc::new(RwLock::new(HashMap::new())),
             data_sink: Arc::new(RwLock::new(None)),
         }
     }
 
+    pub async fn add_peer_sender(
+        &self,
+        peer_id: PeerId,
+        tx: tokio::sync::mpsc::Sender<ProtocolMessage>,
+    ) {
+        self.peer_senders.write().await.insert(peer_id, tx);
+    }
+
+    pub async fn remove_peer_sender(&self, peer_id: &PeerId) {
+        self.peer_senders.write().await.remove(peer_id);
+    }
+
+    #[cfg(test)]
     pub async fn set_sender(&self, tx: tokio::sync::mpsc::Sender<ProtocolMessage>) {
-        *self.send_tx.write().await = Some(tx);
+        self.peer_senders.write().await.insert([0u8; 32], tx);
     }
 
     pub async fn set_data_sink(&self, sink: Box<dyn StreamDataSink>) {
@@ -285,7 +298,8 @@ impl StreamHandler {
             pairs.push((keys::LABEL, ciborium::value::Value::Text(l.to_string())));
         }
         let payload = cbor_encode_map(pairs);
-        self.send_msg(message_types::STREAM_OPEN, payload).await;
+        self.send_msg(&peer_id, message_types::STREAM_OPEN, payload)
+            .await;
 
         // Track as outbound/sending
         self.streams.write().await.insert(
@@ -358,7 +372,8 @@ impl StreamHandler {
             ));
         }
         let payload = cbor_encode_map(pairs);
-        self.send_msg(message_types::STREAM_DATA, payload).await;
+        self.send_msg(peer_id, message_types::STREAM_DATA, payload)
+            .await;
 
         Ok(())
     }
@@ -374,7 +389,8 @@ impl StreamHandler {
             ),
             (keys::REASON, ciborium::value::Value::Integer(reason.into())),
         ]);
-        self.send_msg(message_types::STREAM_CLOSE, payload).await;
+        self.send_msg(peer_id, message_types::STREAM_CLOSE, payload)
+            .await;
 
         Ok(())
     }
@@ -413,7 +429,7 @@ impl StreamHandler {
                         max,
                         stream_id
                     );
-                    self.send_open_response(stream_id, open_status::REJECTED)
+                    self.send_open_response(&ctx.peer_id, stream_id, open_status::REJECTED)
                         .await;
                     return Ok(());
                 }
@@ -435,7 +451,7 @@ impl StreamHandler {
 
                 if !accepted {
                     tracing::debug!("stream: application rejected stream {}", stream_id);
-                    self.send_open_response(stream_id, open_status::REJECTED)
+                    self.send_open_response(&ctx.peer_id, stream_id, open_status::REJECTED)
                         .await;
                     return Ok(());
                 }
@@ -465,7 +481,7 @@ impl StreamHandler {
                 );
 
                 // Send acceptance
-                self.send_open_response(stream_id, open_status::ACCEPTED)
+                self.send_open_response(&ctx.peer_id, stream_id, open_status::ACCEPTED)
                     .await;
 
                 // Notify sink
@@ -647,7 +663,8 @@ impl StreamHandler {
                         ),
                     ]);
                     drop(streams);
-                    self.send_msg(message_types::STREAM_CONTROL, stats).await;
+                    self.send_msg(&ctx.peer_id, message_types::STREAM_CONTROL, stats)
+                        .await;
                 }
             }
             control_types::STATS_RESP => {
@@ -667,7 +684,7 @@ impl StreamHandler {
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    async fn send_open_response(&self, stream_id: u64, status: u64) {
+    async fn send_open_response(&self, peer_id: &PeerId, stream_id: u64, status: u64) {
         let payload = cbor_encode_map(vec![
             (
                 keys::STREAM_ID,
@@ -675,12 +692,19 @@ impl StreamHandler {
             ),
             (keys::STATUS, ciborium::value::Value::Integer(status.into())),
         ]);
-        self.send_msg(message_types::STREAM_OPEN, payload).await;
+        self.send_msg(peer_id, message_types::STREAM_OPEN, payload)
+            .await;
     }
 
-    async fn send_msg(&self, msg_type: u64, payload: Vec<u8>) {
-        if let Some(tx) = self.send_tx.read().await.as_ref() {
+    async fn send_msg(&self, peer_id: &PeerId, msg_type: u64, payload: Vec<u8>) {
+        if let Some(tx) = self.peer_senders.read().await.get(peer_id) {
             let _ = tx.send(make_capability_msg(msg_type, payload)).await;
+        } else {
+            tracing::warn!(
+                "stream: no sender for peer {} — message type {} dropped",
+                hex::encode(&peer_id[..4]),
+                msg_type,
+            );
         }
     }
 
@@ -724,7 +748,8 @@ impl StreamHandler {
                     ciborium::value::Value::Integer(close_reasons::TIMEOUT.into()),
                 ),
             ]);
-            self.send_msg(message_types::STREAM_CLOSE, payload).await;
+            self.send_msg(peer_id, message_types::STREAM_CLOSE, payload)
+                .await;
         }
     }
 }

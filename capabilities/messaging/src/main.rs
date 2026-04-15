@@ -1,22 +1,17 @@
-use axum::{
-    extract::{DefaultBodyLimit, Path as AxumPath},
-    http::StatusCode,
-    response::{Html, IntoResponse, Response},
-    routing::{delete, get, post},
-    Router,
-};
+use axum::routing::{delete, get, post};
 use clap::Parser;
 use include_dir::{include_dir, Dir};
-use std::net::SocketAddr;
 use std::path::PathBuf;
-use tracing::info;
-use tracing_subscriber::EnvFilter;
+use std::sync::Arc;
+
+use p2pcd::bridge_client::BridgeClient;
+use p2pcd::capability_sdk::{init_tracing, CapabilityApp, LocalPeerId, PeerStream};
 
 mod api;
 mod db;
 mod notifier;
 
-static UI_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/ui");
+static UI_DIR: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/ui");
 
 #[derive(Parser, Debug)]
 #[command(name = "messaging", about = "Howm peer messaging capability")]
@@ -38,90 +33,53 @@ struct Config {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env().add_directive("info".parse()?))
-        .init();
+    init_tracing();
 
     let config = Config::parse();
     std::fs::create_dir_all(&config.data_dir)?;
 
-    let msg_db = db::MessageDb::open(&config.data_dir)?;
-    let bridge = p2pcd::bridge_client::BridgeClient::new(config.daemon_port);
+    let msg_db = Arc::new(db::MessageDb::open(&config.data_dir)?);
+    let bridge = BridgeClient::new(config.daemon_port);
 
-    let http_client = reqwest::Client::new();
-    let msg_db_arc = std::sync::Arc::new(msg_db);
-    let daemon_notifier =
-        notifier::DaemonNotifier::new(http_client, &config.daemon_url, msg_db_arc.clone());
+    // Fetch local peer ID once at startup with retry; lazy re-fetch on demand.
+    let local_peer_id = LocalPeerId::lazy(bridge.clone()).await;
 
-    let state =
-        api::AppState::new_with_notifier(msg_db_arc, bridge, config.daemon_port, daemon_notifier);
+    // Type-1 PeerStream: pure presence tracking, no hooks.
+    let stream = Arc::new(PeerStream::connect(
+        "howm.social.messaging.1",
+        config.daemon_port,
+    ));
 
-    // Restore active peers from daemon on startup
-    {
-        let state_clone = state.clone();
-        tokio::spawn(async move {
-            api::init_peers_from_daemon(state_clone).await;
-        });
-    }
+    let daemon_notifier = notifier::DaemonNotifier::new(
+        reqwest::Client::new(),
+        &config.daemon_url,
+        msg_db.clone(),
+    );
 
-    let app = Router::new()
-        // Messaging API
-        .route("/send", post(api::send_message))
-        .route("/conversations", get(api::list_conversations))
-        .route("/conversations/{peer_id}", get(api::get_conversation))
-        .route("/conversations/{peer_id}/read", post(api::mark_read))
-        .route(
-            "/conversations/{peer_id}/messages/{msg_id}",
-            delete(api::delete_message),
-        )
-        // Embedded UI
-        .route("/ui", get(serve_ui_index))
-        .route("/ui/", get(serve_ui_index))
-        .route("/ui/{*path}", get(serve_ui_asset))
-        // Health
-        .route("/health", get(api::health))
-        // P2P-CD lifecycle hooks (called by daemon cap_notify)
-        .route("/p2pcd/peer-active", post(api::peer_active))
-        .route("/p2pcd/peer-inactive", post(api::peer_inactive))
-        .route("/p2pcd/inbound", post(api::inbound_message))
-        .with_state(state)
-        .layer(DefaultBodyLimit::max(1_048_576)); // 1 MB for text messages
+    let state = api::AppState::new_with_notifier(
+        msg_db,
+        bridge,
+        config.daemon_port,
+        daemon_notifier,
+        stream,
+        local_peer_id,
+    );
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], config.port));
-    info!("Messaging capability listening on {}", addr);
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
-    Ok(())
-}
-
-async fn serve_ui_index() -> impl IntoResponse {
-    match UI_DIR.get_file("index.html") {
-        Some(f) => Html(f.contents_utf8().unwrap_or("")).into_response(),
-        None => StatusCode::NOT_FOUND.into_response(),
-    }
-}
-
-async fn serve_ui_asset(AxumPath(path): AxumPath<String>) -> impl IntoResponse {
-    let rel = path.strip_prefix("/ui").unwrap_or(&path);
-    let rel = rel.strip_prefix('/').unwrap_or(rel);
-    // Treat empty path (/ui/) as index.html
-    if rel.is_empty() {
-        return serve_ui_index().await.into_response();
-    }
-    match UI_DIR.get_file(rel) {
-        Some(f) => {
-            let mime = if rel.ends_with(".js") {
-                "application/javascript"
-            } else if rel.ends_with(".css") {
-                "text/css"
-            } else {
-                "application/octet-stream"
-            };
-            Response::builder()
-                .header("content-type", mime)
-                .body(axum::body::Body::from(f.contents().to_vec()))
-                .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
-        }
-        None => StatusCode::NOT_FOUND.into_response(),
-    }
+    CapabilityApp::new("howm.social.messaging.1", config.port, state)
+        .with_body_limit(1_048_576) // 1 MiB for text messages
+        .with_ui(&UI_DIR)
+        .with_inbound_handler(api::inbound_message)
+        .with_routes(|router| {
+            router
+                .route("/send", post(api::send_message))
+                .route("/conversations", get(api::list_conversations))
+                .route("/conversations/{peer_id}", get(api::get_conversation))
+                .route("/conversations/{peer_id}/read", post(api::mark_read))
+                .route(
+                    "/conversations/{peer_id}/messages/{msg_id}",
+                    delete(api::delete_message),
+                )
+        })
+        .run()
+        .await
 }
