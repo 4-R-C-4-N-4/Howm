@@ -227,11 +227,6 @@ impl StreamHandler {
         self.peer_senders.write().await.remove(peer_id);
     }
 
-    #[cfg(test)]
-    pub async fn set_sender(&self, tx: tokio::sync::mpsc::Sender<ProtocolMessage>) {
-        self.peer_senders.write().await.insert([0u8; 32], tx);
-    }
-
     pub async fn set_data_sink(&self, sink: Box<dyn StreamDataSink>) {
         *self.data_sink.write().await = Some(sink);
     }
@@ -969,15 +964,15 @@ mod tests {
     #[tokio::test]
     async fn open_accept_flow() {
         let handler = StreamHandler::new();
+        let peer = [1u8; 32];
         let (tx, mut rx) = tokio::sync::mpsc::channel(16);
-        handler.set_sender(tx).await;
+        handler.add_peer_sender(peer, tx).await;
 
         let sink = Arc::new(TestSink::new(true));
         handler
             .set_data_sink(Box::new(TestSinkWrapper(sink.clone())))
             .await;
 
-        let peer = [1u8; 32];
         let payload = make_open_request(1, "opus", 0);
         let ctx = make_ctx(peer);
         handler.handle_open(&payload, &ctx).await.unwrap();
@@ -1028,15 +1023,15 @@ mod tests {
     #[tokio::test]
     async fn open_reject_flow() {
         let handler = StreamHandler::new();
+        let peer = [1u8; 32];
         let (tx, mut rx) = tokio::sync::mpsc::channel(16);
-        handler.set_sender(tx).await;
+        handler.add_peer_sender(peer, tx).await;
 
         let sink = Arc::new(TestSink::new(false));
         handler
             .set_data_sink(Box::new(TestSinkWrapper(sink.clone())))
             .await;
 
-        let peer = [1u8; 32];
         let payload = make_open_request(1, "opus", 0);
         let ctx = make_ctx(peer);
         handler.handle_open(&payload, &ctx).await.unwrap();
@@ -1060,15 +1055,15 @@ mod tests {
     #[tokio::test]
     async fn open_app_reject() {
         let handler = StreamHandler::new();
+        let peer = [2u8; 32];
         let (tx, mut rx) = tokio::sync::mpsc::channel(16);
-        handler.set_sender(tx).await;
+        handler.add_peer_sender(peer, tx).await;
 
         let sink = Arc::new(TestSink::new(false));
         handler
             .set_data_sink(Box::new(TestSinkWrapper(sink.clone())))
             .await;
 
-        let peer = [2u8; 32];
         let payload = make_open_request(5, "h264", 0);
         let ctx = make_ctx(peer);
         handler.handle_open(&payload, &ctx).await.unwrap();
@@ -1095,11 +1090,11 @@ mod tests {
     #[tokio::test]
     async fn open_auto_accept_no_sink() {
         let handler = StreamHandler::new();
+        let peer = [1u8; 32];
         let (tx, mut rx) = tokio::sync::mpsc::channel(16);
-        handler.set_sender(tx).await;
+        handler.add_peer_sender(peer, tx).await;
         // NO sink registered
 
-        let peer = [1u8; 32];
         let payload = make_open_request(1, "raw", 1);
         let ctx = make_ctx(peer);
         handler.handle_open(&payload, &ctx).await.unwrap();
@@ -1123,15 +1118,15 @@ mod tests {
     #[tokio::test]
     async fn data_frame_delivery() {
         let handler = StreamHandler::new();
+        let peer = [1u8; 32];
         let (tx, _rx) = tokio::sync::mpsc::channel(16);
-        handler.set_sender(tx).await;
+        handler.add_peer_sender(peer, tx).await;
 
         let sink = Arc::new(TestSink::new(true));
         handler
             .set_data_sink(Box::new(TestSinkWrapper(sink.clone())))
             .await;
 
-        let peer = [1u8; 32];
         let ctx = make_ctx(peer);
 
         // Open stream
@@ -1174,10 +1169,10 @@ mod tests {
     #[tokio::test]
     async fn raw_mode_byte_sequence() {
         let handler = StreamHandler::new();
-        let (tx, _rx) = tokio::sync::mpsc::channel(16);
-        handler.set_sender(tx).await;
-
         let peer = [1u8; 32];
+        let (tx, _rx) = tokio::sync::mpsc::channel(16);
+        handler.add_peer_sender(peer, tx).await;
+
         let ctx = make_ctx(peer);
 
         // Open raw mode stream
@@ -1194,10 +1189,10 @@ mod tests {
     #[tokio::test]
     async fn sequence_gap_detection() {
         let handler = StreamHandler::new();
-        let (tx, _rx) = tokio::sync::mpsc::channel(16);
-        handler.set_sender(tx).await;
-
         let peer = [1u8; 32];
+        let (tx, _rx) = tokio::sync::mpsc::channel(16);
+        handler.add_peer_sender(peer, tx).await;
+
         let ctx = make_ctx(peer);
 
         let open = make_open_request(1, "opus", 0);
@@ -1235,10 +1230,10 @@ mod tests {
     #[tokio::test]
     async fn pause_resume() {
         let handler = StreamHandler::new();
-        let (tx, _rx) = tokio::sync::mpsc::channel(16);
-        handler.set_sender(tx).await;
-
         let peer = [1u8; 32];
+        let (tx, _rx) = tokio::sync::mpsc::channel(16);
+        handler.add_peer_sender(peer, tx).await;
+
         let ctx = make_ctx(peer);
 
         let open = make_open_request(1, "opus", 0);
@@ -1283,10 +1278,10 @@ mod tests {
     #[tokio::test]
     async fn bitrate_change() {
         let handler = StreamHandler::new();
-        let (tx, _rx) = tokio::sync::mpsc::channel(16);
-        handler.set_sender(tx).await;
-
         let peer = [1u8; 32];
+        let (tx, _rx) = tokio::sync::mpsc::channel(16);
+        handler.add_peer_sender(peer, tx).await;
+
         let ctx = make_ctx(peer);
 
         let open = make_open_request(1, "opus", 0);
@@ -1313,15 +1308,15 @@ mod tests {
     #[tokio::test]
     async fn close_normal() {
         let handler = StreamHandler::new();
+        let peer = [1u8; 32];
         let (tx, _rx) = tokio::sync::mpsc::channel(16);
-        handler.set_sender(tx).await;
+        handler.add_peer_sender(peer, tx).await;
 
         let sink = Arc::new(TestSink::new(true));
         handler
             .set_data_sink(Box::new(TestSinkWrapper(sink.clone())))
             .await;
 
-        let peer = [1u8; 32];
         let ctx = make_ctx(peer);
 
         let open = make_open_request(1, "opus", 0);
@@ -1388,10 +1383,9 @@ mod tests {
     #[tokio::test]
     async fn concurrent_stream_limit() {
         let handler = StreamHandler::new();
-        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
-        handler.set_sender(tx).await;
-
         let peer = [1u8; 32];
+        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+        handler.add_peer_sender(peer, tx).await;
 
         // Set max to 2
         let mut params = ScopeParams::default();
@@ -1436,15 +1430,15 @@ mod tests {
     #[tokio::test]
     async fn on_deactivated_cleanup() {
         let handler = StreamHandler::new();
+        let peer = [1u8; 32];
         let (tx, _rx) = tokio::sync::mpsc::channel(16);
-        handler.set_sender(tx).await;
+        handler.add_peer_sender(peer, tx).await;
 
         let sink = Arc::new(TestSink::new(true));
         handler
             .set_data_sink(Box::new(TestSinkWrapper(sink.clone())))
             .await;
 
-        let peer = [1u8; 32];
         let ctx = make_ctx(peer);
 
         // Open two streams
@@ -1470,11 +1464,12 @@ mod tests {
     #[tokio::test]
     async fn bidirectional_two_streams() {
         let handler = StreamHandler::new();
-        let (tx, _rx) = tokio::sync::mpsc::channel(16);
-        handler.set_sender(tx).await;
-
         let peer_a = [1u8; 32];
         let peer_b = [2u8; 32];
+        let (tx_a, _rx_a) = tokio::sync::mpsc::channel(16);
+        let (tx_b, _rx_b) = tokio::sync::mpsc::channel(16);
+        handler.add_peer_sender(peer_a, tx_a).await;
+        handler.add_peer_sender(peer_b, tx_b).await;
 
         // Both peers open stream_id=1
         let open = make_open_request(1, "opus", 0);
@@ -1493,11 +1488,12 @@ mod tests {
     #[tokio::test]
     async fn stream_id_namespacing() {
         let handler = StreamHandler::new();
-        let (tx, _rx) = tokio::sync::mpsc::channel(16);
-        handler.set_sender(tx).await;
-
         let peer_a = [1u8; 32];
         let peer_b = [2u8; 32];
+        let (tx_a, _rx_a) = tokio::sync::mpsc::channel(16);
+        let (tx_b, _rx_b) = tokio::sync::mpsc::channel(16);
+        handler.add_peer_sender(peer_a, tx_a).await;
+        handler.add_peer_sender(peer_b, tx_b).await;
 
         let open = make_open_request(1, "cbor", 0);
         handler.handle_open(&open, &make_ctx(peer_a)).await.unwrap();
@@ -1527,15 +1523,14 @@ mod tests {
     #[tokio::test]
     async fn max_frame_bytes_enforced() {
         let handler = StreamHandler::new();
+        let peer = [1u8; 32];
         let (tx, _rx) = tokio::sync::mpsc::channel(16);
-        handler.set_sender(tx).await;
+        handler.add_peer_sender(peer, tx).await;
 
         let sink = Arc::new(TestSink::new(true));
         handler
             .set_data_sink(Box::new(TestSinkWrapper(sink.clone())))
             .await;
-
-        let peer = [1u8; 32];
 
         // Set tiny max frame size
         let mut params = ScopeParams::default();
@@ -1576,10 +1571,10 @@ mod tests {
     #[tokio::test]
     async fn stats_request_response() {
         let handler = StreamHandler::new();
-        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
-        handler.set_sender(tx).await;
-
         let peer = [1u8; 32];
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        handler.add_peer_sender(peer, tx).await;
+
         let ctx = make_ctx(peer);
 
         let open = make_open_request(1, "opus", 0);
@@ -1632,10 +1627,9 @@ mod tests {
     #[tokio::test]
     async fn provider_initiated_open() {
         let handler = StreamHandler::new();
-        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
-        handler.set_sender(tx).await;
-
         let peer = [1u8; 32];
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        handler.add_peer_sender(peer, tx).await;
 
         // Provider initiates a stream via public API
         handler
