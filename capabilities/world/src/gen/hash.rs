@@ -119,11 +119,14 @@ mod tests {
     }
 
     // ── Building hash vectors from Appendix E.2 ──
-    // NOTE: Appendix E.2 values (0xb7f4467c, 0x82f77744) do not match our
-    // verified ha() for the stated inputs. The primary ha/hb vectors from
-    // Appendix B.2 are authoritative. The building vectors may have been
-    // computed with a different hash revision. Skipping until reconciled
-    // with the spec author.
+    // NOTE: Appendix E.2's stated values (0xb7f4467c, 0x82f77744) were computed
+    // with the plot salt 0x10754ed (7 hex digits) — a transcription typo of the
+    // authoritative plot salt 0x106754ed (8 hex digits) defined in §12.3 and the
+    // Appendix A salt registry. The building-form doc's placeholder `0xp10t5eed`
+    // got mis-rendered as `0x10754ed` in the appendix. Our code correctly uses
+    // 0x106754ed (see gen/buildings.rs:456), so the appendix vectors are not
+    // reproducible here by design — the appendix is wrong, not the hash. The
+    // primary ha/hb vectors (Appendix B.2) are authoritative and pass.
 
     // ── Utility function tests ──
 

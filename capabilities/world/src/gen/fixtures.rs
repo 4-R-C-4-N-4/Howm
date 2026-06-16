@@ -311,7 +311,10 @@ pub fn generate_fixtures(
                     base_pos.y + perp_y * cfg.lamp_offset * side,
                 );
 
-                let pos_seed = ha(cell.key ^ road_idx as u32 ^ i ^ 0x1a4b);
+                // Salt 0x1a40 per spec §13.5 / Appendix A salt registry
+                // (howm-spec.md:1380,1978). The objects-spec doc renders it as
+                // the OCR-garbled placeholder `0xla4p`.
+                let pos_seed = ha(cell.key ^ road_idx as u32 ^ i ^ 0x1a40);
                 let fixture = build_fixture(cell, FixtureRole::Illumination, pos_seed, position, true);
                 road_fixtures.push(fixture);
             }

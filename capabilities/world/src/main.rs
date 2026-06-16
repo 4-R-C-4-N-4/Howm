@@ -373,6 +373,63 @@ async fn neighbors_handler(AxumPath(ip): AxumPath<String>) -> Response {
     (StatusCode::OK, axum::Json(response)).into_response()
 }
 
+/// Lightweight, geometry-free seed summary for a cell. Enough for a client to
+/// pre-warm an adjacent district (palette, key, domain) before crossing into it.
+fn cell_summary(cell: &gen::cell::Cell) -> serde_json::Value {
+    let palette = gen::aesthetic::AestheticPalette::from_cell(cell);
+    serde_json::json!({
+        "ip_prefix": cell.ip_prefix(),
+        "key": cell.key,
+        "popcount": cell.popcount,
+        "popcount_ratio": cell.popcount_ratio,
+        "domain": cell.domain,
+        "hue": cell.hue,
+        "age": cell.age,
+        "aesthetic_bucket": palette.aesthetic_bucket,
+    })
+}
+
+// ─── District prefetch (lightweight seed bundle) ────────────────────────────
+//
+// Declared in manifest.json as `district_prefetch`. Returns the center cell
+// plus its 8 grid neighbours as geometry-free seed summaries. Clients streaming
+// across district borders use this to warm palettes/keys for the district they
+// are about to enter without paying for a full scene compile.
+
+async fn district_prefetch_handler(AxumPath(ip): AxumPath<String>) -> Response {
+    let cell = match parse_cell(&ip) {
+        Some(c) => c,
+        None => return bad_request(),
+    };
+
+    let octets = cell.octets;
+    let mut neighbors = Vec::new();
+
+    for (do1, do2, do3) in &[
+        (0i16, 0i16, 1i16), (0, 0, -1), (0, 1, 0), (0, -1, 0),
+        (0, 1, 1), (0, 1, -1), (0, -1, 1), (0, -1, -1),
+    ] {
+        let n1 = octets[0] as i16 + do1;
+        let n2 = octets[1] as i16 + do2;
+        let n3 = octets[2] as i16 + do3;
+
+        if n1 < 0 || n1 > 255 || n2 < 0 || n2 > 255 || n3 < 0 || n3 > 255 {
+            continue;
+        }
+
+        let ncell = gen::cell::Cell::from_octets(n1 as u8, n2 as u8, n3 as u8);
+        neighbors.push(cell_summary(&ncell));
+    }
+
+    let response = serde_json::json!({
+        "center": cell_summary(&cell),
+        "neighbors": neighbors,
+        "generated_at": current_time_ms(),
+    });
+
+    (StatusCode::OK, axum::Json(response)).into_response()
+}
+
 // ─── District map (SVG) ────────────────────────────────────────────────────
 
 async fn district_map_handler(AxumPath(ip): AxumPath<String>) -> Response {
@@ -539,6 +596,10 @@ async fn main() -> anyhow::Result<()> {
             get(district_map_handler),
         )
         .route(
+            "/cap/world/district/{ip}/prefetch",
+            get(district_prefetch_handler),
+        )
+        .route(
             "/cap/world/district/{ip}/live",
             get(stream::handler::ws_handler),
         )
@@ -551,7 +612,7 @@ async fn main() -> anyhow::Result<()> {
         }))
         .route("/ui/", get(|| async { serve_ui_file("index.html") }));
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
+    let addr = SocketAddr::from(([127, 0, 0, 1], config.port));
     info!("World capability listening on {}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;

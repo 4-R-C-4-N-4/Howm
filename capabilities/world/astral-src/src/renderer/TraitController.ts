@@ -136,7 +136,14 @@ export class CycleController implements TraitController {
     }
 
     if (wasActive !== this.active) {
-      this.onStateChange?.(wasActive ? 'active' : 'idle', this.active ? 'active' : 'idle')
+      // Emit the spec's behavior.cycle vocabulary (activate/deactivate, HDL
+      // §4.1) so SequenceEngine rules — e.g. the fixture activate→emission
+      // intensify sequence (mapping.rs) — actually fire. The engine matches on
+      // the `to` event name.
+      this.onStateChange?.(
+        wasActive ? 'activate' : 'deactivate',
+        this.active ? 'activate' : 'deactivate',
+      )
     }
   }
 

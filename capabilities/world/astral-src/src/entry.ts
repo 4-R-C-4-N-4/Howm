@@ -75,14 +75,15 @@ async function main() {
     try {
       await stream.connect(ip)
       if (status) status.textContent = ''
+      provider = stream
     } catch (err) {
       console.error('WebSocket failed, falling back to static:', err)
       if (status) status.textContent = `WS failed, loading static...`
       const fallback = new HowmSceneProvider(baseUrl)
       await fallback.loadDistrict(ip)
+      if (status) status.textContent = ''
       provider = fallback
     }
-    provider = stream
   } else {
     // Static HTTP fetch — full district scene
     const staticProvider = new HowmSceneProvider(baseUrl)

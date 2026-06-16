@@ -379,3 +379,57 @@ Scene {
 - Scene serializes to valid JSON and round-trips
 
 ---
+
+## Phase R2: Integration Parity & Fixes — 2026-06-16
+
+**Branch:** `world`
+**Goal:** Bring the world cap "up to speed with the rest of the capabilities"
+(feed/files/messaging/presence/voice) — it generated/rendered well but was not
+integrated, negotiable, shipped, or tested like the others.
+
+### Shipped this pass
+
+| Area | Change | Why it mattered |
+|------|--------|-----------------|
+| **P2P negotiation** | `manifest.json` name `world.generation` → `world.room` | Daemon derives `howm.{name}.1`; access groups + RPC routing (`cap_notify.rs`) all expect `howm.world.room.1`. The old name matched **no** access group, so the cap could **never** be negotiated peer-to-peer. Hard correctness break. |
+| **Security/parity** | `main.rs` bind `0.0.0.0` → `127.0.0.1` | Every other cap binds loopback via the SDK; world exposed itself on all interfaces. |
+| **Release** | `release.yml` CAPABILITIES += `world` | world shipped in **zero** release artifacts before. |
+| **API** | Implemented `district_prefetch` endpoint | Declared in manifest, returned 404. Now returns geometry-free center+neighbor seed summaries for cross-district pre-warming. |
+| **Build tooling** | Added `astral-src/package.json` + `tsconfig.json` (esbuild + tsc), wired bundling into `howm.sh` | `ui/astral.js` was a hand-committed bundle with no build config; any TS edit silently shipped stale JS. Now reproducible; `npm run typecheck` is green. |
+| **CI** | Added `capabilities` job to `ci.yml` (build+test each cap, typecheck+bundle world UI) | `ci.yml` only built/tested `node/`; world's 137 tests + the renderer build never ran in CI. |
+| **Determinism bug** | `fixtures.rs` road-edge lamp salt `0x1a4b` → `0x1a40` | Spec §13.5 / Appendix A salt registry mandates `0x1a40`; the wrong salt made lamp placement non-spec (clients would disagree). Also corrected the misleading hash.rs Appendix-E comment (it's a spec typo `0x10754ed` vs the correct `0x106754ed`, not a hash bug). |
+| **Renderer** | `entry.ts` live-fallback no longer overwrites the static provider on WS failure; `CycleController` now emits the spec `activate`/`deactivate` events | The `?live` fallback gave a blank screen on WS failure. The cycle controller emitted `active`/`idle`, so the fixture activate→emission-intensify sequence never fired (dead animation). |
+| **Lock hygiene** | Regenerated stale `capabilities/world/Cargo.lock` (was missing `p2pcd` `bridge-client` deps) | `cargo build --locked` (CI) would have failed. |
+
+All 137 world tests pass; world UI type-checks clean and bundles; smoke-tested
+binary serves `/health` and `/district/:ip/prefetch` on loopback.
+
+### Still NOT implemented (prioritized backlog, from doc↔code gap analysis)
+
+The generation/topology core is faithful, but large slices of the *intended*
+spec remain unbuilt. In rough priority:
+
+1. **Spaces — Inside & Underground (`howm-spaces.md`): ~0% built.** Only the
+   Outside district exists. No home placement (peer_id → structure), no building
+   interiors, no peer-to-peer tunnels, no portals/transitions, no avatars/presence
+   relay. `BuildingInterior` is defined in `hdl/traits.rs` but never constructed.
+   Best first targets: home placement in the Outside; static portal entity;
+   underground tunnel (palette-lerp between two cells).
+2. **IPv6 world (BRD §3 core principle).** `cell.rs::from_ip_str` is IPv4-only;
+   the entire IPv6 half of the address space is absent.
+3. **Object salt-registry conformance.** Creatures/flora derive fields from
+   `ObjectSeeds` bit-slices instead of the Appendix A `ha(seed^salt)` registry,
+   so Appendix C/D worked-example vectors can't reproduce. Atmosphere emits no
+   sky-colour/ambient-light output; building shells have no interior inset.
+4. **Renderer Option-B interpretation (`astral-projection.md`).** Geometry/colour
+   are resolved Rust-side; the renderer has no `resolveGeometry`/`resolveMaterial`/
+   SceneGraph/packet protocol. Missing TrailController/VoiceController; sequence
+   action params (`factor`/`intensity`) are dropped; cycle visibility gating unused.
+5. **Web-shell launch affordance.** `manifest.json` `ui.style: "fullscreen"` is
+   not handled by the app shell (`App.tsx` knows `nav`/`fab`), so world has no
+   launch entry point in the dashboard yet.
+6. **SDK adoption.** world hand-rolls axum and does not use `CapabilityApp`/
+   `PeerStream`/`PeerTracker`/`BridgeClient`; it has no notion of active peers.
+   The `bridge-client` feature is declared but unused.
+
+---

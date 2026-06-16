@@ -1,9 +1,6 @@
+"use strict";
 (() => {
-  var __defProp = Object.defineProperty;
-  var __defNormalProp = (obj, key, value) => key in obj ? __defProp(obj, key, { enumerable: true, configurable: true, writable: true, value }) : obj[key] = value;
-  var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "symbol" ? key + "" : key, value);
-
-  // astral-src/src/renderer/Animator.ts
+  // src/renderer/Animator.ts
   var baseIntensities = /* @__PURE__ */ new Map();
   function updateLightFlicker(lights, time) {
     for (const light of lights) {
@@ -56,12 +53,12 @@
     }
   }
 
-  // astral-src/src/scene/HowmSceneProvider.ts
+  // src/scene/HowmSceneProvider.ts
   var HowmSceneProvider = class {
     constructor(baseUrl) {
       this.baseUrl = baseUrl;
-      __publicField(this, "scene", null);
-      __publicField(this, "dirty", true);
+      this.scene = null;
+      this.dirty = true;
     }
     /** Fetch a district scene from the world API. */
     async loadDistrict(ip) {
@@ -135,42 +132,42 @@
     }
   };
 
-  // astral-src/src/scene/HowmStreamProvider.ts
+  // src/scene/HowmStreamProvider.ts
   var HowmStreamProvider = class {
     constructor(baseUrl) {
       this.baseUrl = baseUrl;
-      __publicField(this, "ws", null);
-      __publicField(this, "entities", /* @__PURE__ */ new Map());
-      __publicField(this, "entityList", []);
-      __publicField(this, "lights", []);
-      __publicField(this, "environment", {
+      this.ws = null;
+      this.entities = /* @__PURE__ */ new Map();
+      this.entityList = [];
+      this.lights = [];
+      this.environment = {
         ambientLight: 0.3,
         backgroundColor: { r: 20, g: 20, b: 40 }
-      });
-      __publicField(this, "camera", {
+      };
+      this.camera = {
         position: { x: 0, y: 8, z: 20 },
         rotation: { x: -0.3, y: 0, z: 0 },
         fov: 60,
         near: 0.1,
         far: 200
-      });
-      __publicField(this, "time", 0);
-      __publicField(this, "dirty", true);
-      __publicField(this, "connected", false);
+      };
+      this.time = 0;
+      this.dirty = true;
+      this.connected = false;
       // Camera state to send to server
-      __publicField(this, "camX", 0);
-      __publicField(this, "camY", 8);
-      __publicField(this, "camZ", 0);
-      __publicField(this, "camDX", 0);
-      __publicField(this, "camDY", -0.3);
-      __publicField(this, "camDZ", -1);
-      __publicField(this, "sendTimer", 0);
-      __publicField(this, "sendInterval", 0.25);
+      this.camX = 0;
+      this.camY = 8;
+      this.camZ = 0;
+      this.camDX = 0;
+      this.camDY = -0.3;
+      this.camDZ = -1;
+      this.sendTimer = 0;
+      this.sendInterval = 0.25;
       // send camera 4 Hz
       // Current district info from server
-      __publicField(this, "currentDistrictIp", "");
-      __publicField(this, "loadedDistrictCount", 0);
-      __publicField(this, "visibleEntityCount", 0);
+      this.currentDistrictIp = "";
+      this.loadedDistrictCount = 0;
+      this.visibleEntityCount = 0;
     }
     async connect(ip) {
       const wsUrl = this.baseUrl.replace("http", "ws") + `/cap/world/district/${ip}/live`;
@@ -305,26 +302,9 @@
     }
   };
 
-  // astral-src/src/renderer/FrameBuffer.ts
+  // src/renderer/FrameBuffer.ts
   var FrameBuffer = class {
     constructor(width, height) {
-      __publicField(this, "width");
-      __publicField(this, "height");
-      __publicField(this, "chars");
-      // Foreground colour (glyph colour)
-      __publicField(this, "colorR");
-      __publicField(this, "colorG");
-      __publicField(this, "colorB");
-      // Background colour (behind/around glyph)
-      __publicField(this, "bgR");
-      __publicField(this, "bgG");
-      __publicField(this, "bgB");
-      __publicField(this, "brightness");
-      __publicField(this, "depth");
-      // hit distance (for atmosphere computation)
-      __publicField(this, "entityIndex");
-      // which entity (-1 = miss)
-      __publicField(this, "dirty");
       this.width = width;
       this.height = height;
       const size = width * height;
@@ -428,17 +408,11 @@
     }
   };
 
-  // astral-src/src/renderer/Presenter.ts
+  // src/renderer/Presenter.ts
   var FONT_SIZE = 14;
   var FONT = `${FONT_SIZE}px "Courier New", Consolas, monospace`;
   var Presenter = class {
     constructor(canvas) {
-      __publicField(this, "canvas");
-      __publicField(this, "ctx");
-      __publicField(this, "cellWidth");
-      __publicField(this, "cellHeight");
-      __publicField(this, "cols");
-      __publicField(this, "rows");
       this.canvas = canvas;
       const ctx = canvas.getContext("2d");
       if (!ctx) throw new Error("Could not get 2D canvas context");
@@ -481,7 +455,7 @@
     }
   };
 
-  // astral-src/src/core/vec3.ts
+  // src/core/vec3.ts
   function add(a, b) {
     return { x: a.x + b.x, y: a.y + b.y, z: a.z + b.z };
   }
@@ -503,7 +477,7 @@
     return { x: v.x / len, y: v.y / len, z: v.z / len };
   }
 
-  // astral-src/src/renderer/sdf.ts
+  // src/renderer/sdf.ts
   function sdSphere(p, radius) {
     return length(p) - radius;
   }
@@ -930,7 +904,7 @@
     return 32 * n;
   }
 
-  // astral-src/src/renderer/SpatialGrid.ts
+  // src/renderer/SpatialGrid.ts
   function computeAABB(entity) {
     const pos = entity.transform.position;
     const scale = entity.transform.scale;
@@ -961,11 +935,6 @@
   var INFINITE_TYPES = /* @__PURE__ */ new Set(["plane", "sdf"]);
   var SpatialGrid = class {
     constructor(entities, cellSize = 10) {
-      __publicField(this, "cellSize");
-      __publicField(this, "cells");
-      /** Entities that are infinite (planes, custom SDFs) — always evaluated */
-      __publicField(this, "globalIndices");
-      __publicField(this, "entities");
       this.cellSize = cellSize;
       this.cells = /* @__PURE__ */ new Map();
       this.globalIndices = [];
@@ -1023,7 +992,7 @@
     }
   };
 
-  // astral-src/src/renderer/World.ts
+  // src/renderer/World.ts
   function worldToLocal(point, transform) {
     const translated = sub(point, transform.position);
     const rotZ = {
@@ -1050,8 +1019,6 @@
   var EMPTY_MATERIAL = { baseColor: { r: 0, g: 0, b: 0 }, brightness: 0, roughness: 0, reflectivity: 0 };
   var World = class {
     constructor(entities) {
-      __publicField(this, "entities");
-      __publicField(this, "grid");
       this.entities = entities;
       this.grid = new SpatialGrid(entities);
     }
@@ -1090,7 +1057,7 @@
     }
   };
 
-  // astral-src/src/renderer/Camera.ts
+  // src/renderer/Camera.ts
   var CHAR_ASPECT_RATIO = 0.5;
   function createRay(cam, x, y, screenWidth, screenHeight) {
     const fovRad = cam.fov * Math.PI / 180;
@@ -1113,7 +1080,7 @@
     return { origin: cam.position, direction: dirWorld };
   }
 
-  // astral-src/src/renderer/Raymarch.ts
+  // src/renderer/Raymarch.ts
   var DEFAULT_MAX_STEPS = 80;
   var HIT_THRESHOLD = 0.01;
   var MAX_DISTANCE = 200;
@@ -1148,7 +1115,7 @@
     return { hit: false };
   }
 
-  // astral-src/src/renderer/Lighting.ts
+  // src/renderer/Lighting.ts
   function clamp2(v, lo, hi) {
     return Math.max(lo, Math.min(hi, v));
   }
@@ -1224,24 +1191,9 @@
     return { brightness, r: finalR, g: finalG, b: finalB };
   }
 
-  // astral-src/src/renderer/TemporalCache.ts
+  // src/renderer/TemporalCache.ts
   var TemporalCache = class {
     constructor(width, height) {
-      __publicField(this, "width");
-      __publicField(this, "height");
-      __publicField(this, "depth");
-      __publicField(this, "entityIndex");
-      // -1 = miss, >=0 = entity index
-      __publicField(this, "valid");
-      // For geometry reuse (skip raymarch, only recompute lighting)
-      __publicField(this, "hitPosX");
-      __publicField(this, "hitPosY");
-      __publicField(this, "hitPosZ");
-      __publicField(this, "normalX");
-      __publicField(this, "normalY");
-      __publicField(this, "normalZ");
-      __publicField(this, "prevCameraPos");
-      __publicField(this, "prevCameraRot");
       this.width = width;
       this.height = height;
       const size = width * height;
@@ -1317,7 +1269,7 @@
     }
   };
 
-  // astral-src/src/renderer/AdaptiveQuality.ts
+  // src/renderer/AdaptiveQuality.ts
   var FRAME_DEADLINE_MS = 12;
   function getMaxSteps(x, y, screenW, screenH) {
     const cx = (x / screenW - 0.5) * 2;
@@ -1329,10 +1281,8 @@
   }
   var AdaptiveQuality = class {
     constructor(targetFPS = 30) {
-      __publicField(this, "targetFrameTime");
-      __publicField(this, "currentScale");
-      __publicField(this, "minScale", 0.5);
-      __publicField(this, "maxScale", 1);
+      this.minScale = 0.5;
+      this.maxScale = 1;
       this.targetFrameTime = 1e3 / targetFPS;
       this.currentScale = 1;
     }
@@ -1367,7 +1317,7 @@
     }
   };
 
-  // astral-src/src/core/description.ts
+  // src/core/description.ts
   function findTrait(desc, path) {
     return desc.traits.find((t) => t.path === path);
   }
@@ -1379,18 +1329,12 @@
     return traitParam(desc, path, key) ?? fallback;
   }
 
-  // astral-src/src/renderer/TraitController.ts
+  // src/renderer/TraitController.ts
   var EmissionController = class {
     constructor(desc) {
-      __publicField(this, "path", "effect.emission");
-      __publicField(this, "type");
-      __publicField(this, "baseIntensity");
-      __publicField(this, "rhythm");
-      __publicField(this, "channel");
-      __publicField(this, "currentIntensity");
-      __publicField(this, "burstIntensity", 0);
-      __publicField(this, "phase", 0);
-      __publicField(this, "onStateChange");
+      this.path = "effect.emission";
+      this.burstIntensity = 0;
+      this.phase = 0;
       this.type = findTrait(desc, "effect.emission.type")?.term ?? "none";
       this.rhythm = findTrait(desc, "effect.emission.rhythm")?.term ?? "constant";
       this.channel = findTrait(desc, "effect.emission.channel")?.term ?? "both";
@@ -1455,13 +1399,9 @@
   };
   var CycleController = class {
     constructor(desc) {
-      __publicField(this, "path", "behavior.cycle");
-      __publicField(this, "period");
-      // diurnal, nocturnal, crepuscular, continuous
-      __publicField(this, "response");
+      this.path = "behavior.cycle";
       // withdraw, emerge, intensify, transform
-      __publicField(this, "active", true);
-      __publicField(this, "onStateChange");
+      this.active = true;
       this.period = findTrait(desc, "behavior.cycle.period")?.term ?? "continuous";
       this.response = findTrait(desc, "behavior.cycle.response")?.term ?? "none";
     }
@@ -1485,7 +1425,10 @@
           break;
       }
       if (wasActive !== this.active) {
-        this.onStateChange?.(wasActive ? "active" : "idle", this.active ? "active" : "idle");
+        this.onStateChange?.(
+          wasActive ? "activate" : "deactivate",
+          this.active ? "activate" : "deactivate"
+        );
       }
     }
     fireEvent(_event) {
@@ -1503,11 +1446,9 @@
   };
   var SurfaceController = class {
     constructor(desc) {
-      __publicField(this, "path", "being.surface");
-      __publicField(this, "baseComplexity");
-      __publicField(this, "flashIntensity", 0);
-      __publicField(this, "phase", 0);
-      __publicField(this, "onStateChange");
+      this.path = "being.surface";
+      this.flashIntensity = 0;
+      this.phase = 0;
       this.baseComplexity = traitParamOr(desc, "being.surface.texture", "complexity", 0.5);
     }
     tick(dt) {
@@ -1540,23 +1481,17 @@
   };
   var MotionController = class {
     constructor(desc) {
-      __publicField(this, "path", "behavior.motion");
-      __publicField(this, "method");
-      __publicField(this, "interval");
-      __publicField(this, "variance");
-      __publicField(this, "state", "resting");
-      __publicField(this, "timer", 0);
-      __publicField(this, "nextInterval");
-      __publicField(this, "amplitude");
+      this.path = "behavior.motion";
+      this.state = "resting";
+      this.timer = 0;
       // for oscillating
       // Position tracking
-      __publicField(this, "baseX", 0);
-      __publicField(this, "baseY", 0);
-      __publicField(this, "baseZ", 0);
-      __publicField(this, "offsetX", 0);
-      __publicField(this, "offsetY", 0);
-      __publicField(this, "offsetZ", 0);
-      __publicField(this, "onStateChange");
+      this.baseX = 0;
+      this.baseY = 0;
+      this.baseZ = 0;
+      this.offsetX = 0;
+      this.offsetY = 0;
+      this.offsetZ = 0;
       this.method = findTrait(desc, "behavior.motion.method")?.term ?? "anchored";
       this.interval = traitParamOr(desc, "behavior.motion.method", "interval", 2);
       this.variance = traitParamOr(desc, "behavior.motion.method", "variance", 0.2);
@@ -1643,14 +1578,9 @@
   };
   var RestController = class {
     constructor(desc) {
-      __publicField(this, "path", "behavior.rest");
-      __publicField(this, "frequency");
-      // 0–1, how often resting
-      __publicField(this, "posture");
-      __publicField(this, "transition");
-      __publicField(this, "resting", false);
-      __publicField(this, "timer", 0);
-      __publicField(this, "onStateChange");
+      this.path = "behavior.rest";
+      this.resting = false;
+      this.timer = 0;
       this.frequency = traitParamOr(desc, "behavior.rest.frequency", "value", 0.5);
       this.posture = findTrait(desc, "behavior.rest.posture")?.term ?? "settled";
       this.transition = findTrait(desc, "behavior.rest.transition")?.term ?? "gradual";
@@ -1684,14 +1614,10 @@
   };
   var RegardController = class {
     constructor(desc) {
-      __publicField(this, "path", "relation.regard");
-      __publicField(this, "disposition");
-      __publicField(this, "radius");
-      __publicField(this, "threshold");
-      __publicField(this, "activated", false);
-      __publicField(this, "timer", 0);
-      __publicField(this, "playerDistance", Infinity);
-      __publicField(this, "onStateChange");
+      this.path = "relation.regard";
+      this.activated = false;
+      this.timer = 0;
+      this.playerDistance = Infinity;
       this.disposition = findTrait(desc, "relation.regard.disposition")?.term ?? "indifferent";
       this.radius = traitParamOr(desc, "relation.regard.disposition", "radius", 8);
       this.threshold = traitParamOr(desc, "relation.regard.disposition", "threshold", 2);
@@ -1754,12 +1680,10 @@
     return controllers;
   }
 
-  // astral-src/src/renderer/SequenceEngine.ts
+  // src/renderer/SequenceEngine.ts
   var SequenceEngine = class {
     constructor(sequences, controllers) {
-      __publicField(this, "rules");
-      __publicField(this, "controllers");
-      __publicField(this, "pending", []);
+      this.pending = [];
       this.controllers = new Map(controllers.map((c) => [c.path, c]));
       this.rules = sequences.map((s) => ({
         triggerPath: s.trigger.path,
@@ -1825,7 +1749,7 @@
     }
   };
 
-  // astral-src/src/renderer/DescribedEntity.ts
+  // src/renderer/DescribedEntity.ts
   function buildDescribedEntity(entity) {
     const desc = entity.description;
     if (!desc || !desc.traits || desc.traits.length === 0) {
@@ -1855,38 +1779,24 @@
     return de.controllers.find((c) => c instanceof RegardController);
   }
 
-  // astral-src/src/renderer/RenderLoop.ts
+  // src/renderer/RenderLoop.ts
   var RAMP = " .,:;=+*#%@";
   function clamp3(v, lo, hi) {
     return Math.max(lo, Math.min(hi, v));
   }
   var RenderLoop = class {
     constructor(provider, frameBuffer, presenter, glyphCache = null, options = {}) {
-      __publicField(this, "provider");
-      __publicField(this, "camera");
-      __publicField(this, "frameBuffer");
-      __publicField(this, "smallBuffer", null);
-      __publicField(this, "presenter");
-      __publicField(this, "glyphCache");
-      __publicField(this, "world");
-      __publicField(this, "temporal");
-      __publicField(this, "adaptive");
-      __publicField(this, "describedEntities", []);
-      __publicField(this, "running", false);
-      __publicField(this, "lastTime", 0);
-      __publicField(this, "lastFrameTime", 0);
-      __publicField(this, "frameCount", 0);
-      __publicField(this, "frameTimes", []);
-      __publicField(this, "lastFPSReport", 0);
-      __publicField(this, "useTemporalReuse");
-      __publicField(this, "useAdaptiveQuality");
-      __publicField(this, "useWorkers");
-      __publicField(this, "inputState");
-      __publicField(this, "cameraController");
-      __publicField(this, "hud");
-      __publicField(this, "lastCameraChanged", false);
+      this.smallBuffer = null;
+      this.describedEntities = [];
+      this.running = false;
+      this.lastTime = 0;
+      this.lastFrameTime = 0;
+      this.frameCount = 0;
+      this.frameTimes = [];
+      this.lastFPSReport = 0;
+      this.lastCameraChanged = false;
       // Stats overlay element (used when no HUD is provided)
-      __publicField(this, "statsEl", null);
+      this.statsEl = null;
       this.provider = provider;
       const initialScene = provider.getScene();
       this.camera = {
@@ -2278,7 +2188,7 @@
     }
   };
 
-  // astral-src/src/glyph/GlyphDB.ts
+  // src/glyph/GlyphDB.ts
   function normalize2(values) {
     const min = Math.min(...values);
     const max = Math.max(...values);
@@ -2287,10 +2197,6 @@
     return values.map((v) => (v - min) / range);
   }
   var GlyphDB = class _GlyphDB {
-    constructor() {
-      __publicField(this, "glyphs");
-      this.glyphs = [];
-    }
     /** Load from pre-extracted JSON array.
      *  Each entry: [codepoint_hex, char, coverage, roundness, complexity, connectedComponents, symmetryH, symmetryV]
      */
@@ -2320,6 +2226,9 @@
         normalizedConnectedComponents: ccs[i]
       }));
       return db;
+    }
+    constructor() {
+      this.glyphs = [];
     }
     get count() {
       return this.glyphs.length;
@@ -2361,7 +2270,7 @@
     }
   };
 
-  // astral-src/src/glyph/GlyphCache.ts
+  // src/glyph/GlyphCache.ts
   var BRIGHTNESS_BUCKETS = 32;
   var ROUNDNESS_BUCKETS = 8;
   var COMPLEXITY_BUCKETS = 8;
@@ -2390,13 +2299,13 @@
   }
   var GlyphCache = class {
     constructor(db) {
-      __publicField(this, "db");
-      __publicField(this, "cache");
-      __publicField(this, "hits", 0);
-      __publicField(this, "misses", 0);
+      this.hits = 0;
+      this.misses = 0;
       this.db = db;
       this.cache = new Array(CACHE_SIZE).fill(null);
     }
+    // Returns null only when the glyph DB is empty (queryBest has nothing to
+    // pick). Callers fall back to the ASCII ramp in that case.
     select(params) {
       const key = buildKey(params);
       const cached = this.cache[key];
@@ -2458,25 +2367,25 @@
     }
   };
 
-  // astral-src/src/input/InputState.ts
+  // src/input/InputState.ts
   var InputState = class {
     constructor() {
       // Movement keys (true = currently held)
-      __publicField(this, "forward", false);
-      __publicField(this, "backward", false);
-      __publicField(this, "left", false);
-      __publicField(this, "right", false);
-      __publicField(this, "up", false);
+      this.forward = false;
+      this.backward = false;
+      this.left = false;
+      this.right = false;
+      this.up = false;
       // Space
-      __publicField(this, "down", false);
+      this.down = false;
       // Shift
-      __publicField(this, "sprint", false);
+      this.sprint = false;
       // ControlLeft
       // Mouse look delta (pixels moved since last frame)
-      __publicField(this, "mouseDeltaX", 0);
-      __publicField(this, "mouseDeltaY", 0);
+      this.mouseDeltaX = 0;
+      this.mouseDeltaY = 0;
       // Pointer lock state
-      __publicField(this, "pointerLocked", false);
+      this.pointerLocked = false;
     }
     /** Call once per frame — returns accumulated delta and resets to 0. */
     consumeMouseDelta() {
@@ -2488,7 +2397,7 @@
     }
   };
 
-  // astral-src/src/input/KeyboardListener.ts
+  // src/input/KeyboardListener.ts
   var GAME_KEYS = /* @__PURE__ */ new Set([
     "KeyW",
     "KeyA",
@@ -2504,10 +2413,6 @@
   ]);
   var KeyboardListener = class {
     constructor(inputState, target) {
-      __publicField(this, "inputState");
-      __publicField(this, "boundKeyDown");
-      __publicField(this, "boundKeyUp");
-      __publicField(this, "target");
       this.inputState = inputState;
       this.target = target;
       this.boundKeyDown = this.onKeyDown.bind(this);
@@ -2549,15 +2454,9 @@
     }
   };
 
-  // astral-src/src/input/MouseListener.ts
+  // src/input/MouseListener.ts
   var MouseListener = class {
     constructor(inputState, target) {
-      __publicField(this, "inputState");
-      __publicField(this, "target");
-      __publicField(this, "boundClick");
-      __publicField(this, "boundLockChange");
-      __publicField(this, "boundLockError");
-      __publicField(this, "boundMouseMove");
       this.inputState = inputState;
       this.target = target;
       this.boundClick = this.requestLock.bind(this);
@@ -2601,30 +2500,30 @@
     }
   };
 
-  // astral-src/src/input/CameraController.ts
+  // src/input/CameraController.ts
   function lerp(a, b, t) {
     return a + (b - a) * t;
   }
   var CameraController = class {
     constructor() {
-      __publicField(this, "moveSpeed", 5);
-      __publicField(this, "sprintMultiplier", 2.5);
-      __publicField(this, "lookSensitivity", 2e-3);
-      __publicField(this, "pitchLimit", Math.PI / 2 - 0.01);
+      this.moveSpeed = 5;
+      this.sprintMultiplier = 2.5;
+      this.lookSensitivity = 2e-3;
+      this.pitchLimit = Math.PI / 2 - 0.01;
       // Gravity pulls the camera down each frame; future jump sets velocity.y = jumpSpeed
-      __publicField(this, "gravity", -20);
+      this.gravity = -20;
       // units/sec²
-      __publicField(this, "floorY", 1.5);
+      this.floorY = 1.5;
       // eye height — camera never goes below this
-      __publicField(this, "acceleration", 30);
-      __publicField(this, "friction", 10);
-      __publicField(this, "velocity", { x: 0, y: 0, z: 0 });
-      __publicField(this, "mouseSmoothFactor", 0);
-      __publicField(this, "smoothDX", 0);
-      __publicField(this, "smoothDY", 0);
-      __publicField(this, "yaw", 0);
-      __publicField(this, "pitch", 0);
-      __publicField(this, "initialized", false);
+      this.acceleration = 30;
+      this.friction = 10;
+      this.velocity = { x: 0, y: 0, z: 0 };
+      this.mouseSmoothFactor = 0;
+      this.smoothDX = 0;
+      this.smoothDY = 0;
+      this.yaw = 0;
+      this.pitch = 0;
+      this.initialized = false;
     }
     update(camera, inputState, dt) {
       if (!this.initialized) {
@@ -2694,16 +2593,11 @@
     }
   };
 
-  // astral-src/src/ui/HUD.ts
+  // src/ui/HUD.ts
   var HUD = class {
     constructor() {
-      __publicField(this, "fpsEl");
-      __publicField(this, "cameraEl");
-      __publicField(this, "districtEl");
-      __publicField(this, "compassEl");
-      __publicField(this, "promptEl");
-      __publicField(this, "districtIp", "");
-      __publicField(this, "streamInfo", "");
+      this.districtIp = "";
+      this.streamInfo = "";
       const container = document.createElement("div");
       container.id = "hud";
       container.style.cssText = [
@@ -2766,7 +2660,7 @@
     }
   };
 
-  // astral-src/src/entry.ts
+  // src/entry.ts
   async function loadGlyphCache(url) {
     try {
       console.time("Glyph load");
@@ -2812,14 +2706,15 @@
       try {
         await stream.connect(ip);
         if (status) status.textContent = "";
+        provider = stream;
       } catch (err) {
         console.error("WebSocket failed, falling back to static:", err);
         if (status) status.textContent = `WS failed, loading static...`;
         const fallback = new HowmSceneProvider(baseUrl);
         await fallback.loadDistrict(ip);
+        if (status) status.textContent = "";
         provider = fallback;
       }
-      provider = stream;
     } else {
       const staticProvider = new HowmSceneProvider(baseUrl);
       try {

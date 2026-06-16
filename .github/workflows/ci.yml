@@ -140,3 +140,53 @@ jobs:
             node/target/${{ matrix.target }}/release/howm.exe
           if-no-files-found: error
           retention-days: 7
+
+  # ─────────────────────────────────────────────
+  # Capabilities — build + test each cap crate.
+  # Previously NOT covered by CI: the world cap's
+  # large test suite never ran. RUSTFLAGS is relaxed
+  # here (caps still carry pre-existing dead-code
+  # warnings); the node/ lint job keeps -D warnings.
+  # ─────────────────────────────────────────────
+  capabilities:
+    name: Capabilities Build & Test
+    runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: ""
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-caps-${{ hashFiles('capabilities/*/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-caps-
+
+      - name: Type-check & bundle world UI (astral)
+        working-directory: capabilities/world/astral-src
+        run: |
+          npx --yes -p typescript@5.9.3 tsc --noEmit -p tsconfig.json
+          npx --yes esbuild src/entry.ts --bundle --outfile=../ui/astral.js \
+            --format=iife --platform=browser --target=es2020
+
+      - name: Build & test each capability
+        run: |
+          set -e
+          for cap in capabilities/*/Cargo.toml; do
+            dir="$(dirname "$cap")"
+            echo "::group::$dir"
+            (cd "$dir" && cargo build && cargo test)
+            echo "::endgroup::"
+          done

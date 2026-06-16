@@ -1,5 +1,5 @@
 {
-  "name": "world.generation",
+  "name": "world.room",
   "version": "0.1.0",
   "description": "Deterministic world generation — IP address space as navigable city",
   "binary": "./world",

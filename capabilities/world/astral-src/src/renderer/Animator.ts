@@ -47,7 +47,7 @@ export function animateGlyph(
   time: number,
   originalParams: GlyphQueryParams,
   glyphCache: GlyphCache
-): GlyphRecord {
+): GlyphRecord | null {
   if (!material.motionBehavior) return glyph
 
   const { type, speed } = material.motionBehavior

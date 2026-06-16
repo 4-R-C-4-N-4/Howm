@@ -40,7 +40,9 @@ export class GlyphCache {
     this.cache = new Array(CACHE_SIZE).fill(null)
   }
 
-  select(params: GlyphQueryParams): GlyphRecord {
+  // Returns null only when the glyph DB is empty (queryBest has nothing to
+  // pick). Callers fall back to the ASCII ramp in that case.
+  select(params: GlyphQueryParams): GlyphRecord | null {
     const key = buildKey(params)
     const cached = this.cache[key]
     if (cached !== null) {
