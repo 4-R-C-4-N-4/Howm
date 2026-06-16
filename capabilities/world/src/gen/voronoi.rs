@@ -4,7 +4,7 @@
 //! algorithmic complexity is irrelevant. The focus is correctness and
 //! determinism.
 
-use crate::types::Point;
+use crate::types::{Point, Polygon};
 
 /// A Delaunay triangle referencing point indices.
 #[derive(Debug, Clone, Copy)]
@@ -195,6 +195,137 @@ pub fn voronoi_cells(pts: &[Point]) -> Vec<VoronoiCell> {
             }
         })
         .collect()
+}
+
+/// Clip `subject` to the convex polygon `convex` via Sutherland-Hodgman. Correct
+/// only when `convex` is convex (Voronoi cells and district polygons are). The
+/// clip is reoriented to CCW internally. Returns the intersection, or empty if
+/// it degenerates below a triangle.
+pub fn clip_to_convex(subject: &[Point], convex: &[Point]) -> Vec<Point> {
+    if subject.len() < 3 || convex.len() < 3 {
+        return vec![];
+    }
+    let mut clip = convex.to_vec();
+    if Polygon::new(clip.clone()).signed_area() < 0.0 {
+        clip.reverse();
+    }
+    let inside = |a: Point, b: Point, p: Point| (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
+    let isect = |a: Point, b: Point, s: Point, e: Point| {
+        let d1 = Point::new(b.x - a.x, b.y - a.y);
+        let d2 = Point::new(e.x - s.x, e.y - s.y);
+        let denom = d1.x * d2.y - d1.y * d2.x;
+        if denom.abs() < 1e-12 {
+            return e;
+        }
+        let t = ((a.x - s.x) * d1.y - (a.y - s.y) * d1.x) / -denom;
+        Point::new(s.x + t * d2.x, s.y + t * d2.y)
+    };
+    let mut output = subject.to_vec();
+    let n = clip.len();
+    for i in 0..n {
+        if output.len() < 3 {
+            return vec![];
+        }
+        let (a, b) = (clip[i], clip[(i + 1) % n]);
+        let input = std::mem::take(&mut output);
+        let m = input.len();
+        for j in 0..m {
+            let cur = input[j];
+            let prev = input[(j + m - 1) % m];
+            let cur_in = inside(a, b, cur) >= -1e-9;
+            let prev_in = inside(a, b, prev) >= -1e-9;
+            if cur_in {
+                if !prev_in {
+                    output.push(isect(a, b, prev, cur));
+                }
+                output.push(cur);
+            } else if prev_in {
+                output.push(isect(a, b, prev, cur));
+            }
+        }
+    }
+    let mut deduped: Vec<Point> = Vec::with_capacity(output.len());
+    for p in &output {
+        if deduped.last().is_none_or(|l| p.distance_sq(*l) > 0.01) {
+            deduped.push(*p);
+        }
+    }
+    if deduped.len() >= 2 && deduped[0].distance_sq(*deduped.last().unwrap()) <= 0.01 {
+        deduped.pop();
+    }
+    if deduped.len() < 3 {
+        vec![]
+    } else {
+        deduped
+    }
+}
+
+/// Exact bounded Voronoi cell for site `i` via half-plane intersection: start
+/// from the bounding rectangle and clip by the perpendicular bisector against
+/// every other site, keeping the side closer to `i`. Always yields a convex,
+/// correctly-bounded cell — and across all sites the cells tile the rectangle
+/// with no overlap (unlike [`voronoi_cells`], whose hull cells are open fans).
+/// Use this where non-overlap matters (e.g. building plot subdivision).
+pub fn bounded_voronoi_cell(i: usize, pts: &[Point], x0: f64, y0: f64, x1: f64, y1: f64) -> Vec<Point> {
+    if i >= pts.len() {
+        return vec![];
+    }
+    let s = pts[i];
+    let mut poly = vec![
+        Point::new(x0, y0),
+        Point::new(x1, y0),
+        Point::new(x1, y1),
+        Point::new(x0, y1),
+    ];
+    for (j, &o) in pts.iter().enumerate() {
+        if j == i || (o.x - s.x).abs() < 1e-12 && (o.y - s.y).abs() < 1e-12 {
+            continue;
+        }
+        // Bisector half-plane: keep P with (P - M)·(O - S) <= 0 (closer to S).
+        let m = Point::new((s.x + o.x) * 0.5, (s.y + o.y) * 0.5);
+        let nx = o.x - s.x;
+        let ny = o.y - s.y;
+        poly = clip_halfplane(&poly, m, nx, ny);
+        if poly.len() < 3 {
+            return vec![];
+        }
+    }
+    poly
+}
+
+/// Sutherland-Hodgman clip of a polygon by a single half-plane: keep points P
+/// with (P - m)·n <= 0.
+fn clip_halfplane(poly: &[Point], m: Point, nx: f64, ny: f64) -> Vec<Point> {
+    let side = |p: Point| (p.x - m.x) * nx + (p.y - m.y) * ny;
+    let mut out = Vec::with_capacity(poly.len() + 1);
+    let n = poly.len();
+    for i in 0..n {
+        let cur = poly[i];
+        let prev = poly[(i + n - 1) % n];
+        let cur_in = side(cur) <= 1e-9;
+        let prev_in = side(prev) <= 1e-9;
+        if cur_in {
+            if !prev_in {
+                out.push(line_cross(prev, cur, m, nx, ny));
+            }
+            out.push(cur);
+        } else if prev_in {
+            out.push(line_cross(prev, cur, m, nx, ny));
+        }
+    }
+    out
+}
+
+/// Intersection of segment a→b with the line through m perpendicular to (nx,ny).
+fn line_cross(a: Point, b: Point, m: Point, nx: f64, ny: f64) -> Point {
+    let sa = (a.x - m.x) * nx + (a.y - m.y) * ny;
+    let sb = (b.x - m.x) * nx + (b.y - m.y) * ny;
+    let denom = sa - sb;
+    if denom.abs() < 1e-12 {
+        return b;
+    }
+    let t = sa / denom;
+    Point::new(a.x + t * (b.x - a.x), a.y + t * (b.y - a.y))
 }
 
 /// Clip a polygon to a rectangle [x0, y0] → [x1, y1] using Sutherland-Hodgman.

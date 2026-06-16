@@ -282,6 +282,17 @@ pub fn extract_blocks(
         });
     }
 
+    // Clip every block to the district polygon. The district is a Voronoi cell
+    // (convex), so this is an exact intersection — it trims the small slivers a
+    // boundary face can poke outside the district (blocks_in_district invariant)
+    // without disturbing interior blocks.
+    for b in &mut blocks {
+        let clipped = super::voronoi::clip_to_convex(&b.polygon.vertices, &boundary.vertices);
+        if clipped.len() >= 3 {
+            b.polygon = Polygon::new(clipped);
+        }
+    }
+
     blocks
 }
 

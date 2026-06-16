@@ -8,7 +8,7 @@ use super::cell::{Cell, Domain};
 use super::config::config;
 use super::hash::{ha, hash_to_f64, hash_to_range};
 use super::objects::{compute_form_id, compute_object_id, ObjectSeeds};
-use super::voronoi::voronoi_cells;
+use super::voronoi::bounded_voronoi_cell;
 use super::zones::point_in_polygon_seeded;
 use crate::types::{Point, Polygon};
 
@@ -204,9 +204,14 @@ fn cut_bisecting_alley(cell_key: u32, block: &Block) -> Vec<Polygon> {
         }
     }
 
-    // Use Sutherland-Hodgman to clip to each half-plane
-    let poly_a = clip_polygon_by_line(&poly.vertices, a1, a2, true);
-    let poly_b = clip_polygon_by_line(&poly.vertices, b1, b2, false);
+    // Clip to the OUTER side of each line so the two halves are separated by the
+    // alley corridor and don't overlap. Line A sits at +half_width along the
+    // normal (keep the +norm side); line B at -half_width (keep the -norm side).
+    // clip_polygon_by_line's sign convention means that's `false` for A (the
+    // +norm side) and `true` for B — the previous (true, false) kept the inner
+    // sides, which overlapped across the whole corridor band.
+    let poly_a = clip_polygon_by_line(&poly.vertices, a1, a2, false);
+    let poly_b = clip_polygon_by_line(&poly.vertices, b1, b2, true);
 
     let mut result = Vec::new();
     if poly_a.len() >= 3 {
@@ -334,57 +339,75 @@ fn clip_polygon_to_polygon(subject: &[Point], clip_verts: &[Point]) -> Vec<Point
     }
     let clip_poly = Polygon::new(clip_verts.to_vec());
 
-    // Fast path: if all subject vertices are inside, no clipping needed
-    let all_inside = subject.iter().all(|p| clip_poly.contains(*p));
-    if all_inside {
+    // Fast path: subject entirely inside the clip polygon — nothing to do.
+    if subject.iter().all(|p| clip_poly.contains(*p)) {
         return subject.to_vec();
     }
 
-    // Clip via bbox first, then constrain vertices to the clip polygon.
-    // For each subject vertex outside the clip polygon, project it to the
-    // nearest boundary edge. This is simpler than full polygon intersection
-    // and sufficient for Voronoi cells that mostly overlap the clip polygon.
-    let (bx0, by0, bx1, by1) = clip_poly.bbox();
-    let bbox_clipped = super::voronoi::clip_polygon(subject, bx0, by0, bx1, by1);
-    if bbox_clipped.len() < 3 {
-        return vec![];
+    // Proper Sutherland-Hodgman: clip the subject against each clip edge treated
+    // as a half-plane (keep the interior side). Because the Voronoi cells we feed
+    // in never overlap each other, intersecting each independently with the same
+    // set of half-planes keeps the resulting plots non-overlapping — unlike the
+    // old "project stray vertices to the nearest edge" hack, which distorted
+    // boundary cells into one another (buildings_no_overlap audit failure).
+    //
+    // The clip must wind counter-clockwise so "interior" = left of each edge.
+    let mut clip = clip_verts.to_vec();
+    if clip_poly.signed_area() < 0.0 {
+        clip.reverse();
     }
 
-    let mut result = Vec::new();
-    for p in &bbox_clipped {
-        if clip_poly.contains(*p) {
-            result.push(*p);
-        } else {
-            // Project to nearest clip polygon edge
-            let mut best_dist = f64::MAX;
-            let mut best_pt = *p;
-            let n = clip_verts.len();
-            for i in 0..n {
-                let a = clip_verts[i];
-                let b = clip_verts[(i + 1) % n];
-                let dx = b.x - a.x;
-                let dy = b.y - a.y;
-                let len_sq = dx * dx + dy * dy;
-                if len_sq < 1e-20 { continue; }
-                let t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / len_sq;
-                let t = t.clamp(0.0, 1.0);
-                let proj = Point::new(a.x + t * dx, a.y + t * dy);
-                let d = p.distance_sq(proj);
-                if d < best_dist {
-                    best_dist = d;
-                    best_pt = proj;
+    // cross product of (b-a) × (p-a): >0 means p is left of a→b (interior, CCW).
+    let inside = |a: Point, b: Point, p: Point| -> f64 {
+        (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x)
+    };
+    let intersect = |a: Point, b: Point, s: Point, e: Point| -> Point {
+        // Intersection of segment s→e with the infinite line a→b.
+        let d1 = Point::new(b.x - a.x, b.y - a.y);
+        let d2 = Point::new(e.x - s.x, e.y - s.y);
+        let denom = d1.x * d2.y - d1.y * d2.x;
+        if denom.abs() < 1e-12 {
+            return e;
+        }
+        let t = ((a.x - s.x) * d1.y - (a.y - s.y) * d1.x) / -denom;
+        Point::new(s.x + t * d2.x, s.y + t * d2.y)
+    };
+
+    let mut output = subject.to_vec();
+    let n = clip.len();
+    for i in 0..n {
+        if output.len() < 3 {
+            return vec![];
+        }
+        let a = clip[i];
+        let b = clip[(i + 1) % n];
+        let input = std::mem::take(&mut output);
+        let m = input.len();
+        for j in 0..m {
+            let cur = input[j];
+            let prev = input[(j + m - 1) % m];
+            let cur_in = inside(a, b, cur) >= -1e-9;
+            let prev_in = inside(a, b, prev) >= -1e-9;
+            if cur_in {
+                if !prev_in {
+                    output.push(intersect(a, b, prev, cur));
                 }
+                output.push(cur);
+            } else if prev_in {
+                output.push(intersect(a, b, prev, cur));
             }
-            result.push(best_pt);
         }
     }
 
-    // Deduplicate very close vertices
-    let mut deduped = Vec::new();
-    for p in &result {
-        if deduped.is_empty() || p.distance_sq(*deduped.last().unwrap()) > 0.01 {
+    // Deduplicate near-coincident vertices.
+    let mut deduped: Vec<Point> = Vec::with_capacity(output.len());
+    for p in &output {
+        if deduped.last().is_none_or(|last| p.distance_sq(*last) > 0.01) {
             deduped.push(*p);
         }
+    }
+    if deduped.len() >= 2 && deduped.first().unwrap().distance_sq(*deduped.last().unwrap()) <= 0.01 {
+        deduped.pop();
     }
 
     if deduped.len() < 3 { vec![] } else { deduped }
@@ -459,24 +482,41 @@ pub fn generate_buildings(cell: &Cell, block: &Block) -> BlockBuildings {
             continue;
         }
 
-        let mut seed_pts = Vec::with_capacity(plot_count);
+        // Seed points, enforcing a minimum spacing. Two coincident seeds produce
+        // a degenerate (skipped) bisector and hence two identical Voronoi cells —
+        // i.e. 100%-overlapping plots (buildings_no_overlap failure). Dropping
+        // near-duplicates keeps every plot distinct.
+        let mut seed_pts: Vec<Point> = Vec::with_capacity(plot_count);
         for p in 0..plot_count {
             let pt_seed = ha(cell.key ^ block.idx as u32 ^ sub_idx as u32 ^ p as u32 ^ 0x106754ed);
             let pt = point_in_polygon_seeded(&sub_poly, pt_seed);
-            seed_pts.push(pt);
+            if seed_pts.iter().all(|q| q.distance_sq(pt) > 1.0) {
+                seed_pts.push(pt);
+            }
+        }
+        if seed_pts.len() < 2 {
+            // Not enough distinct seeds for a subdivision — one plot for the sub.
+            let plot_seed = ha(cell.key ^ block.idx as u32 ^ sub_idx as u32 ^ 0x106754ed);
+            all_plots.push(build_plot(cell, block, &sub_poly, 0, plot_seed));
+            continue;
         }
 
-        let vcells = voronoi_cells(&seed_pts);
-        let (bx0, by0, bx1, by1) = sub_poly.bbox();
+        // Exact, non-overlapping Voronoi cells via half-plane intersection,
+        // bounded to the sub-polygon's bbox, then clipped to the sub-polygon.
+        let (sx0, sy0, sx1, sy1) = sub_poly.bbox();
 
-        for (p_idx, vcell) in vcells.iter().enumerate() {
-            if vcell.vertices.len() < 3 {
+        for p_idx in 0..seed_pts.len() {
+            let vcell = bounded_voronoi_cell(p_idx, &seed_pts, sx0, sy0, sx1, sy1);
+            if vcell.len() < 3 {
                 continue;
             }
 
-            // Clip Voronoi cell to the actual sub-polygon (not just bbox).
-            // Sutherland-Hodgman: clip against each edge of the sub-polygon.
-            let clipped = clip_polygon_to_polygon(&vcell.vertices, &sub_poly.vertices);
+            // Plot = sub-polygon ∩ Voronoi cell. The cell is convex, so it is the
+            // valid Sutherland-Hodgman *clip* region; the (possibly non-convex)
+            // sub-polygon is the subject. Doing it the other way round (clipping
+            // the cell by the non-convex sub-polygon) is incorrect for S-H and
+            // was producing overlapping plots.
+            let clipped = clip_polygon_to_polygon(&sub_poly.vertices, &vcell);
             if clipped.len() < 3 {
                 continue;
             }
@@ -499,6 +539,66 @@ pub fn generate_buildings(cell: &Cell, block: &Block) -> BlockBuildings {
     }
 }
 
+/// Pull any vertex of `poly` that lies outside `container` onto the nearest
+/// point of the container's boundary, so the result is contained. Used to
+/// absorb the few-wu float excursions the alley/PSLG pipeline can leave on
+/// boundary plots without distorting interior vertices.
+fn snap_into(poly: &Polygon, container: &Polygon) -> Polygon {
+    let verts = poly
+        .vertices
+        .iter()
+        .map(|&v| {
+            if container.contains(v) {
+                return v;
+            }
+            let mut best = v;
+            let mut best_d = f64::MAX;
+            let n = container.vertices.len();
+            for i in 0..n {
+                let a = container.vertices[i];
+                let b = container.vertices[(i + 1) % n];
+                let dx = b.x - a.x;
+                let dy = b.y - a.y;
+                let len_sq = dx * dx + dy * dy;
+                if len_sq < 1e-12 {
+                    continue;
+                }
+                let t = (((v.x - a.x) * dx + (v.y - a.y) * dy) / len_sq).clamp(0.0, 1.0);
+                let proj = Point::new(a.x + t * dx, a.y + t * dy);
+                let d = v.distance_sq(proj);
+                if d < best_d {
+                    best_d = d;
+                    best = proj;
+                }
+            }
+            best
+        })
+        .collect();
+    Polygon::new(verts)
+}
+
+/// Inset a polygon toward its area centroid by `frac` (0.18 = 18% setback).
+/// Safe for non-convex shapes: a vertex keeps its inset position only if that
+/// position stays inside the original polygon, otherwise it stays put — so the
+/// footprint is always contained in the original lot.
+fn inset_polygon(poly: &Polygon, frac: f64) -> Polygon {
+    let c = poly.centroid();
+    let s = 1.0 - frac;
+    Polygon::new(
+        poly.vertices
+            .iter()
+            .map(|&v| {
+                let iv = Point::new(c.x + (v.x - c.x) * s, c.y + (v.y - c.y) * s);
+                if poly.contains(iv) {
+                    iv
+                } else {
+                    v
+                }
+            })
+            .collect(),
+    )
+}
+
 /// Build a single plot with all derived properties.
 fn build_plot(
     cell: &Cell,
@@ -509,6 +609,16 @@ fn build_plot(
 ) -> BuildingPlot {
     let cfg = config();
     let seeds = ObjectSeeds::from_seed(ha(plot_seed));
+
+    // Inset the footprint from the lot boundary (building setback). Besides being
+    // realistic, this guarantees adjacent buildings — including across a shared
+    // block boundary — don't touch/overlap (buildings_no_overlap invariant).
+    // Then snap any vertex that the alley/PSLG float error left a few wu outside
+    // the block back onto the block boundary, so the footprint is contained
+    // (buildings_in_block invariant).
+    let footprint = snap_into(&inset_polygon(polygon, 0.18), &block.polygon);
+    let polygon = &footprint;
+
     let centroid = polygon.centroid();
     let area = polygon.area();
 

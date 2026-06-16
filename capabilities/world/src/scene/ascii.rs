@@ -22,7 +22,10 @@ pub struct AsciiConfig {
 
 impl Default for AsciiConfig {
     fn default() -> Self {
-        Self { cols: 100, rows: 48 }
+        Self {
+            cols: 100,
+            rows: 48,
+        }
     }
 }
 

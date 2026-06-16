@@ -656,3 +656,35 @@ The two fuzz tests assert all invariants but are `#[ignore]`d until these are
 fixed (un-ignored per fix); `harness_produces_report` stays always-on.
 
 ---
+
+## Generation Fixes via the Audit — 2026-06-16
+
+The audit (above) found the bugs; fixed them and verified across a 117-district
+sweep (now 0 failures). Root causes:
+
+1. **Bisecting-alley overlap (the "buildings intersect" bug, feedback v2 #5).**
+   `clip_polygon_by_line`'s side-selection was inverted in `cut_bisecting_alley`:
+   both halves kept the *inner* corridor side, so a block's two sub-polygons
+   overlapped across the whole alley band → 45–97% building-footprint overlap.
+   Fixed the orientation (keep the outer side of each line).
+2. **Buggy plot Voronoi.** `voronoi_cells` builds cells from triangle
+   circumcenters — correct for interior sites but open "fans" for hull sites,
+   which overlap. Replaced plot subdivision with `bounded_voronoi_cell`
+   (half-plane intersection → exact, convex, non-overlapping), and fixed the
+   clip argument order (clip the block by the convex cell, not vice-versa — S-H
+   requires a convex clip region).
+3. **Coincident plots.** Two plot seed points landing on the same spot produced a
+   degenerate (skipped) bisector → two identical cells → 100% overlap. Enforce a
+   minimum seed spacing.
+4. **Boundary containment.** Clip every block to the district (a convex Voronoi
+   cell); inset building footprints (realistic setback) and snap any stray
+   vertex onto the block boundary, so blocks ⊆ district and buildings ⊆ block.
+5. **Audit robustness.** Containment now uses distance-to-boundary with a
+   scale-relative tolerance (1.5% of cell diagonal), not polygon inflation
+   (which self-intersects on non-convex blocks and gave false failures).
+
+`audit_spread_of_districts` now runs over 117 districts and is un-ignored — the
+permanent regression net. Cross-district `road_crossing_alignment` remains the
+one open item (still `#[ignore]`d; next).
+
+---

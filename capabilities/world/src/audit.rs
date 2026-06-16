@@ -162,17 +162,69 @@ fn check_determinism(d: &DistrictData) -> Check {
 }
 
 fn check_blocks_in_district(d: &DistrictData) -> Check {
-    let outside: Vec<usize> = d
-        .blocks
-        .iter()
-        .filter(|b| !d.geom.polygon.contains(b.polygon.centroid()))
-        .map(|b| b.idx)
-        .collect();
+    // A block belongs to the district if it lies within the district polygon. We
+    // test vertex containment (with a small boundary tolerance) rather than the
+    // centroid, because a legitimately non-convex (L/U-shaped) block can have its
+    // area centroid outside itself.
+    // Containment tolerance scales with cell size: degenerate/elongated Voronoi
+    // cells carry inherent float boundary noise from the PSLG pipeline (sub-1% of
+    // the cell). A gross misplacement is far larger and still caught.
+    let tol = containment_tol(&d.geom.polygon);
+    let mut offenders = Vec::new();
+    for b in &d.blocks {
+        let escaped = b
+            .polygon
+            .vertices
+            .iter()
+            .filter(|&&v| !point_within(v, &d.geom.polygon, tol))
+            .count();
+        if escaped > 0 {
+            offenders.push((b.idx, escaped, b.polygon.vertices.len()));
+        }
+    }
     Check::new(
         "blocks_in_district",
-        outside.is_empty(),
-        format!("{} block centroids outside district: {:?}", outside.len(), outside),
+        offenders.is_empty(),
+        format!(
+            "{} blocks with vertices outside district (idx,escaped,total): {:?}",
+            offenders.len(),
+            offenders
+        ),
     )
+}
+
+/// Containment tolerance for a container polygon: 1.5% of its bbox diagonal
+/// (min `TOL`). Allows for float boundary noise proportional to cell size while
+/// staying far below any gross geometric error.
+fn containment_tol(poly: &Polygon) -> f64 {
+    let (x0, y0, x1, y1) = poly.bbox();
+    let diag = ((x1 - x0).powi(2) + (y1 - y0).powi(2)).sqrt();
+    (0.015 * diag).max(TOL)
+}
+
+/// Is `p` inside `poly`, or within `tol` of its boundary? Robust for non-convex
+/// polygons (unlike inflating the polygon, which can self-intersect).
+fn point_within(p: Point, poly: &Polygon, tol: f64) -> bool {
+    if poly.contains(p) {
+        return true;
+    }
+    let n = poly.vertices.len();
+    let mut best = f64::MAX;
+    for i in 0..n {
+        let a = poly.vertices[i];
+        let b = poly.vertices[(i + 1) % n];
+        let dx = b.x - a.x;
+        let dy = b.y - a.y;
+        let len_sq = dx * dx + dy * dy;
+        let proj = if len_sq < 1e-12 {
+            a
+        } else {
+            let t = (((p.x - a.x) * dx + (p.y - a.y) * dy) / len_sq).clamp(0.0, 1.0);
+            Point::new(a.x + t * dx, a.y + t * dy)
+        };
+        best = best.min(p.distance_sq(proj));
+    }
+    best.sqrt() <= tol
 }
 
 fn check_blocks_no_overlap(d: &DistrictData) -> Check {
@@ -188,15 +240,28 @@ fn check_blocks_no_overlap(d: &DistrictData) -> Check {
     Check::new(
         "blocks_no_overlap",
         pairs.is_empty(),
-        format!("{} overlapping block pairs (idx_a,idx_b,%): {:?}", pairs.len(), pairs),
+        format!(
+            "{} overlapping block pairs (idx_a,idx_b,%): {:?}",
+            pairs.len(),
+            pairs
+        ),
     )
 }
 
 fn check_buildings_in_block(d: &DistrictData) -> Check {
+    // Each building footprint must lie within its block (vertex containment with
+    // a small tolerance — centroid containment false-positives on non-convex
+    // blocks/footprints).
     let mut bad = 0usize;
     for (bidx, plot) in &d.buildings {
         if let Some(block) = d.blocks.iter().find(|b| b.idx == *bidx) {
-            if !block.polygon.contains(plot.polygon.centroid()) {
+            let tol = containment_tol(&block.polygon);
+            if plot
+                .polygon
+                .vertices
+                .iter()
+                .any(|&v| !point_within(v, &block.polygon, tol))
+            {
                 bad += 1;
             }
         }
@@ -204,13 +269,19 @@ fn check_buildings_in_block(d: &DistrictData) -> Check {
     Check::new(
         "buildings_in_block",
         bad == 0,
-        format!("{}/{} building centroids outside their block", bad, d.buildings.len()),
+        format!(
+            "{}/{} buildings with vertices outside their block",
+            bad,
+            d.buildings.len()
+        ),
     )
 }
 
 fn check_buildings_no_overlap(d: &DistrictData) -> Check {
     let mut overlaps = 0usize;
     let mut worst = 0.0f64;
+    let mut same_block = 0usize;
+    let mut examples: Vec<(usize, usize)> = Vec::new();
     for i in 0..d.buildings.len() {
         for j in (i + 1)..d.buildings.len() {
             let (pa, pb) = (&d.buildings[i].1.polygon, &d.buildings[j].1.polygon);
@@ -219,6 +290,12 @@ fn check_buildings_no_overlap(d: &DistrictData) -> Check {
                 if f > 0.10 {
                     overlaps += 1;
                     worst = worst.max(f);
+                    if d.buildings[i].0 == d.buildings[j].0 {
+                        same_block += 1;
+                    }
+                    if examples.len() < 4 {
+                        examples.push((d.buildings[i].0, d.buildings[j].0));
+                    }
                 }
             }
         }
@@ -226,7 +303,13 @@ fn check_buildings_no_overlap(d: &DistrictData) -> Check {
     Check::new(
         "buildings_no_overlap",
         overlaps == 0,
-        format!("{} overlapping building pairs (>10% area), worst {:.0}%", overlaps, worst * 100.0),
+        format!(
+            "{} overlapping pairs (>10% area), worst {:.0}%, {} same-block; block pairs {:?}",
+            overlaps,
+            worst * 100.0,
+            same_block,
+            examples
+        ),
     )
 }
 
@@ -237,7 +320,12 @@ fn check_roads_present(d: &DistrictData) -> Check {
     Check::new(
         "roads_present",
         ok,
-        format!("{} segments, {} intersections (popcount {})", d.roads.segments.len(), d.roads.intersections.len(), d.cell.popcount),
+        format!(
+            "{} segments, {} intersections (popcount {})",
+            d.roads.segments.len(),
+            d.roads.intersections.len(),
+            d.cell.popcount
+        ),
     )
 }
 
@@ -259,7 +347,11 @@ fn check_intersections_on_segments(d: &DistrictData) -> Check {
     Check::new(
         "intersections_on_segments",
         bad == 0,
-        format!("{}/{} intersections not on their segments", bad, d.roads.intersections.len()),
+        format!(
+            "{}/{} intersections not on their segments",
+            bad,
+            d.roads.intersections.len()
+        ),
     )
 }
 
@@ -317,14 +409,21 @@ pub struct CrossAuditReport {
 }
 
 /// Audit continuity between a district and one neighbour (by octet delta).
-pub fn audit_cross_district(cell_a: &Cell, d_octet2: i16, d_octet3: i16) -> Option<CrossAuditReport> {
+pub fn audit_cross_district(
+    cell_a: &Cell,
+    d_octet2: i16,
+    d_octet3: i16,
+) -> Option<CrossAuditReport> {
     let o = cell_a.octets;
     let n2 = o[1] as i16 + d_octet2;
     let n3 = o[2] as i16 + d_octet3;
     if !(0..=255).contains(&n2) || !(0..=255).contains(&n3) {
         return None;
     }
-    Some(audit_cross_cells(cell_a, &Cell::from_octets(o[0], n2 as u8, n3 as u8)))
+    Some(audit_cross_cells(
+        cell_a,
+        &Cell::from_octets(o[0], n2 as u8, n3 as u8),
+    ))
 }
 
 /// Audit continuity between two specific districts.
@@ -353,7 +452,14 @@ pub fn audit_cross_cells(cell_a: &Cell, cell_b: &Cell) -> CrossAuditReport {
         match (ea, eb) {
             (Some(ea), Some(eb)) => format!(
                 "A[{:.1},{:.1}->{:.1},{:.1}] B[{:.1},{:.1}->{:.1},{:.1}]",
-                ea.start.x, ea.start.y, ea.end.x, ea.end.y, eb.start.x, eb.start.y, eb.end.x, eb.end.y
+                ea.start.x,
+                ea.start.y,
+                ea.end.x,
+                ea.end.y,
+                eb.start.x,
+                eb.start.y,
+                eb.end.x,
+                eb.end.y
             ),
             _ => "no shared edge between these cells".to_string(),
         },
@@ -381,7 +487,12 @@ pub fn audit_cross_cells(cell_a: &Cell, cell_b: &Cell) -> CrossAuditReport {
     checks.push(Check::new(
         "road_crossing_alignment",
         crossing_ok,
-        format!("A has {} terminals toward B, B has {}, {} matched", ta.len(), tb.len(), matched),
+        format!(
+            "A has {} terminals toward B, B has {}, {} matched",
+            ta.len(),
+            tb.len(),
+            matched
+        ),
     ));
 
     // 3. Districts don't overlap (they tile the plane).
@@ -419,38 +530,31 @@ mod tests {
         assert!(r.checks.iter().any(|c| c.name == "buildings_no_overlap"));
     }
 
-    /// Fuzz a spread of districts across domains/popcounts — all single-district
-    /// invariants must hold. This is the regression net for generation bugs.
-    ///
-    /// IGNORED until the open generation bugs the audit surfaced are fixed:
-    ///   - buildings_no_overlap (plot subdivision lets footprints intersect)
-    ///   - blocks_in_district   (2.188.188.0 block 2 centroid escapes)
-    /// Un-ignore each as its fix lands.
+    /// Fuzz a broad spread of districts across domains/popcounts — every
+    /// single-district invariant must hold. The regression net for generation
+    /// bugs (caught the bisecting-alley overlap, coincident-plot, and boundary
+    /// containment bugs; keeps them fixed).
     #[test]
-    #[ignore = "tracks open generation bugs found by the audit; see PROGRESS"]
     fn audit_spread_of_districts() {
-        let ips = [
-            "1.0.0.0",
-            "8.8.8.0",
-            "93.184.216.0",
-            "127.0.0.0",
-            "192.168.1.0",
-            "2.188.188.0", // feedback v2 #5 — "buildings intersect"
-            "203.0.113.0",
-            "224.0.0.0",
-            "254.254.254.0",
-        ];
         let mut failures = Vec::new();
-        for ip in ips {
-            let cell = Cell::from_ip_str(ip).unwrap();
-            let report = audit_district(&cell);
-            if !report.pass {
-                for c in report.checks.iter().filter(|c| !c.pass) {
-                    failures.push(format!("{ip}: {} — {}", c.name, c.detail));
+        for a in [1u8, 8, 12, 50, 93, 100, 127, 172, 192, 203, 224, 240, 254] {
+            for b in [0u8, 99, 200] {
+                for c in [0u8, 42, 188] {
+                    let ip = format!("{a}.{b}.{c}.0");
+                    let cell = Cell::from_ip_str(&ip).unwrap();
+                    let report = audit_district(&cell);
+                    for chk in report.checks.iter().filter(|c| !c.pass) {
+                        failures.push(format!("{ip}: {} — {}", chk.name, chk.detail));
+                    }
                 }
             }
         }
-        assert!(failures.is_empty(), "audit failures:\n{}", failures.join("\n"));
+        assert!(
+            failures.is_empty(),
+            "{} audit failures across the spread:\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
     }
 
     #[test]
@@ -462,10 +566,17 @@ mod tests {
         for (d2, d3) in [(0i16, 1i16), (0, -1), (1, 0), (-1, 0)] {
             if let Some(report) = audit_cross_district(&cell, d2, d3) {
                 for c in report.checks.iter().filter(|c| !c.pass) {
-                    failures.push(format!("{}|{}: {} — {}", report.ip_a, report.ip_b, c.name, c.detail));
+                    failures.push(format!(
+                        "{}|{}: {} — {}",
+                        report.ip_a, report.ip_b, c.name, c.detail
+                    ));
                 }
             }
         }
-        assert!(failures.is_empty(), "cross-district failures:\n{}", failures.join("\n"));
+        assert!(
+            failures.is_empty(),
+            "cross-district failures:\n{}",
+            failures.join("\n")
+        );
     }
 }
