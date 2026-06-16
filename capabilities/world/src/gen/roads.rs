@@ -87,23 +87,35 @@ fn edge_crossings(
     let max_by_length = (edge.length / cfg.min_road_spacing).floor() as u32;
     let crossing_count = 1.max(base_count.min(max_by_length));
 
+    // Both districts must place crossings at the SAME world points on the shared
+    // edge so roads connect across the border. They share `eh` (symmetric) and
+    // `crossing_count`, but each traverses the edge in its own polygon-winding
+    // direction — so the same `t` would map to mirrored positions. Parameterise
+    // from a canonically-ordered edge (lexicographically smaller endpoint first)
+    // so the world position is identical for both sides; keep a district-local
+    // `t` for this district's own perimeter ordering.
+    let flipped = (edge.start.x, edge.start.y) > (edge.end.x, edge.end.y);
+    let (c0, c1) = if flipped {
+        (edge.end, edge.start)
+    } else {
+        (edge.start, edge.end)
+    };
+
     let mut terminals = Vec::new();
     for i in 0..crossing_count {
         let seg_start = i as f64 / (crossing_count + 1) as f64;
         let seg_end = (i + 1) as f64 / (crossing_count + 1) as f64;
         let byte = ((eh >> (i * 8)) & 0xFF) as f64;
-        let t = seg_start + (byte / 255.0) * (seg_end - seg_start);
+        let tc = seg_start + (byte / 255.0) * (seg_end - seg_start);
 
-        let position = Point::new(
-            edge.start.x + t * (edge.end.x - edge.start.x),
-            edge.start.y + t * (edge.end.y - edge.start.y),
-        );
+        let position = Point::new(c0.x + tc * (c1.x - c0.x), c0.y + tc * (c1.y - c0.y));
+        let t_local = if flipped { 1.0 - tc } else { tc };
 
         terminals.push(Terminal {
             position,
             edge_idx: edge.edge_idx,
-            perim_order: edge.edge_idx as f64 + t,
-            t,
+            perim_order: edge.edge_idx as f64 + t_local,
+            t: t_local,
             neighbor_key: edge.neighbor_key,
         });
     }

@@ -288,8 +288,17 @@ pub fn extract_blocks(
     // without disturbing interior blocks.
     for b in &mut blocks {
         let clipped = super::voronoi::clip_to_convex(&b.polygon.vertices, &boundary.vertices);
-        if clipped.len() >= 3 {
-            b.polygon = Polygon::new(clipped);
+        let base = if clipped.len() >= 3 {
+            clipped
+        } else {
+            b.polygon.vertices.clone()
+        };
+        // Safety net for near-degenerate (non-convex) district cells where the
+        // convex clip can't fully contain: snap any still-outside vertex onto the
+        // district boundary.
+        let snapped = super::voronoi::snap_into(&base, boundary);
+        if snapped.len() >= 3 {
+            b.polygon = Polygon::new(snapped);
         }
     }
 

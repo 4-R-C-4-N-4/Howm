@@ -197,6 +197,42 @@ pub fn voronoi_cells(pts: &[Point]) -> Vec<VoronoiCell> {
         .collect()
 }
 
+/// Project any vertex of `verts` lying outside `container` onto the nearest
+/// point of the container's boundary. Robust for non-convex containers (used as
+/// a containment safety-net after clipping, e.g. for boundary blocks against a
+/// near-degenerate district polygon).
+pub fn snap_into(verts: &[Point], container: &Polygon) -> Vec<Point> {
+    verts
+        .iter()
+        .map(|&v| {
+            if container.contains(v) {
+                return v;
+            }
+            let n = container.vertices.len();
+            let mut best = v;
+            let mut best_d = f64::MAX;
+            for i in 0..n {
+                let a = container.vertices[i];
+                let b = container.vertices[(i + 1) % n];
+                let dx = b.x - a.x;
+                let dy = b.y - a.y;
+                let len_sq = dx * dx + dy * dy;
+                if len_sq < 1e-12 {
+                    continue;
+                }
+                let t = (((v.x - a.x) * dx + (v.y - a.y) * dy) / len_sq).clamp(0.0, 1.0);
+                let proj = Point::new(a.x + t * dx, a.y + t * dy);
+                let d = v.distance_sq(proj);
+                if d < best_d {
+                    best_d = d;
+                    best = proj;
+                }
+            }
+            best
+        })
+        .collect()
+}
+
 /// Clip `subject` to the convex polygon `convex` via Sutherland-Hodgman. Correct
 /// only when `convex` is convex (Voronoi cells and district polygons are). The
 /// clip is reoriented to CCW internally. Returns the intersection, or empty if

@@ -558,18 +558,20 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "tracks open cross-district road-terminal misalignment; see PROGRESS"]
     fn audit_cross_district_continuity() {
-        // Check a district against its 4 axis neighbours.
-        let cell = Cell::from_ip_str("93.184.216.0").unwrap();
+        // Several districts vs their 4 axis neighbours — shared edges agree, road
+        // crossings align across the border, and districts don't overlap.
         let mut failures = Vec::new();
-        for (d2, d3) in [(0i16, 1i16), (0, -1), (1, 0), (-1, 0)] {
-            if let Some(report) = audit_cross_district(&cell, d2, d3) {
-                for c in report.checks.iter().filter(|c| !c.pass) {
-                    failures.push(format!(
-                        "{}|{}: {} — {}",
-                        report.ip_a, report.ip_b, c.name, c.detail
-                    ));
+        for ip in ["93.184.216.0", "8.8.8.0", "1.0.0.0", "203.0.113.0", "100.64.0.0"] {
+            let cell = Cell::from_ip_str(ip).unwrap();
+            for (d2, d3) in [(0i16, 1i16), (0, -1), (1, 0), (-1, 0)] {
+                if let Some(report) = audit_cross_district(&cell, d2, d3) {
+                    for c in report.checks.iter().filter(|c| !c.pass) {
+                        failures.push(format!(
+                            "{}|{}: {} — {}",
+                            report.ip_a, report.ip_b, c.name, c.detail
+                        ));
+                    }
                 }
             }
         }

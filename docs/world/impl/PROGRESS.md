@@ -688,3 +688,26 @@ permanent regression net. Cross-district `road_crossing_alignment` remains the
 one open item (still `#[ignore]`d; next).
 
 ---
+
+## Cross-District Continuity Fix — 2026-06-16
+
+`road_crossing_alignment` audit failure: neighbouring districts placed equal
+*counts* of road crossings on their shared edge but at mirrored *positions*, so
+roads didn't connect across the border. Both sides share the symmetric edge
+hash and crossing count, but each traverses the shared edge in its own polygon
+winding — so the same `t` mapped to opposite ends. Fixed `edge_crossings` to
+parameterise the crossing position from a **canonically-ordered** edge
+(lexicographically smaller endpoint first); both districts now derive identical
+world positions. A district-local `t` is kept for this district's own perimeter
+ordering.
+
+The road shift moved a couple of degenerate triangular boundary blocks slightly
+past the district edge; added a `snap_into` safety net (project still-outside
+block vertices onto the district boundary) for near-degenerate non-convex
+district cells where the convex clip can't fully contain.
+
+Both audit regression tests are now active and green:
+`audit_spread_of_districts` (117 districts) and `audit_cross_district_continuity`
+(5 districts × 4 neighbours). 166 tests pass, 0 ignored.
+
+---
