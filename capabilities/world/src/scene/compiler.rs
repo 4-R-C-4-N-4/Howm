@@ -14,6 +14,7 @@ use crate::gen::conveyances::{Conveyance, ConveyanceType};
 use crate::gen::creatures::Creature;
 use crate::gen::fixtures::Fixture;
 use crate::gen::flora::Flora;
+use crate::gen::home::HomeStructure;
 use crate::hdl::mapping;
 use crate::hdl::traits::DescriptionGraph;
 
@@ -95,6 +96,26 @@ pub fn compile_building(plot: &BuildingPlot, palette: &AestheticPalette) -> Enti
     Entity {
         id: format!("building_{}", plot.object_id),
         transform,
+        geometry: geo,
+        material: mat,
+        velocity: None,
+        description: Some(graph),
+    }
+}
+
+/// Compile a peer's home structure into an Astral Entity (spaces §1.2). Geometry
+/// comes from the archetype form; the transform is scaled by the home's footprint
+/// radius and height so distinct archetypes read at the right size.
+pub fn compile_home(home: &HomeStructure, palette: &AestheticPalette) -> Entity {
+    let graph = mapping::map_home(home, palette);
+    let (geo, scale) = geometry::resolve_geometry(&graph);
+    let mat = material::resolve_material(&graph, palette.hue);
+    let r = home.footprint_radius.max(1.0);
+    let h = (home.height / 3.0).max(1.0);
+    Entity {
+        id: format!("home_{:08x}", home.peer_id_u32),
+        transform: Transform::at(home.position.x, home.height * 0.5, home.position.y)
+            .with_scale(scale.x * r, scale.y * h, scale.z * r),
         geometry: geo,
         material: mat,
         velocity: None,

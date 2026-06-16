@@ -584,7 +584,16 @@ async fn neighborhood_map_handler(AxumPath(ip): AxumPath<String>) -> Response {
 
 // ─── Astral Scene (compiled) ───────────────────────────────────────────────
 
-async fn district_scene_handler(AxumPath(ip): AxumPath<String>) -> Response {
+#[derive(serde::Deserialize)]
+struct SceneParams {
+    /// Comma-separated peer ids (hex or base64) whose homes to place in the scene.
+    homes: Option<String>,
+}
+
+async fn district_scene_handler(
+    AxumPath(ip): AxumPath<String>,
+    axum::extract::Query(params): axum::extract::Query<SceneParams>,
+) -> Response {
     let cell = match parse_cell(&ip) {
         Some(c) => c,
         None => return bad_request(),
@@ -594,7 +603,17 @@ async fn district_scene_handler(AxumPath(ip): AxumPath<String>) -> Response {
     let now_ms = current_time_ms();
     let atmo = gen::atmosphere::compute_atmosphere(&cell, now_ms);
 
-    let astral_scene = scene::compiler::compile_district_scene(&cell, &palette, &[], &atmo);
+    let mut astral_scene = scene::compiler::compile_district_scene(&cell, &palette, &[], &atmo);
+
+    // Optionally place peer homes into the rendered district (spaces §1.2).
+    if let Some(homes) = params.homes {
+        for pid in homes.split(',').filter(|s| !s.is_empty()).filter_map(decode_peer_id) {
+            let home = gen::home::place_home_in_cell(&cell, &pid);
+            astral_scene
+                .entities
+                .push(scene::compiler::compile_home(&home, &palette));
+        }
+    }
 
     (StatusCode::OK, axum::Json(astral_scene)).into_response()
 }

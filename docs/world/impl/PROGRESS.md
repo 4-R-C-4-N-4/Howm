@@ -482,3 +482,16 @@ draws them) is the next step — it needs the peer→home-IP mapping that arrive
 with the multiplayer phase.
 
 ---
+
+### E1 follow-up: homes renderable in `/scene`
+
+`scene::compiler::compile_home` turns a `HomeStructure` into an Astral entity
+(archetype→geometry, district-palette material, footprint/height scale). The
+scene endpoint accepts `GET /district/:ip/scene?homes=<id1,id2,…>` (hex/base64)
+and injects those peers' homes into the rendered district. Verified: a baseline
+district scene gains exactly one entity per requested home, positioned at the
+placement coordinates. Auto-populating the local peer's + visible peers' homes
+(without the explicit query param) still awaits the peer→home-IP mapping from
+the multiplayer phase.
+
+---
