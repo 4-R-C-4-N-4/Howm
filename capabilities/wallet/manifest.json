@@ -1,0 +1,43 @@
+{
+  "name": "wallet",
+  "version": "0.1.0",
+  "description": "Crypto wallet and payment gate for peer-to-peer transactions",
+  "binary": "wallet",
+  "port": 7006,
+  "api": {
+    "base_path": "/cap/wallet",
+    "endpoints": [
+      { "name": "health", "method": "GET", "path": "/health" },
+      { "name": "list_wallets", "method": "GET", "path": "/wallets" },
+      { "name": "create_wallet", "method": "POST", "path": "/wallets" },
+      { "name": "delete_wallet", "method": "DELETE", "path": "/wallets/:id" },
+      { "name": "get_balance", "method": "GET", "path": "/wallets/:id/balance" },
+      { "name": "set_default", "method": "POST", "path": "/wallets/:id/default" },
+      { "name": "send_payment", "method": "POST", "path": "/wallets/:id/send" },
+      { "name": "list_transactions", "method": "GET", "path": "/transactions" },
+      { "name": "get_transaction", "method": "GET", "path": "/transactions/:id" },
+      { "name": "create_invoice", "method": "POST", "path": "/invoices" },
+      { "name": "list_invoices", "method": "GET", "path": "/invoices" },
+      { "name": "get_invoice", "method": "GET", "path": "/invoices/:id" },
+      { "name": "check_invoice", "method": "POST", "path": "/invoices/:id/check" },
+      { "name": "list_subscriptions", "method": "GET", "path": "/subscriptions" },
+      { "name": "cancel_subscription", "method": "POST", "path": "/subscriptions/:id/cancel" },
+      { "name": "renew_subscription", "method": "POST", "path": "/subscriptions/:id/renew" },
+      { "name": "list_receipts", "method": "GET", "path": "/receipts" },
+      { "name": "get_receipt", "method": "GET", "path": "/receipts/:id" }
+    ]
+  },
+  "permissions": {
+    "visibility": "private"
+  },
+  "ui": {
+    "label": "Wallet",
+    "icon": "wallet",
+    "entry": "/ui/",
+    "style": "nav"
+  },
+  "resources": {
+    "cpu": "low",
+    "memory": "64MB"
+  }
+}
