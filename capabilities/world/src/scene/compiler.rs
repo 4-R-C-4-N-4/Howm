@@ -15,6 +15,7 @@ use crate::gen::creatures::Creature;
 use crate::gen::fixtures::Fixture;
 use crate::gen::flora::Flora;
 use crate::gen::home::HomeStructure;
+use crate::gen::inside::Inside;
 use crate::hdl::mapping;
 use crate::hdl::traits::DescriptionGraph;
 
@@ -120,6 +121,125 @@ pub fn compile_home(home: &HomeStructure, palette: &AestheticPalette) -> Entity 
         material: mat,
         velocity: None,
         description: Some(graph),
+    }
+}
+
+/// A plain axis-aligned box entity (interior architecture: floors, walls, doors).
+fn box_entity(id: String, x: f64, y: f64, z: f64, sx: f64, sy: f64, sz: f64, mat: Material) -> Entity {
+    Entity {
+        id,
+        transform: Transform::at(x, y, z),
+        geometry: Geometry::Box {
+            size: Vec3::new(sx, sy, sz),
+        },
+        material: mat,
+        velocity: None,
+        description: None,
+    }
+}
+
+/// Compile a peer's Inside into a renderable Astral scene (spaces §2): each room
+/// becomes floor + ceiling + four walls, doors are emissive markers on the hall
+/// perimeter, and a point light sits near each room's ceiling. The camera starts
+/// in the entry hall. Materials are derived from the district palette.
+pub fn compile_inside_scene(inside: &Inside, palette: &AestheticPalette) -> Scene {
+    let hue = palette.hue;
+    let wall_mat = || Material {
+        base_color: Color::from_hsl(hue, 0.18, 0.32),
+        brightness: 0.45,
+        emissive: None,
+        emission_color: None,
+        roughness: 0.8,
+        reflectivity: 0.05,
+        transparency: None,
+        glyph_style: Some("dense".into()),
+        motion_behavior: None,
+        displacement: None,
+    };
+    let floor_mat = || Material {
+        base_color: Color::from_hsl(hue, 0.15, 0.22),
+        brightness: 0.4,
+        emissive: None,
+        emission_color: None,
+        roughness: 0.9,
+        reflectivity: 0.03,
+        transparency: None,
+        glyph_style: Some("dense".into()),
+        motion_behavior: None,
+        displacement: None,
+    };
+
+    let t = 0.2; // floor/wall thickness
+    let mut entities = Vec::new();
+    let mut lights = Vec::new();
+
+    for room in &inside.rooms {
+        let (cx, cz) = (room.position.x, room.position.y);
+        let (w, d, h) = (room.width, room.depth, room.height);
+        let n = &room.name;
+        entities.push(box_entity(format!("{n}_floor"), cx, 0.0, cz, w, t, d, floor_mat()));
+        entities.push(box_entity(format!("{n}_ceil"), cx, h, cz, w, t, d, floor_mat()));
+        entities.push(box_entity(format!("{n}_wn"), cx, h / 2.0, cz - d / 2.0, w, h, t, wall_mat()));
+        entities.push(box_entity(format!("{n}_ws"), cx, h / 2.0, cz + d / 2.0, w, h, t, wall_mat()));
+        entities.push(box_entity(format!("{n}_we"), cx + w / 2.0, h / 2.0, cz, t, h, d, wall_mat()));
+        entities.push(box_entity(format!("{n}_ww"), cx - w / 2.0, h / 2.0, cz, t, h, d, wall_mat()));
+        lights.push(Light {
+            light_type: "point".into(),
+            position: Some(Vec3::new(cx, h - 0.5, cz)),
+            direction: None,
+            intensity: 1.5,
+            color: Color::from_hsl((hue + 30.0).rem_euclid(360.0), 0.5, 0.7),
+            range: Some(w.max(d) * 1.5),
+        });
+    }
+
+    // Doors — emissive translucent markers on the hall perimeter.
+    let door_hue = (hue + 40.0).rem_euclid(360.0);
+    for (i, door) in inside.doors.iter().enumerate() {
+        let dmat = Material {
+            base_color: Color::from_hsl(door_hue, 0.4, 0.6),
+            brightness: 0.7,
+            emissive: Some(0.5),
+            emission_color: Some(Color::from_hsl(door_hue, 0.5, 0.7)),
+            roughness: 0.4,
+            reflectivity: 0.1,
+            transparency: Some(0.5),
+            glyph_style: Some("round".into()),
+            motion_behavior: None,
+            displacement: None,
+        };
+        entities.push(box_entity(
+            format!("door_{i}"),
+            door.position.x,
+            door.height / 2.0,
+            door.position.y,
+            door.width,
+            door.height,
+            0.3,
+            dmat,
+        ));
+    }
+
+    let environment = Environment {
+        ambient_light: 0.35,
+        background_color: Color::from_hsl(hue, 0.1, 0.05),
+        fog_density: None,
+        fog_color: None,
+    };
+    let camera = Camera {
+        position: Vec3::new(0.0, 1.6, 0.0),
+        rotation: Vec3::new(0.0, 0.0, 0.0),
+        fov: 70.0,
+        near: 0.1,
+        far: 200.0,
+    };
+
+    Scene {
+        time: 0.0,
+        camera,
+        environment,
+        lights,
+        entities,
     }
 }
 

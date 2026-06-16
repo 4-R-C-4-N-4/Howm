@@ -525,3 +525,16 @@ Installed-cap auto-detection for the local node (vs the explicit `?caps=`) also
 pending.
 
 ---
+
+### E2 follow-up: Inside renderable scene
+
+`scene::compiler::compile_inside_scene` turns an `Inside` into a renderable
+Astral scene — each room becomes floor + ceiling + four walls, doors are
+emissive markers on the hall perimeter, a point light sits in each room, and the
+camera starts in the entry hall. Endpoint `GET /district/:ip/inside/:peer_id/scene`.
+Verified: 5-cap Inside → 41 entities (24 walls, 12 floor/ceiling, 5 doors) + 6
+lights, valid Astral Scene JSON. (Browser entry wiring to load an Inside via a
+`?inside=<peer_id>` URL param is the remaining small step; the scene JSON is
+already a valid Astral scene the existing provider can consume.)
+
+---

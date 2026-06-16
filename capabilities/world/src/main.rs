@@ -508,6 +508,34 @@ async fn district_inside_handler(
     (StatusCode::OK, axum::Json(inside)).into_response()
 }
 
+/// Renderable Astral scene for a peer's Inside (rooms → walls/floors/doors).
+async fn district_inside_scene_handler(
+    AxumPath((ip, peer_id)): AxumPath<(String, String)>,
+    axum::extract::Query(params): axum::extract::Query<InsideParams>,
+) -> Response {
+    let cell = match parse_cell(&ip) {
+        Some(c) => c,
+        None => return bad_request(),
+    };
+    let pid = match decode_peer_id(&peer_id) {
+        Some(p) => p,
+        None => return (StatusCode::BAD_REQUEST, "Invalid peer id").into_response(),
+    };
+    let caps: Vec<String> = match params.caps {
+        Some(s) => s
+            .split(',')
+            .filter(|x| !x.is_empty())
+            .map(|x| x.to_string())
+            .collect(),
+        None => DEFAULT_INSIDE_CAPS.iter().map(|s| s.to_string()).collect(),
+    };
+
+    let palette = gen::aesthetic::AestheticPalette::from_cell(&cell);
+    let inside = gen::inside::generate_inside(&cell, &pid, &caps, params.tunnels.unwrap_or(0));
+    let scene = scene::compiler::compile_inside_scene(&inside, &palette);
+    (StatusCode::OK, axum::Json(scene)).into_response()
+}
+
 // ─── District prefetch (lightweight seed bundle) ────────────────────────────
 //
 // Declared in manifest.json as `district_prefetch`. Returns the center cell
@@ -712,6 +740,10 @@ async fn main() -> anyhow::Result<()> {
                 .route(
                     "/district/{ip}/inside/{peer_id}",
                     get(district_inside_handler),
+                )
+                .route(
+                    "/district/{ip}/inside/{peer_id}/scene",
+                    get(district_inside_scene_handler),
                 )
                 .route("/district/{ip}/scene", get(district_scene_handler))
                 .route("/district/{ip}/map", get(district_map_handler))
