@@ -16,6 +16,7 @@ use crate::gen::fixtures::Fixture;
 use crate::gen::flora::Flora;
 use crate::gen::home::HomeStructure;
 use crate::gen::inside::Inside;
+use crate::gen::tunnel::{Tunnel, TunnelAesthetic};
 use crate::hdl::mapping;
 use crate::hdl::traits::DescriptionGraph;
 
@@ -232,6 +233,107 @@ pub fn compile_inside_scene(inside: &Inside, palette: &AestheticPalette) -> Scen
         fov: 70.0,
         near: 0.1,
         far: 200.0,
+    };
+
+    Scene {
+        time: 0.0,
+        camera,
+        environment,
+        lights,
+        entities,
+    }
+}
+
+/// Compile an underground tunnel into a renderable Astral scene (spaces §3).
+/// The tunnel runs along +X from the A end (origin); each segment gets floor +
+/// ceiling + two walls whose colour is the gradient-lerped aesthetic between the
+/// two peers' districts, capability markers are emissive ornaments, and lights
+/// along the length reflect the connection's uptime.
+pub fn compile_tunnel_scene(tunnel: &Tunnel) -> Scene {
+    let w = tunnel.width;
+    let h = tunnel.height;
+    let seg_len = tunnel.length / tunnel.segment_count as f64;
+    let thick = 0.3;
+    let mut entities = Vec::new();
+    let mut lights = Vec::new();
+
+    let mat_at = |hue: f64, pr: f64, light: f64| Material {
+        base_color: Color::from_hsl(hue, 0.2, light + 0.1 * pr),
+        brightness: 0.4,
+        emissive: None,
+        emission_color: None,
+        roughness: 0.85,
+        reflectivity: 0.04,
+        transparency: None,
+        glyph_style: Some("dense".into()),
+        motion_behavior: None,
+        displacement: None,
+    };
+
+    for i in 0..tunnel.segment_count {
+        let t = (i as f64 + 0.5) / tunnel.segment_count as f64;
+        let cx = (i as f64 + 0.5) * seg_len;
+        let a = TunnelAesthetic::lerp(&tunnel.aesthetic_a, &tunnel.aesthetic_b, t);
+        let wall = mat_at(a.hue, a.popcount_ratio, 0.30);
+        let slab = mat_at(a.hue, a.popcount_ratio, 0.20);
+        entities.push(box_entity(format!("tun_floor_{i}"), cx, 0.0, 0.0, seg_len, thick, w, slab.clone()));
+        entities.push(box_entity(format!("tun_ceil_{i}"), cx, h, 0.0, seg_len, thick, w, slab));
+        entities.push(box_entity(format!("tun_wl_{i}"), cx, h / 2.0, -w / 2.0, seg_len, h, thick, wall.clone()));
+        entities.push(box_entity(format!("tun_wr_{i}"), cx, h / 2.0, w / 2.0, seg_len, h, thick, wall));
+    }
+
+    // Capability markers — emissive ornaments along the centreline.
+    for (i, m) in tunnel.markers.iter().enumerate() {
+        let a = TunnelAesthetic::lerp(&tunnel.aesthetic_a, &tunnel.aesthetic_b, m.t);
+        let hue = (a.hue + 40.0).rem_euclid(360.0);
+        let dmat = Material {
+            base_color: Color::from_hsl(hue, 0.5, 0.6),
+            brightness: 0.7,
+            emissive: Some(0.5),
+            emission_color: Some(Color::from_hsl(hue, 0.6, 0.7)),
+            roughness: 0.4,
+            reflectivity: 0.1,
+            transparency: None,
+            glyph_style: Some("round".into()),
+            motion_behavior: None,
+            displacement: None,
+        };
+        entities.push(box_entity(format!("tun_marker_{i}"), m.distance, h * 0.5, 0.0, 0.6, 0.6, 0.6, dmat));
+    }
+
+    // Lights — intensity from uptime lighting state.
+    let intensity = match tunnel.lighting.intensity.as_str() {
+        "moderate" => 1.8,
+        "subtle" => 1.0,
+        _ => 0.5,
+    };
+    let nlights = (tunnel.segment_count / 2).max(1);
+    for k in 0..nlights {
+        let t = (k as f64 + 0.5) / nlights as f64;
+        let a = TunnelAesthetic::lerp(&tunnel.aesthetic_a, &tunnel.aesthetic_b, t);
+        lights.push(Light {
+            light_type: "point".into(),
+            position: Some(Vec3::new(t * tunnel.length, h - 0.4, 0.0)),
+            direction: None,
+            intensity,
+            color: Color::from_hsl(a.hue, 0.5, 0.7),
+            range: Some(w * 2.5),
+        });
+    }
+
+    let environment = Environment {
+        ambient_light: 0.25,
+        background_color: Color::from_hsl(tunnel.aesthetic_a.hue, 0.1, 0.04),
+        fog_density: None,
+        fog_color: None,
+    };
+    // Camera at the A end, looking down the tunnel (+X).
+    let camera = Camera {
+        position: Vec3::new(1.0, h * 0.5, 0.0),
+        rotation: Vec3::new(0.0, -std::f64::consts::FRAC_PI_2, 0.0),
+        fov: 70.0,
+        near: 0.1,
+        far: 300.0,
     };
 
     Scene {

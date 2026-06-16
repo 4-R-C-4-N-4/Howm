@@ -15,5 +15,6 @@ pub mod inside;
 pub mod objects;
 pub mod rivers;
 pub mod roads;
+pub mod tunnel;
 pub mod voronoi;
 pub mod zones;

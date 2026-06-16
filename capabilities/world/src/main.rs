@@ -536,6 +536,87 @@ async fn district_inside_scene_handler(
     (StatusCode::OK, axum::Json(scene)).into_response()
 }
 
+// ─── Underground tunnel (spaces §3) ─────────────────────────────────────────
+//
+// The 1-to-1 space between two connected peers. Geometry comes from connection
+// metrics (latency→length, bandwidth→width, active caps→height); the aesthetic
+// is a gradient lerp between the two peers' districts. Metrics are query params
+// (stubbed defaults per decision D3 until the connection layer feeds them).
+
+#[derive(serde::Deserialize)]
+struct TunnelParams {
+    latency: Option<f64>,
+    bandwidth: Option<f64>,
+    /// Mutually-active capability names (comma-separated) → markers + height.
+    caps: Option<String>,
+    uptime: Option<f64>,
+}
+
+fn tunnel_metrics_from(params: &TunnelParams) -> gen::tunnel::TunnelMetrics {
+    let mut m = gen::tunnel::TunnelMetrics::default();
+    if let Some(v) = params.latency {
+        m.latency_ms = v;
+    }
+    if let Some(v) = params.bandwidth {
+        m.bandwidth_kbps = v;
+    }
+    if let Some(v) = params.uptime {
+        m.uptime = v;
+    }
+    if let Some(ref s) = params.caps {
+        m.active_caps = s
+            .split(',')
+            .filter(|x| !x.is_empty())
+            .map(|x| x.to_string())
+            .collect();
+    }
+    m
+}
+
+/// Parse both endpoints; returns the two cells + decoded peer ids, or an error
+/// response.
+fn parse_tunnel_endpoints(
+    ip_a: &str,
+    peer_a: &str,
+    ip_b: &str,
+    peer_b: &str,
+) -> Result<(gen::cell::Cell, Vec<u8>, gen::cell::Cell, Vec<u8>), Response> {
+    let cell_a = parse_cell(ip_a).ok_or_else(bad_request)?;
+    let cell_b = parse_cell(ip_b).ok_or_else(bad_request)?;
+    let pa = decode_peer_id(peer_a)
+        .ok_or_else(|| (StatusCode::BAD_REQUEST, "Invalid peer id").into_response())?;
+    let pb = decode_peer_id(peer_b)
+        .ok_or_else(|| (StatusCode::BAD_REQUEST, "Invalid peer id").into_response())?;
+    Ok((cell_a, pa, cell_b, pb))
+}
+
+async fn underground_handler(
+    AxumPath((ip_a, peer_a, ip_b, peer_b)): AxumPath<(String, String, String, String)>,
+    axum::extract::Query(params): axum::extract::Query<TunnelParams>,
+) -> Response {
+    let (cell_a, pa, cell_b, pb) = match parse_tunnel_endpoints(&ip_a, &peer_a, &ip_b, &peer_b) {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+    let metrics = tunnel_metrics_from(&params);
+    let tunnel = gen::tunnel::generate_tunnel(&cell_a, &pa, &cell_b, &pb, &metrics);
+    (StatusCode::OK, axum::Json(tunnel)).into_response()
+}
+
+async fn underground_scene_handler(
+    AxumPath((ip_a, peer_a, ip_b, peer_b)): AxumPath<(String, String, String, String)>,
+    axum::extract::Query(params): axum::extract::Query<TunnelParams>,
+) -> Response {
+    let (cell_a, pa, cell_b, pb) = match parse_tunnel_endpoints(&ip_a, &peer_a, &ip_b, &peer_b) {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+    let metrics = tunnel_metrics_from(&params);
+    let tunnel = gen::tunnel::generate_tunnel(&cell_a, &pa, &cell_b, &pb, &metrics);
+    let scene = scene::compiler::compile_tunnel_scene(&tunnel);
+    (StatusCode::OK, axum::Json(scene)).into_response()
+}
+
 // ─── District prefetch (lightweight seed bundle) ────────────────────────────
 //
 // Declared in manifest.json as `district_prefetch`. Returns the center cell
@@ -744,6 +825,14 @@ async fn main() -> anyhow::Result<()> {
                 .route(
                     "/district/{ip}/inside/{peer_id}/scene",
                     get(district_inside_scene_handler),
+                )
+                .route(
+                    "/underground/{ip_a}/{peer_a}/{ip_b}/{peer_b}",
+                    get(underground_handler),
+                )
+                .route(
+                    "/underground/{ip_a}/{peer_a}/{ip_b}/{peer_b}/scene",
+                    get(underground_scene_handler),
                 )
                 .route("/district/{ip}/scene", get(district_scene_handler))
                 .route("/district/{ip}/map", get(district_map_handler))

@@ -538,3 +538,33 @@ lights, valid Astral Scene JSON. (Browser entry wiring to load an Inside via a
 already a valid Astral scene the existing provider can consume.)
 
 ---
+
+## Phase E4: Underground Tunnels — 2026-06-16
+
+The 1-to-1 space between two connected peers (spaces §3). `gen/tunnel.rs` is a
+pure, order-independent generator.
+
+- `tunnel_seed = ha(min(a32,b32) ^ max(a32,b32))` (symmetric over the two peer
+  ids). Geometry from connection metrics: `length = 10 + latency_ms×0.2`,
+  `width = 2 + clamp(bw/10000)×4`, `height = 3 + (active_caps/10)×0.3`.
+  `cross_section = CROSS_SECTIONS[ha(tunnel_seed ^ 0xc055) % 5]`.
+- Aesthetic is a gradient lerp between the two peers' district palettes
+  (`TunnelAesthetic::lerp`, shortest-path hue) so walking the tunnel transitions
+  from one world to the other. Capability markers at `(i+1)/(n+1)`; uptime →
+  lighting (moderate/constant, subtle/flickering, faint/sporadic).
+- Metrics are query params (stubbed defaults per decision D3 until the WireGuard
+  connection layer feeds them).
+- `scene::compiler::compile_tunnel_scene`: per-segment floor/ceiling/2 walls with
+  the lerped colour, emissive markers, uptime-scaled lights, camera at the A end.
+- Endpoints `GET /underground/:ip_a/:peer_a/:ip_b/:peer_b` and `…/scene`.
+
+7 unit tests (order-independence, geometry-from-metrics, width clamping,
+cross-section set, marker spacing, aesthetic lerp endpoints, uptime lighting);
+157 tests pass. Smoke-tested: correct dims, A↔B gradient, order-independent
+seed, 22-entity renderable scene.
+
+This completes the spaces geometry trio: home (E1) + inside (E2) + underground
+(E4). Remaining: E5 portals/transitions, E3 room-feature entities, Phase M
+multiplayer.
+
+---
