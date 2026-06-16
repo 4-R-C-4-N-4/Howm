@@ -13,6 +13,7 @@ use p2pcd::capability_sdk::{
     init_tracing, CapabilityApp, InboundMessage, LocalPeerId, PeerStream, PeerTracker,
 };
 
+mod audit;
 mod gen;
 mod hdl;
 mod scene;
@@ -801,6 +802,57 @@ async fn neighborhood_map_handler(AxumPath(ip): AxumPath<String>) -> Response {
         .into_response()
 }
 
+// ─── Structure audit (machine-checkable invariants) ─────────────────────────
+
+async fn district_audit_handler(AxumPath(ip): AxumPath<String>) -> Response {
+    let cell = match parse_cell(&ip) {
+        Some(c) => c,
+        None => return bad_request(),
+    };
+    (StatusCode::OK, axum::Json(audit::audit_district(&cell))).into_response()
+}
+
+async fn cross_audit_handler(AxumPath((ip_a, ip_b)): AxumPath<(String, String)>) -> Response {
+    let (a, b) = match (parse_cell(&ip_a), parse_cell(&ip_b)) {
+        (Some(a), Some(b)) => (a, b),
+        _ => return bad_request(),
+    };
+    (StatusCode::OK, axum::Json(audit::audit_cross_cells(&a, &b))).into_response()
+}
+
+// ─── ASCII map (agent/terminal-inspectable) ─────────────────────────────────
+
+async fn district_ascii_handler(AxumPath(ip): AxumPath<String>) -> Response {
+    let cell = match parse_cell(&ip) {
+        Some(c) => c,
+        None => return bad_request(),
+    };
+    let dist = gen::district::generate_district(&cell);
+    let roads = gen::roads::generate_roads(&dist);
+    let rivers = gen::rivers::generate_rivers(&cell, &dist.polygon.vertices);
+    let blocks = gen::blocks::extract_blocks(&cell, &dist.polygon, &roads, &rivers);
+    let buildings: Vec<_> = blocks
+        .iter()
+        .flat_map(|b| gen::buildings::generate_buildings(&cell, b).plots)
+        .collect();
+
+    let txt = scene::ascii::generate_district_ascii(
+        &cell,
+        &dist.polygon,
+        &blocks,
+        &roads,
+        &rivers,
+        &buildings,
+        &scene::ascii::AsciiConfig::default(),
+    );
+    (
+        StatusCode::OK,
+        [(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+        txt,
+    )
+        .into_response()
+}
+
 // ─── Astral Scene (compiled) ───────────────────────────────────────────────
 
 #[derive(serde::Deserialize)]
@@ -909,6 +961,9 @@ async fn main() -> anyhow::Result<()> {
                 )
                 .route("/district/{ip}/scene", get(district_scene_handler))
                 .route("/district/{ip}/map", get(district_map_handler))
+                .route("/district/{ip}/map.txt", get(district_ascii_handler))
+                .route("/district/{ip}/audit", get(district_audit_handler))
+                .route("/audit/cross/{ip_a}/{ip_b}", get(cross_audit_handler))
                 .route(
                     "/district/{ip}/neighborhood",
                     get(neighborhood_map_handler),

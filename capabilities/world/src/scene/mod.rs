@@ -3,6 +3,7 @@
 //! Phase R1: bridge between the world capability and the Astral renderer.
 //! The output matches Astral's Scene/Entity/Material/Geometry types exactly.
 
+pub mod ascii;
 pub mod geometry;
 pub mod material;
 pub mod compiler;

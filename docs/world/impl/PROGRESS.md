@@ -623,3 +623,36 @@ big item: Phase M (multiplayer — presence relay + avatars) and Phase G (gen
 algorithm conformance).
 
 ---
+
+## Verification Layer — 2026-06-16
+
+A machine-checkable layer above the renderer so generation correctness (and
+cross-district continuity) can be verified automatically, no manual map-staring.
+
+**ASCII map** (`src/scene/ascii.rs`, `GET /district/:ip/map.txt`): text
+rasterisation of district geometry — block fill by type, roads (`#`),
+intersections (`+`), rivers (`≈`), building footprints (`B`) — plus a stats
+footer. Inspectable directly in terminal/tool output.
+
+**Structured audit** (`src/audit.rs`, `GET /district/:ip/audit`,
+`GET /audit/cross/:ip_a/:ip_b`): geometric/topological invariants returning a
+pass/fail JSON report. Single-district checks: determinism, blocks_in_district,
+blocks_no_overlap, buildings_in_block, buildings_no_overlap,
+intersections_on_segments, roads_present. Cross-district: shared_edge_agreement,
+road_crossing_alignment, districts_no_overlap. Fuzz tests over a spread of IPs
+are the regression net.
+
+### Bugs the audit immediately surfaced (now tracked, fixes in progress)
+1. **buildings_no_overlap** — building footprints intersect (9 pairs, up to ~46%
+   area) on 93.184.216.0 and 2.188.188.0 (= feedback v2 #5 "buildings intersect
+   illogically"). Plot subdivision lets footprints overlap.
+2. **road_crossing_alignment** — neighbouring districts place equal terminal
+   *counts* on a shared edge but at different positions (0 matched) → roads don't
+   connect across borders. The cross-chunk seam.
+3. **blocks_in_district** — 2.188.188.0 block 2's centroid falls outside the
+   district polygon.
+
+The two fuzz tests assert all invariants but are `#[ignore]`d until these are
+fixed (un-ignored per fix); `harness_produces_report` stays always-on.
+
+---
