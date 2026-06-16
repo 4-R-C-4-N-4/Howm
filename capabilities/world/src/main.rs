@@ -1,15 +1,17 @@
 use axum::{
-    extract::Path as AxumPath,
+    extract::{Path as AxumPath, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::get,
-    Router,
+    Json,
 };
 use clap::Parser;
 use include_dir::{include_dir, Dir};
-use std::net::SocketAddr;
-use tracing::info;
-use tracing_subscriber::EnvFilter;
+
+use p2pcd::bridge_client::BridgeClient;
+use p2pcd::capability_sdk::{
+    init_tracing, CapabilityApp, InboundMessage, LocalPeerId, PeerStream, PeerTracker,
+};
 
 mod gen;
 mod hdl;
@@ -18,6 +20,31 @@ mod stream;
 mod types;
 
 static UI_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/ui");
+
+/// P2P-CD capability id. Must match the daemon's derived `howm.{name}.1` and the
+/// access-group grants (`howm.world.room.1`).
+const CAP_NAME: &str = "howm.world.room.1";
+
+/// Shared capability state. Handlers are stateless today (districts derive purely
+/// from the IP); `bridge`/`peers`/`local_id` are the multiplayer/spaces plumbing
+/// consumed by later phases (home placement, Inside, presence relay, avatars).
+#[derive(Clone)]
+#[allow(dead_code)]
+struct AppState {
+    /// Talks to the daemon (peer list, RPC, send, blob).
+    bridge: BridgeClient,
+    /// Live set of active world peers (active/inactive driven by the SSE stream).
+    peers: PeerTracker,
+    /// This node's own peer id — the seed for home/Inside/avatar generation.
+    local_id: LocalPeerId,
+}
+
+/// Inbound P2P-CD capability messages (`POST /p2pcd/inbound`). Phase S wires the
+/// route; presence (`presence.*`) and avatar (`avatar.*`) handling land in the
+/// multiplayer phase.
+async fn inbound(State(_state): State<AppState>, Json(_msg): Json<InboundMessage>) -> Response {
+    (StatusCode::OK, Json(serde_json::json!({}))).into_response()
+}
 
 #[derive(Parser, Debug)]
 #[command(name = "world", about = "Howm world generation capability")]
@@ -48,10 +75,6 @@ fn parse_cell(ip: &str) -> Option<gen::cell::Cell> {
 
 fn bad_request() -> Response {
     (StatusCode::BAD_REQUEST, "Invalid IPv4 address").into_response()
-}
-
-async fn health() -> &'static str {
-    "ok"
 }
 
 // ─── Full district generation (Phase 4) ────────────────────────────────────
@@ -530,93 +553,55 @@ async fn district_scene_handler(AxumPath(ip): AxumPath<String>) -> Response {
     (StatusCode::OK, axum::Json(astral_scene)).into_response()
 }
 
-// ─── UI ────────────────────────────────────────────────────────────────────
-
-fn serve_ui_file(path: &str) -> Response {
-    let file_path = if path.is_empty() || path == "/" {
-        "index.html"
-    } else {
-        path.trim_start_matches('/')
-    };
-
-    match UI_DIR.get_file(file_path) {
-        Some(file) => {
-            let content_type = match file_path.rsplit('.').next() {
-                Some("html") => "text/html; charset=utf-8",
-                Some("js") => "application/javascript; charset=utf-8",
-                Some("css") => "text/css; charset=utf-8",
-                _ => "application/octet-stream",
-            };
-            (
-                StatusCode::OK,
-                [(axum::http::header::CONTENT_TYPE, content_type)],
-                file.contents(),
-            )
-                .into_response()
-        }
-        None => (StatusCode::NOT_FOUND, "Not found").into_response(),
-    }
-}
-
 // ─── Main ──────────────────────────────────────────────────────────────────
+//
+// The cap runs behind the daemon proxy: a browser request to
+// `/cap/world/district/X` is forwarded by the daemon with the `/cap/world/`
+// prefix stripped, so routes are registered bare (`/district/{ip}`), exactly
+// like the other capabilities. `/health`, `/p2pcd/inbound`, and `/ui/*` are
+// provided by `CapabilityApp`.
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
-        .init();
+    init_tracing();
 
     let config = Config::parse();
 
-    let app = Router::new()
-        .route("/cap/world/health", get(health))
-        .route("/cap/world/district/{ip}", get(district_handler))
-        .route(
-            "/cap/world/district/{ip}/geometry",
-            get(district_geometry_handler),
-        )
-        .route(
-            "/cap/world/district/{ip}/objects",
-            get(district_objects_handler),
-        )
-        .route(
-            "/cap/world/district/{ip}/atmosphere",
-            get(district_atmosphere_handler),
-        )
-        .route(
-            "/cap/world/neighbors/{ip}",
-            get(neighbors_handler),
-        )
-        .route(
-            "/cap/world/district/{ip}/scene",
-            get(district_scene_handler),
-        )
-        .route(
-            "/cap/world/district/{ip}/map",
-            get(district_map_handler),
-        )
-        .route(
-            "/cap/world/district/{ip}/prefetch",
-            get(district_prefetch_handler),
-        )
-        .route(
-            "/cap/world/district/{ip}/live",
-            get(stream::handler::ws_handler),
-        )
-        .route(
-            "/cap/world/district/{ip}/neighborhood",
-            get(neighborhood_map_handler),
-        )
-        .route("/ui/{*path}", get(|path: AxumPath<String>| async move {
-            serve_ui_file(&path)
-        }))
-        .route("/ui/", get(|| async { serve_ui_file("index.html") }));
+    // P2P-CD plumbing: daemon bridge, live peer set, and our own peer id.
+    let bridge = BridgeClient::new(config.daemon_port);
+    let peers = PeerTracker::new(CAP_NAME);
+    peers.init_from_daemon(&bridge).await;
+    let _stream = PeerStream::drive_existing(peers.clone(), bridge.events_url(CAP_NAME), None, None);
+    let local_id = LocalPeerId::lazy(bridge.clone()).await;
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], config.port));
-    info!("World capability listening on {}", addr);
+    let state = AppState {
+        bridge,
+        peers,
+        local_id,
+    };
 
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
-
-    Ok(())
+    CapabilityApp::new(CAP_NAME, config.port, state)
+        .with_ui(&UI_DIR)
+        .with_inbound_handler(inbound)
+        .with_routes(|router| {
+            router
+                .route("/district/{ip}", get(district_handler))
+                .route("/district/{ip}/geometry", get(district_geometry_handler))
+                .route("/district/{ip}/objects", get(district_objects_handler))
+                .route(
+                    "/district/{ip}/atmosphere",
+                    get(district_atmosphere_handler),
+                )
+                .route("/district/{ip}/prefetch", get(district_prefetch_handler))
+                .route("/district/{ip}/scene", get(district_scene_handler))
+                .route("/district/{ip}/map", get(district_map_handler))
+                .route(
+                    "/district/{ip}/neighborhood",
+                    get(neighborhood_map_handler),
+                )
+                .route("/district/{ip}/live", get(stream::handler::ws_handler))
+                .route("/neighbors/{ip}", get(neighbors_handler))
+        })
+        .run()
+        .await
 }

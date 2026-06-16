@@ -46,7 +46,7 @@ export class HowmStreamProvider implements SceneProvider {
   constructor(private baseUrl: string) {}
 
   async connect(ip: string): Promise<void> {
-    const wsUrl = this.baseUrl.replace('http', 'ws') + `/cap/world/district/${ip}/live`
+    const wsUrl = this.baseUrl.replace('http', 'ws') + `/district/${ip}/live`
     console.log('Connecting to', wsUrl)
 
     return new Promise((resolve, reject) => {

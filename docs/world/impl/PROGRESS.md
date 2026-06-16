@@ -433,3 +433,27 @@ spec remain unbuilt. In rough priority:
    The `bridge-client` feature is declared but unused.
 
 ---
+
+## Phase S: SDK Adoption — 2026-06-16
+
+First roadmap phase (see ROADMAP.md). World now runs on the shared capability
+SDK like the other caps.
+
+- `world/main.rs` refactored onto `CapabilityApp` + `PeerTracker`/`PeerStream` +
+  `LocalPeerId` + `BridgeClient` (pattern from `presence/main.rs`). `init_tracing`,
+  `/health`, `/p2pcd/inbound`, and `/ui/*` now come from the SDK.
+- **Routing fix:** routes were registered under the `/cap/world/` prefix, but the
+  daemon proxy *strips* that prefix before forwarding (proxy_routes.rs) — so world
+  only worked when hit directly on its port, never through the daemon like a real
+  cap. Routes are now bare (`/district/{ip}`, …), matching every other cap and the
+  manifest's declared paths.
+- **Renderer base path:** `entry.ts` derives the API/UI base from
+  `window.location` so scene/glyph/WS fetches work both behind the daemon proxy
+  (`/cap/world/ui/`) and standalone; providers no longer hardcode `/cap/world`.
+- `AppState { bridge, peers, local_id }` is the plumbing the spaces/multiplayer
+  phases consume (local peer id seeds home/Inside/avatar; peer set drives presence).
+
+Verified: 137 tests pass; UI type-checks + bundles; smoke test confirms bare
+routes, UI/glyphs serving, inbound route, and that the old prefixed routes 404.
+
+---

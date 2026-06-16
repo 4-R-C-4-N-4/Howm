@@ -14,7 +14,7 @@ export class HowmSceneProvider implements SceneProvider {
 
   /** Fetch a district scene from the world API. */
   async loadDistrict(ip: string): Promise<void> {
-    const url = `${this.baseUrl}/cap/world/district/${ip}/scene`
+    const url = `${this.baseUrl}/district/${ip}/scene`
     const resp = await fetch(url)
     if (!resp.ok) {
       throw new Error(`Failed to load district ${ip}: ${resp.status} ${resp.statusText}`)

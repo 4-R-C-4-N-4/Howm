@@ -65,7 +65,11 @@ async function main() {
   const status = document.getElementById('status')
   if (status) status.textContent = `Loading district ${ip}...`
 
-  const baseUrl = window.location.origin
+  // The UI is served at `<base>/ui/`. Derive `<base>` from the current path so
+  // API/glyph fetches work both behind the daemon proxy (`/cap/world/ui/`) and
+  // when the cap is hit directly on its own port (`/ui/`).
+  const uiMatch = window.location.pathname.match(/^(.*)\/ui(?:\/|$)/)
+  const baseUrl = window.location.origin + (uiMatch ? uiMatch[1] : '')
   let provider: SceneProvider
 
   if (useLive) {
@@ -100,7 +104,7 @@ async function main() {
 
   // Load glyph data and warmup cache
   if (status) status.textContent = 'Loading glyphs...'
-  const glyphCache = await loadGlyphCache('/ui/glyphs.json')
+  const glyphCache = await loadGlyphCache(`${baseUrl}/ui/glyphs.json`)
   if (glyphCache) {
     if (status) status.textContent = 'Warming glyph cache...'
     console.time('Glyph warmup')

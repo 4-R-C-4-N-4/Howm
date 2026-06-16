@@ -62,7 +62,7 @@
     }
     /** Fetch a district scene from the world API. */
     async loadDistrict(ip) {
-      const url = `${this.baseUrl}/cap/world/district/${ip}/scene`;
+      const url = `${this.baseUrl}/district/${ip}/scene`;
       const resp = await fetch(url);
       if (!resp.ok) {
         throw new Error(`Failed to load district ${ip}: ${resp.status} ${resp.statusText}`);
@@ -170,7 +170,7 @@
       this.visibleEntityCount = 0;
     }
     async connect(ip) {
-      const wsUrl = this.baseUrl.replace("http", "ws") + `/cap/world/district/${ip}/live`;
+      const wsUrl = this.baseUrl.replace("http", "ws") + `/district/${ip}/live`;
       console.log("Connecting to", wsUrl);
       return new Promise((resolve, reject) => {
         this.ws = new WebSocket(wsUrl);
@@ -2698,7 +2698,8 @@
     const useLive = params.has("live");
     const status = document.getElementById("status");
     if (status) status.textContent = `Loading district ${ip}...`;
-    const baseUrl = window.location.origin;
+    const uiMatch = window.location.pathname.match(/^(.*)\/ui(?:\/|$)/);
+    const baseUrl = window.location.origin + (uiMatch ? uiMatch[1] : "");
     let provider;
     if (useLive) {
       if (status) status.textContent = `Connecting to ${ip}...`;
@@ -2728,7 +2729,7 @@
       provider = staticProvider;
     }
     if (status) status.textContent = "Loading glyphs...";
-    const glyphCache = await loadGlyphCache("/ui/glyphs.json");
+    const glyphCache = await loadGlyphCache(`${baseUrl}/ui/glyphs.json`);
     if (glyphCache) {
       if (status) status.textContent = "Warming glyph cache...";
       console.time("Glyph warmup");
