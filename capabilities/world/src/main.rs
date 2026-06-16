@@ -458,6 +458,56 @@ async fn district_home_handler(
         .into_response()
 }
 
+// ─── Peer Inside (spaces §2) ────────────────────────────────────────────────
+//
+// Generates a peer's interior: an entry hall plus one room per installed
+// capability, laid out around the hall. The district `ip` supplies the
+// aesthetic (palette); the peer id seeds the layout. `caps` defaults to the
+// built-in social capability set when omitted.
+
+const DEFAULT_INSIDE_CAPS: [&str; 5] = [
+    "social.feed",
+    "social.files",
+    "social.messaging",
+    "social.presence",
+    "social.voice",
+];
+
+#[derive(serde::Deserialize)]
+struct InsideParams {
+    /// Comma-separated installed-capability names. Defaults to the social set.
+    caps: Option<String>,
+    /// Active peer-tunnel count (feeds the entry-hall area).
+    tunnels: Option<usize>,
+}
+
+async fn district_inside_handler(
+    AxumPath((ip, peer_id)): AxumPath<(String, String)>,
+    axum::extract::Query(params): axum::extract::Query<InsideParams>,
+) -> Response {
+    let cell = match parse_cell(&ip) {
+        Some(c) => c,
+        None => return bad_request(),
+    };
+    let pid = match decode_peer_id(&peer_id) {
+        Some(p) => p,
+        None => return (StatusCode::BAD_REQUEST, "Invalid peer id").into_response(),
+    };
+
+    let caps: Vec<String> = match params.caps {
+        Some(s) => s
+            .split(',')
+            .filter(|x| !x.is_empty())
+            .map(|x| x.to_string())
+            .collect(),
+        None => DEFAULT_INSIDE_CAPS.iter().map(|s| s.to_string()).collect(),
+    };
+    let tunnels = params.tunnels.unwrap_or(0);
+
+    let inside = gen::inside::generate_inside(&cell, &pid, &caps, tunnels);
+    (StatusCode::OK, axum::Json(inside)).into_response()
+}
+
 // ─── District prefetch (lightweight seed bundle) ────────────────────────────
 //
 // Declared in manifest.json as `district_prefetch`. Returns the center cell
@@ -659,6 +709,10 @@ async fn main() -> anyhow::Result<()> {
                 )
                 .route("/district/{ip}/prefetch", get(district_prefetch_handler))
                 .route("/district/{ip}/home/{peer_id}", get(district_home_handler))
+                .route(
+                    "/district/{ip}/inside/{peer_id}",
+                    get(district_inside_handler),
+                )
                 .route("/district/{ip}/scene", get(district_scene_handler))
                 .route("/district/{ip}/map", get(district_map_handler))
                 .route(

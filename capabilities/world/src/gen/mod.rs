@@ -11,6 +11,7 @@ pub mod fixtures;
 pub mod flora;
 pub mod hash;
 pub mod home;
+pub mod inside;
 pub mod objects;
 pub mod rivers;
 pub mod roads;

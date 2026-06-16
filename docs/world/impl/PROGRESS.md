@@ -495,3 +495,33 @@ placement coordinates. Auto-populating the local peer's + visible peers' homes
 the multiplayer phase.
 
 ---
+
+## Phase E2: Inside Generation — 2026-06-16
+
+A peer's interior space (spaces §2). `gen/inside.rs` is a pure, deterministic
+generator: an entry hall plus one room per installed capability, laid out around
+the hall.
+
+- `inside_seed = ha(peer_id_u32)`; per-room `room_seed = ha(inside_seed ^
+  fnv1a(cap_name))`.
+- Hall area `40 + caps×10 + tunnels×6`; hall always present (even zero caps).
+- Capability→room-type (§2.3): feed→gallery, presence→hearth, messaging→
+  correspondence, files→archive, voice→amphitheatre, else chamber. Room geometry
+  from area×aspect (gallery 1.5, correspondence 1.2, archive 0.8, else 1.0).
+- Layout (§2.5): ≤4 cardinal, ≤8 ring, >8 corridor; orientation jitter from
+  `layout_seed = ha(inside_seed ^ 0x1a70)` (spec's `0xla70` typo, confirmed
+  per decision D1). Rooms placed around the hall; hall↔room doors emitted.
+- Endpoint `GET /district/:ip/inside/:peer_id?caps=<a,b,…>&tunnels=N` (caps
+  default to the 5 social caps). Aesthetic comes from the `:ip` district palette.
+
+8 unit tests (determinism, hall-always-present, room/door counts, hall-area
+formula, layout-by-count, room-type mapping, distinct peers, no hall overlap);
+150 tests pass. Smoke-tested: ring layout for 5 caps, correct room geometry and
+non-overlapping placement.
+
+NOTE: Inside `/scene` compilation (walls/floors/ceilings → Astral entities) and
+room-feature entities from live capability state (E3) are the next steps.
+Installed-cap auto-detection for the local node (vs the explicit `?caps=`) also
+pending.
+
+---

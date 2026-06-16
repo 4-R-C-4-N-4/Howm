@@ -13,6 +13,7 @@
       { "name": "district_atmosphere", "method": "GET", "path": "/district/:ip/atmosphere" },
       { "name": "district_prefetch", "method": "GET", "path": "/district/:ip/prefetch" },
       { "name": "district_home", "method": "GET", "path": "/district/:ip/home/:peer_id" },
+      { "name": "district_inside", "method": "GET", "path": "/district/:ip/inside/:peer_id" },
       { "name": "district_live", "method": "GET", "path": "/district/:ip/live" },
       { "name": "health", "method": "GET", "path": "/health" }
     ]
