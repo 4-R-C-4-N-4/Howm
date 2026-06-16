@@ -599,13 +599,8 @@ mod tests {
             capability_name: "noop.1".to_string(),
         };
         // The default impl returns a ready future — poll it synchronously
-        use std::task::{Context as TaskContext, Poll, Wake, Waker};
-        struct NoopWaker;
-        impl Wake for NoopWaker {
-            fn wake(self: std::sync::Arc<Self>) {}
-        }
-        let waker = Waker::from(std::sync::Arc::new(NoopWaker));
-        let mut cx = TaskContext::from_waker(&waker);
+        use std::task::{Context as TaskContext, Poll, Waker};
+        let mut cx = TaskContext::from_waker(Waker::noop());
 
         let mut fut = h.on_activated(&ctx);
         assert!(matches!(fut.as_mut().poll(&mut cx), Poll::Ready(Ok(()))));
