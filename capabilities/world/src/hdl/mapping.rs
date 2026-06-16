@@ -17,6 +17,7 @@ use crate::gen::creatures::*;
 use crate::gen::fixtures::{Fixture, FixtureRole};
 use crate::gen::flora::{DensityMode, Flora, GrowthForm};
 use crate::gen::hash::{ha, hash_to_f64};
+use crate::gen::home::HomeStructure;
 use crate::gen::objects::FormClass;
 use crate::hdl::traits::*;
 
@@ -1199,6 +1200,70 @@ pub fn map_surface_growth(coverage: f64, f: &Flora) -> SurfaceGrowthOverlay {
     }
 
     SurfaceGrowthOverlay { coverage, traits }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// HOME MAPPING (spaces §1.2)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Map a peer's home structure to an HDL description graph. The home is built
+/// from the same district "stone" (palette) as its surroundings, in a distinct
+/// archetype-driven shape, with a faint welcoming glow so it reads as inhabited.
+pub fn map_home(home: &HomeStructure, palette: &AestheticPalette) -> DescriptionGraph {
+    let mut g = DescriptionGraph::new();
+
+    let (sil, comp, sym) = home_form(&home.archetype);
+    g.push_trait(Trait::new("being.form.silhouette", sil));
+    g.push_trait(Trait::new("being.form.composition", comp));
+    g.push_trait(Trait::new("being.form.symmetry", sym));
+    g.push_trait(Trait::new("being.form.scale", "moderate").with_param("factor", home.height / 5.0));
+
+    // Surface + material inherit the district palette.
+    let substance = match palette.domain {
+        Domain::Loopback => "mineral",
+        Domain::Reserved => "elemental",
+        Domain::Documentation => "mineral",
+        _ => "constructed",
+    };
+    g.push_trait(Trait::new("being.material.substance", substance));
+
+    let texture = if palette.popcount_ratio < 0.33 {
+        "smooth"
+    } else if palette.popcount_ratio < 0.66 {
+        "faceted"
+    } else {
+        "rough"
+    };
+    g.push_trait(Trait::new("being.surface.texture", texture));
+
+    let age_term = if palette.inverted_age > 0.66 {
+        "weathered"
+    } else {
+        "fresh"
+    };
+    g.push_trait(Trait::new("being.surface.age", age_term));
+    g.push_trait(Trait::new("being.surface.opacity", "solid").with_param("level", 1.0));
+
+    g.push_trait(
+        Trait::new("effect.emission.type", "glow").with_param("radius", home.footprint_radius),
+    );
+    g.push_trait(Trait::new("effect.emission.intensity", "faint").with_param("value", 0.25));
+    g.push_trait(Trait::new("effect.emission.rhythm", "breathing").with_param("period", 4.0));
+    g.push_trait(Trait::new("effect.emission.channel", "background"));
+
+    g
+}
+
+fn home_form(archetype: &str) -> (&'static str, &'static str, &'static str) {
+    match archetype {
+        "tower" => ("tall", "singular", "radial"),
+        "pavilion" => ("wide", "singular", "bilateral"),
+        "chamber" => ("compact", "singular", "bilateral"),
+        "portal" => ("tall", "singular", "radial"),
+        "burrow" => ("compact", "nested", "asymmetric"),
+        "shrine" => ("tall", "stacked", "radial"),
+        _ => ("compact", "singular", "bilateral"),
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

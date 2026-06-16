@@ -10,6 +10,7 @@ pub mod district;
 pub mod fixtures;
 pub mod flora;
 pub mod hash;
+pub mod home;
 pub mod objects;
 pub mod rivers;
 pub mod roads;

@@ -457,3 +457,28 @@ Verified: 137 tests pass; UI type-checks + bundles; smoke test confirms bare
 routes, UI/glyphs serving, inbound route, and that the old prefixed routes 404.
 
 ---
+
+## Phase E1: Home Placement — 2026-06-16
+
+First "spaces" entity (ROADMAP.md Phase E1). A peer's unique home structure in
+their own Outside district, seeded by their peer id (spaces §1.2).
+
+- `gen/home.rs`: `home_seed = ha(peer_id_u32 ^ cell_key)`, position via
+  `point_in_polygon_seeded` with a 16-attempt walkable re-roll (rejects water
+  blocks + within-`LAMP_OFFSET`-of-road), centroid fallback; archetype from
+  `HOME_ARCHETYPES = [pavilion,tower,chamber,portal,burrow,shrine]` via
+  `ha(home_seed ^ 0xb1d)`; radius `1.5–4.0` and height `2.5–5.0` from
+  `^0xb1d^0x1 / ^0x2`. Fully deterministic; 5 unit tests (determinism, spec-seed
+  formula, archetype/bounds, distinct peers, walkable invariant).
+- `hdl::mapping::map_home`: archetype→form, district-palette surface/material,
+  faint breathing glow (reads as inhabited).
+- Endpoint `GET /district/:ip/home/:peer_id` (peer id as hex or base64).
+
+Verified: 142 tests pass; smoke test confirms determinism and that hex
+`deadbeef` and base64 `3q2+7w==` resolve to the same home.
+
+NOTE: visible injection of homes into `/district/:ip/scene` (so the renderer
+draws them) is the next step — it needs the peer→home-IP mapping that arrives
+with the multiplayer phase.
+
+---

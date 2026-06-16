@@ -412,6 +412,52 @@ fn cell_summary(cell: &gen::cell::Cell) -> serde_json::Value {
     })
 }
 
+/// Decode a peer id from a path segment. All-hex strings are treated as hex
+/// (deterministic test inputs); otherwise base64-standard (real WireGuard-key
+/// peer ids). Returns the raw bytes; the home placer uses the first 4.
+fn decode_peer_id(s: &str) -> Option<Vec<u8>> {
+    let is_hex = s.len() >= 2 && s.len() % 2 == 0 && s.bytes().all(|b| b.is_ascii_hexdigit());
+    if is_hex {
+        return (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
+            .collect();
+    }
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    STANDARD.decode(s).ok().filter(|b| !b.is_empty())
+}
+
+// ─── Peer home (spaces §1.2) ────────────────────────────────────────────────
+//
+// Places a peer's unique home structure in the district derived from `ip`,
+// seeded by the peer id. Deterministic — same (ip, peer_id) → same home.
+
+async fn district_home_handler(
+    AxumPath((ip, peer_id)): AxumPath<(String, String)>,
+) -> Response {
+    let cell = match parse_cell(&ip) {
+        Some(c) => c,
+        None => return bad_request(),
+    };
+    let pid = match decode_peer_id(&peer_id) {
+        Some(p) => p,
+        None => return (StatusCode::BAD_REQUEST, "Invalid peer id").into_response(),
+    };
+
+    let palette = gen::aesthetic::AestheticPalette::from_cell(&cell);
+    let home = gen::home::place_home_in_cell(&cell, &pid);
+    let description = hdl::mapping::map_home(&home, &palette);
+
+    (
+        StatusCode::OK,
+        axum::Json(serde_json::json!({
+            "base_record": home,
+            "description": description,
+        })),
+    )
+        .into_response()
+}
+
 // ─── District prefetch (lightweight seed bundle) ────────────────────────────
 //
 // Declared in manifest.json as `district_prefetch`. Returns the center cell
@@ -593,6 +639,7 @@ async fn main() -> anyhow::Result<()> {
                     get(district_atmosphere_handler),
                 )
                 .route("/district/{ip}/prefetch", get(district_prefetch_handler))
+                .route("/district/{ip}/home/{peer_id}", get(district_home_handler))
                 .route("/district/{ip}/scene", get(district_scene_handler))
                 .route("/district/{ip}/map", get(district_map_handler))
                 .route(
