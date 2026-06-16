@@ -15,6 +15,7 @@
       { "name": "district_home", "method": "GET", "path": "/district/:ip/home/:peer_id" },
       { "name": "district_inside", "method": "GET", "path": "/district/:ip/inside/:peer_id" },
       { "name": "district_inside_scene", "method": "GET", "path": "/district/:ip/inside/:peer_id/scene" },
+      { "name": "district_inside_features", "method": "GET", "path": "/district/:ip/inside/:peer_id/features" },
       { "name": "underground", "method": "GET", "path": "/underground/:ip_a/:peer_a/:ip_b/:peer_b" },
       { "name": "underground_scene", "method": "GET", "path": "/underground/:ip_a/:peer_a/:ip_b/:peer_b/scene" },
       { "name": "portal", "method": "GET", "path": "/portal" },

@@ -16,6 +16,7 @@ use crate::gen::fixtures::Fixture;
 use crate::gen::flora::Flora;
 use crate::gen::home::HomeStructure;
 use crate::gen::inside::Inside;
+use crate::gen::room_features::RoomFeature;
 use crate::gen::tunnel::{Tunnel, TunnelAesthetic};
 use crate::hdl::mapping;
 use crate::hdl::traits::DescriptionGraph;
@@ -136,6 +137,25 @@ fn box_entity(id: String, x: f64, y: f64, z: f64, sx: f64, sy: f64, sz: f64, mat
         material: mat,
         velocity: None,
         description: None,
+    }
+}
+
+/// Compile a room-feature (feed post / message thread / file) into an Astral
+/// entity placed within its room (spaces §2.4). Posts/threads hang at eye level;
+/// files sit lower like shelved objects.
+pub fn compile_room_feature(f: &RoomFeature, palette: &AestheticPalette) -> Entity {
+    let graph = mapping::map_room_feature(f, palette);
+    let (geo, scale) = geometry::resolve_geometry(&graph);
+    let mat = material::resolve_material(&graph, palette.hue);
+    let y = if f.kind == "file" { 0.8 } else { 1.4 };
+    Entity {
+        id: format!("feature:{}:{}:{}", f.room, f.kind, f.index),
+        transform: Transform::at(f.position.x, y, f.position.y)
+            .with_scale(scale.x * 0.6, scale.y * 0.6, scale.z * 0.6),
+        geometry: geo,
+        material: mat,
+        velocity: None,
+        description: Some(graph),
     }
 }
 

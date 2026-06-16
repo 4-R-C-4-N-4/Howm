@@ -487,6 +487,22 @@ struct InsideParams {
     caps: Option<String>,
     /// Active peer-tunnel count (feeds the entry-hall area).
     tunnels: Option<usize>,
+    // Room-feature counts (spaces §2.4) — stubbed live state per decision D3.
+    feed_posts: Option<usize>,
+    feed_unread: Option<usize>,
+    message_threads: Option<usize>,
+    messages: Option<usize>,
+    files: Option<usize>,
+}
+
+fn feature_counts_from(p: &InsideParams) -> gen::room_features::FeatureCounts {
+    gen::room_features::FeatureCounts {
+        feed_posts: p.feed_posts.unwrap_or(0),
+        feed_unread: p.feed_unread.unwrap_or(0),
+        message_threads: p.message_threads.unwrap_or(0),
+        messages: p.messages.unwrap_or(0),
+        files: p.files.unwrap_or(0),
+    }
 }
 
 async fn district_inside_handler(
@@ -529,7 +545,7 @@ async fn district_inside_scene_handler(
         Some(p) => p,
         None => return (StatusCode::BAD_REQUEST, "Invalid peer id").into_response(),
     };
-    let caps: Vec<String> = match params.caps {
+    let caps: Vec<String> = match &params.caps {
         Some(s) => s
             .split(',')
             .filter(|x| !x.is_empty())
@@ -540,8 +556,44 @@ async fn district_inside_scene_handler(
 
     let palette = gen::aesthetic::AestheticPalette::from_cell(&cell);
     let inside = gen::inside::generate_inside(&cell, &pid, &caps, params.tunnels.unwrap_or(0));
-    let scene = scene::compiler::compile_inside_scene(&inside, &palette);
+    let mut scene = scene::compiler::compile_inside_scene(&inside, &palette);
+
+    // Inject room-feature entities (feed posts, threads, files — spaces §2.4).
+    let counts = feature_counts_from(&params);
+    for f in gen::room_features::generate_room_features(&inside, &counts) {
+        scene
+            .entities
+            .push(scene::compiler::compile_room_feature(&f, &palette));
+    }
+
     (StatusCode::OK, axum::Json(scene)).into_response()
+}
+
+/// The room-feature list for a peer's Inside (spaces §2.4) — feed posts, message
+/// threads, and files, with counts from query params (stubbed live state).
+async fn district_inside_features_handler(
+    AxumPath((ip, peer_id)): AxumPath<(String, String)>,
+    axum::extract::Query(params): axum::extract::Query<InsideParams>,
+) -> Response {
+    let cell = match parse_cell(&ip) {
+        Some(c) => c,
+        None => return bad_request(),
+    };
+    let pid = match decode_peer_id(&peer_id) {
+        Some(p) => p,
+        None => return (StatusCode::BAD_REQUEST, "Invalid peer id").into_response(),
+    };
+    let caps: Vec<String> = match params.caps {
+        Some(ref s) => s
+            .split(',')
+            .filter(|x| !x.is_empty())
+            .map(|x| x.to_string())
+            .collect(),
+        None => DEFAULT_INSIDE_CAPS.iter().map(|s| s.to_string()).collect(),
+    };
+    let inside = gen::inside::generate_inside(&cell, &pid, &caps, params.tunnels.unwrap_or(0));
+    let features = gen::room_features::generate_room_features(&inside, &feature_counts_from(&params));
+    (StatusCode::OK, axum::Json(features)).into_response()
 }
 
 // ─── Underground tunnel (spaces §3) ─────────────────────────────────────────
@@ -842,6 +894,10 @@ async fn main() -> anyhow::Result<()> {
                 .route(
                     "/district/{ip}/inside/{peer_id}/scene",
                     get(district_inside_scene_handler),
+                )
+                .route(
+                    "/district/{ip}/inside/{peer_id}/features",
+                    get(district_inside_features_handler),
                 )
                 .route(
                     "/underground/{ip_a}/{peer_a}/{ip_b}/{peer_b}",

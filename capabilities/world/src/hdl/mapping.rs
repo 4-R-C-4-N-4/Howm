@@ -19,6 +19,7 @@ use crate::gen::flora::{DensityMode, Flora, GrowthForm};
 use crate::gen::hash::{ha, hash_to_f64};
 use crate::gen::home::HomeStructure;
 use crate::gen::objects::FormClass;
+use crate::gen::room_features::RoomFeature;
 use crate::hdl::traits::*;
 
 
@@ -1264,6 +1265,75 @@ fn home_form(archetype: &str) -> (&'static str, &'static str, &'static str) {
         "shrine" => ("tall", "stacked", "radial"),
         _ => ("compact", "singular", "bilateral"),
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ROOM-FEATURE MAPPING (spaces §2.4)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Map a capability room-feature (feed post, message thread, file) to an HDL
+/// description graph per spaces §2.4.
+pub fn map_room_feature(f: &RoomFeature, palette: &AestheticPalette) -> DescriptionGraph {
+    let mut g = DescriptionGraph::new();
+
+    match f.kind.as_str() {
+        // Feed post → inscribed display surface; unread glows in the foreground.
+        "feed_post" => {
+            g.push_trait(Trait::new("being.form.silhouette", "wide"));
+            g.push_trait(Trait::new("being.surface.texture", "inscribed"));
+            g.push_trait(Trait::new("relation.context.narrative", "scribe"));
+            if f.unread {
+                g.push_trait(Trait::new("effect.emission.type", "glow"));
+                g.push_trait(Trait::new("effect.emission.channel", "foreground"));
+                g.push_trait(
+                    Trait::new("effect.emission.intensity", "moderate").with_param("value", 0.5),
+                );
+            }
+        }
+        // Message thread → stacked surface whose composition count is the message
+        // count; unread glows in the background with a breathing rhythm.
+        "message_thread" => {
+            g.push_trait(Trait::new("being.form.silhouette", "wide"));
+            g.push_trait(
+                Trait::new("being.form.composition", "stacked")
+                    .with_param("count", f.count as f64),
+            );
+            if f.unread {
+                g.push_trait(Trait::new("effect.emission.type", "glow"));
+                g.push_trait(Trait::new("effect.emission.channel", "background"));
+                g.push_trait(
+                    Trait::new("effect.emission.rhythm", "breathing").with_param("period", 3.0),
+                );
+            }
+        }
+        // File → offering point; texture by file type, density by size.
+        "file" => {
+            g.push_trait(Trait::new("being.form.silhouette", "compact"));
+            let tex = match f.variant.as_str() {
+                "documents" => "inscribed",
+                "images" => "glazed",
+                "archives" => "bolted",
+                "code" => "gridded",
+                _ => "smooth",
+            };
+            g.push_trait(Trait::new("being.surface.texture", tex));
+            let density = (f.count as f64 / 100.0).clamp(0.1, 1.0);
+            g.push_trait(
+                Trait::new("being.form.detail", if density > 0.6 { "dense" } else { "sparse" })
+                    .with_param("density", density),
+            );
+        }
+        _ => {}
+    }
+
+    // Material inherits the host district aesthetic.
+    let substance = match palette.domain {
+        Domain::Loopback => "mineral",
+        Domain::Reserved => "elemental",
+        _ => "constructed",
+    };
+    g.push_trait(Trait::new("being.material.substance", substance));
+    g
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

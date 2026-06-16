@@ -592,3 +592,34 @@ fixed portal description graph verbatim: a tall, translucent, *shifting* glow
 Smoke-tested: 6 portals in an Inside, 2 at tunnel ends, 1 per home.
 
 ---
+
+## Phase E3: Room-Feature Entities — 2026-06-16
+
+The contents of capability rooms (spaces §2.4). `gen/room_features.rs` populates
+each room from its owning capability's state: feed posts → gallery, message
+threads → correspondence room, files → archive. Deterministic positions (grid
+within the room footprint, seeded by room_seed).
+
+- `RoomFeature` carries kind, position, unread flag, count (thread message count
+  / file size proxy), and variant (file type). Counts come from query params
+  (stubbed live state per decision D3 until pulled from the daemon).
+- `hdl::mapping::map_room_feature` per §2.4: feed post → inscribed display
+  surface, unread glows foreground; message thread → stacked surface with
+  composition.count = messages, unread glows background/breathing; file →
+  offering point, texture by type (documents/images/archives/code), density by
+  size.
+- `scene::compiler::compile_room_feature` places features in their rooms (posts/
+  threads at eye level, files lower).
+- Endpoints: `…/inside/:peer_id/features` (list) and feature counts as query
+  params on `…/inside/:peer_id/scene` (injected entities).
+
+4 unit tests (room routing, unread/thread counts, deterministic positions,
+in-room containment); 162 tests pass. Smoke-tested: 12 features across 3 rooms,
+11 injected into the Inside scene.
+
+This completes the Inside (E2) + its contents (E3); with home (E1), underground
+(E4), and portals (E5), the spaces feature set is structurally complete. Remaining
+big item: Phase M (multiplayer — presence relay + avatars) and Phase G (gen
+algorithm conformance).
+
+---
