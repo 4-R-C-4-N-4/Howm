@@ -458,6 +458,14 @@ async fn district_home_handler(
         .into_response()
 }
 
+// ─── Portal description (spaces §5.1) ───────────────────────────────────────
+
+/// The fixed portal entity description graph — useful for clients/tests to
+/// inspect the doorway HDL that every portal (home/inside/tunnel) animates from.
+async fn portal_handler() -> Response {
+    (StatusCode::OK, axum::Json(hdl::mapping::map_portal())).into_response()
+}
+
 // ─── Peer Inside (spaces §2) ────────────────────────────────────────────────
 //
 // Generates a peer's interior: an entry hall plus one room per installed
@@ -768,9 +776,18 @@ async fn district_scene_handler(
     if let Some(homes) = params.homes {
         for pid in homes.split(',').filter(|s| !s.is_empty()).filter_map(decode_peer_id) {
             let home = gen::home::place_home_in_cell(&cell, &pid);
+            // A portal beside each home → that peer's Inside (spaces §5.1).
+            let portal = scene::compiler::compile_portal(
+                &format!("inside:{:08x}", home.peer_id_u32),
+                home.position.x + home.footprint_radius + 1.0,
+                home.height * 0.4,
+                home.position.y,
+                palette.hue,
+            );
             astral_scene
                 .entities
                 .push(scene::compiler::compile_home(&home, &palette));
+            astral_scene.entities.push(portal);
         }
     }
 
@@ -842,6 +859,7 @@ async fn main() -> anyhow::Result<()> {
                 )
                 .route("/district/{ip}/live", get(stream::handler::ws_handler))
                 .route("/neighbors/{ip}", get(neighbors_handler))
+                .route("/portal", get(portal_handler))
         })
         .run()
         .await

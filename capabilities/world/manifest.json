@@ -17,6 +17,7 @@
       { "name": "district_inside_scene", "method": "GET", "path": "/district/:ip/inside/:peer_id/scene" },
       { "name": "underground", "method": "GET", "path": "/underground/:ip_a/:peer_a/:ip_b/:peer_b" },
       { "name": "underground_scene", "method": "GET", "path": "/underground/:ip_a/:peer_a/:ip_b/:peer_b/scene" },
+      { "name": "portal", "method": "GET", "path": "/portal" },
       { "name": "district_live", "method": "GET", "path": "/district/:ip/live" },
       { "name": "health", "method": "GET", "path": "/health" }
     ]

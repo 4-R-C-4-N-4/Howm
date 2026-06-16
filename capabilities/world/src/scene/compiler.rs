@@ -139,6 +139,27 @@ fn box_entity(id: String, x: f64, y: f64, z: f64, sx: f64, sy: f64, sz: f64, mat
     }
 }
 
+/// Compile a portal entity (spaces §5.1) at a position. `destination` is encoded
+/// in the entity id (`portal:<destination>`) so the renderer/client knows where
+/// it leads (e.g. `outside`, `room:social.feed`, `peer_inside:<id>`).
+pub fn compile_portal(destination: &str, x: f64, y: f64, z: f64, hue: f64) -> Entity {
+    let graph = mapping::map_portal();
+    let (geo, scale) = geometry::resolve_geometry(&graph);
+    let mut mat = material::resolve_material(&graph, hue);
+    mat.transparency = Some(mat.transparency.unwrap_or(0.5).min(0.6));
+    if mat.emissive.is_none() {
+        mat.emissive = Some(0.3);
+    }
+    Entity {
+        id: format!("portal:{destination}"),
+        transform: Transform::at(x, y, z).with_scale(scale.x * 1.2, scale.y * 1.6, scale.z * 1.2),
+        geometry: geo,
+        material: mat,
+        velocity: None,
+        description: Some(graph),
+    }
+}
+
 /// Compile a peer's Inside into a renderable Astral scene (spaces §2): each room
 /// becomes floor + ceiling + four walls, doors are emissive markers on the hall
 /// perimeter, and a point light sits near each room's ceiling. The camera starts
@@ -194,32 +215,19 @@ pub fn compile_inside_scene(inside: &Inside, palette: &AestheticPalette) -> Scen
         });
     }
 
-    // Doors — emissive translucent markers on the hall perimeter.
-    let door_hue = (hue + 40.0).rem_euclid(360.0);
-    for (i, door) in inside.doors.iter().enumerate() {
-        let dmat = Material {
-            base_color: Color::from_hsl(door_hue, 0.4, 0.6),
-            brightness: 0.7,
-            emissive: Some(0.5),
-            emission_color: Some(Color::from_hsl(door_hue, 0.5, 0.7)),
-            roughness: 0.4,
-            reflectivity: 0.1,
-            transparency: Some(0.5),
-            glyph_style: Some("round".into()),
-            motion_behavior: None,
-            displacement: None,
-        };
-        entities.push(box_entity(
-            format!("door_{i}"),
+    // Doors → room portals (spaces §5.1): each doorway is a portal into its room.
+    for door in &inside.doors {
+        entities.push(compile_portal(
+            &format!("room:{}", door.to),
             door.position.x,
             door.height / 2.0,
             door.position.y,
-            door.width,
-            door.height,
-            0.3,
-            dmat,
+            hue,
         ));
     }
+    // Exit portal back to the Outside, near the hall edge.
+    let hall_half = inside.rooms[0].width / 2.0;
+    entities.push(compile_portal("outside", 0.0, 1.4, hall_half - 0.8, hue));
 
     let environment = Environment {
         ambient_light: 0.35,
@@ -320,6 +328,22 @@ pub fn compile_tunnel_scene(tunnel: &Tunnel) -> Scene {
             range: Some(w * 2.5),
         });
     }
+
+    // End portals → each peer's Inside (spaces §5.1).
+    entities.push(compile_portal(
+        "peer_a_inside",
+        0.5,
+        h * 0.5,
+        0.0,
+        tunnel.aesthetic_a.hue,
+    ));
+    entities.push(compile_portal(
+        "peer_b_inside",
+        tunnel.length - 0.5,
+        h * 0.5,
+        0.0,
+        tunnel.aesthetic_b.hue,
+    ));
 
     let environment = Environment {
         ambient_light: 0.25,

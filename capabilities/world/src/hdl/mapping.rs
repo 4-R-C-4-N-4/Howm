@@ -1267,6 +1267,55 @@ fn home_form(archetype: &str) -> (&'static str, &'static str, &'static str) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// PORTAL MAPPING (spaces §5.1)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// The portal entity description graph — a doorway between spaces. Fixed traits
+/// per spaces §5.1: a tall, translucent, *shifting* glow that intensifies when a
+/// player approaches (regard activated) and dims when they leave. The transition
+/// state machine itself (idle→activating→loading→ready) lives in the renderer /
+/// multiplayer layer; this is the static description it animates from.
+pub fn map_portal() -> DescriptionGraph {
+    let mut g = DescriptionGraph::new();
+    g.push_trait(Trait::new("being.form.silhouette", "tall").with_param("aspect", 0.3));
+    g.push_trait(Trait::new("being.form.scale", "moderate"));
+    g.push_trait(Trait::new("being.surface.texture", "smooth").with_param("reflectance", 0.4));
+    g.push_trait(
+        Trait::new("being.surface.opacity", "shifting")
+            .with_params(&[("level", 0.6), ("variance", 0.3)]),
+    );
+    g.push_trait(
+        Trait::new("being.material.substance", "light")
+            .with_params(&[("luminance", 0.5), ("saturation", 0.3)]),
+    );
+    g.push_trait(Trait::new("effect.emission.type", "glow").with_param("radius", 3.0));
+    g.push_trait(Trait::new("effect.emission.intensity", "faint").with_param("value", 0.2));
+    g.push_trait(Trait::new("effect.emission.rhythm", "breathing").with_param("period", 3.0));
+    g.push_trait(Trait::new("effect.emission.channel", "both"));
+    g.push_trait(Trait::new("relation.regard.awareness", "attentive").with_param("radius", 3.0));
+    g.push_trait(
+        Trait::new("relation.regard.disposition", "welcoming").with_param("threshold", 0.5),
+    );
+
+    g.push_sequence(
+        Sequence::new("relation.regard", "activated", "effect.emission", "intensify", 0.0, None)
+            .with_effect_param("factor", serde_json::json!(3.0)),
+    );
+    g.push_sequence(
+        Sequence::new(
+            "relation.regard",
+            "deactivated",
+            "effect.emission",
+            "diminish",
+            0.0,
+            Some(1.0),
+        )
+        .with_effect_param("factor", serde_json::json!(0.3)),
+    );
+    g
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // TESTS
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -1277,6 +1326,28 @@ mod tests {
     use crate::gen::aesthetic::AestheticPalette;
     use crate::gen::flora::FloraContext;
     use crate::gen::objects::ObjectSeeds;
+
+    #[test]
+    fn portal_graph_matches_spec_5_1() {
+        let g = map_portal();
+        let term = |path: &str| g.traits.iter().find(|t| t.path == path).map(|t| t.term.as_str());
+        // Verbatim spaces §5.1 traits.
+        assert_eq!(term("being.form.silhouette"), Some("tall"));
+        assert_eq!(term("being.surface.opacity"), Some("shifting"));
+        assert_eq!(term("being.material.substance"), Some("light"));
+        assert_eq!(term("effect.emission.rhythm"), Some("breathing"));
+        assert_eq!(term("relation.regard.disposition"), Some("welcoming"));
+        // Two regard→emission sequences (intensify on approach, diminish on leave).
+        assert_eq!(g.sequences.len(), 2);
+        assert!(g
+            .sequences
+            .iter()
+            .any(|s| s.trigger.event == "activated" && s.effect.action == "intensify"));
+        assert!(g
+            .sequences
+            .iter()
+            .any(|s| s.trigger.event == "deactivated" && s.effect.action == "diminish"));
+    }
 
     fn test_palette(cell: &Cell) -> AestheticPalette {
         AestheticPalette::from_cell(cell)

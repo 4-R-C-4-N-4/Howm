@@ -568,3 +568,27 @@ This completes the spaces geometry trio: home (E1) + inside (E2) + underground
 multiplayer.
 
 ---
+
+## Phase E5: Portals & Transitions — 2026-06-16
+
+Doorways between spaces (spaces §5.1). `hdl::mapping::map_portal()` produces the
+fixed portal description graph verbatim: a tall, translucent, *shifting* glow
+(breathing emission) with `relation.regard` welcoming, plus the two sequences
+(regard activated → emission intensify ×3, deactivated → diminish ×0.3).
+
+- `scene::compiler::compile_portal(destination, x,y,z,hue)` emits a portal
+  entity; the destination is encoded in the id (`portal:<dest>`) so the renderer/
+  client can route the transition (`outside`, `room:<cap>`, `peer_a_inside`,
+  `inside:<peerid>`, …).
+- Portals injected into every space: Inside scene (one per room door + an exit to
+  Outside), tunnel scene (both ends → each peer's Inside), and beside each home in
+  the district scene (→ that peer's Inside).
+- `GET /portal` returns the description graph for inspection.
+- The transition *state machine* (idle→activating→loading→ready/timeout/offline)
+  and the remote-Inside RPC (`howm.world.room.get`, decision D2) live in the
+  renderer/multiplayer layer — this is the static description they animate from.
+
+1 fidelity test (verbatim §5.1 traits + both sequences); 158 tests pass.
+Smoke-tested: 6 portals in an Inside, 2 at tunnel ends, 1 per home.
+
+---
