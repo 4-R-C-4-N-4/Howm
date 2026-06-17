@@ -124,6 +124,14 @@ export class RenderLoop {
     this.provider.stop?.()
   }
 
+  /** Current camera pose, for sharing over presence (multiplayer). */
+  cameraPose(): { position: [number, number, number]; rotation: [number, number, number] } {
+    return {
+      position: [this.camera.position.x, this.camera.position.y, this.camera.position.z],
+      rotation: [this.camera.rotation.x, this.camera.rotation.y, this.camera.rotation.z],
+    }
+  }
+
   private updateTime(): number {
     const now = performance.now()
     const deltaMs = now - this.lastTime

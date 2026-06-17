@@ -1,4 +1,4 @@
-import { Scene, Vec3 } from '../core/types'
+import { Entity, Scene, Vec3 } from '../core/types'
 import { SceneProvider } from './SceneProvider'
 import { updateLightFlicker } from '../renderer/Animator'
 
@@ -9,8 +9,22 @@ import { updateLightFlicker } from '../renderer/Animator'
 export class HowmSceneProvider implements SceneProvider {
   private scene: Scene | null = null
   private dirty = true
+  /** Live peer-avatar entities (multiplayer presence), merged into the scene. */
+  private peers: Entity[] = []
 
   constructor(private baseUrl: string) {}
+
+  /**
+   * Set the current peer-avatar entities (from presence). They are merged into
+   * the scene returned by `getScene()`; we mark the scene structurally dirty so
+   * the render loop rebuilds the World/spatial grid to include their new
+   * positions. Same-district peers share this district's recentring origin, so
+   * their positions line up with ours.
+   */
+  setPeerEntities(entities: Entity[]): void {
+    this.peers = entities
+    this.dirty = true
+  }
 
   /** Fetch a district scene from the world API. */
   async loadDistrict(ip: string): Promise<void> {
@@ -68,16 +82,15 @@ export class HowmSceneProvider implements SceneProvider {
   }
 
   getScene(): Scene {
-    if (!this.scene) {
-      return {
-        time: 0,
-        camera: { position: { x: 0, y: 5, z: 10 }, rotation: { x: 0, y: 0, z: 0 }, fov: 60, near: 0.1, far: 500 },
-        environment: { ambientLight: 0.3, backgroundColor: { r: 20, g: 20, b: 40 } },
-        lights: [],
-        entities: [],
-      }
+    const base: Scene = this.scene ?? {
+      time: 0,
+      camera: { position: { x: 0, y: 5, z: 10 }, rotation: { x: 0, y: 0, z: 0 }, fov: 60, near: 0.1, far: 500 },
+      environment: { ambientLight: 0.3, backgroundColor: { r: 20, g: 20, b: 40 } },
+      lights: [],
+      entities: [],
     }
-    return this.scene
+    if (this.peers.length === 0) return base
+    return { ...base, entities: [...base.entities, ...this.peers] }
   }
 
   update(dt: number): void {

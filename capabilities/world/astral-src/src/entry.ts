@@ -6,6 +6,7 @@
  */
 
 import { HowmSceneProvider } from './scene/HowmSceneProvider'
+import { PresenceClient } from './scene/PresenceClient'
 import { HowmStreamProvider } from './scene/HowmStreamProvider'
 import { SceneProvider } from './scene/SceneProvider'
 import { FrameBuffer } from './renderer/FrameBuffer'
@@ -136,6 +137,21 @@ async function main() {
   })
 
   loop.start()
+
+  // Multiplayer presence: share our camera pose with peers and render theirs as
+  // avatars. Only the static district provider supports peer-entity injection;
+  // the live (WebSocket) path streams peers server-side.
+  if (provider instanceof HowmSceneProvider) {
+    const staticProvider = provider
+    const presence = new PresenceClient(baseUrl)
+    presence.start(
+      () => {
+        const pose = loop.cameraPose()
+        return { position: pose.position, orientation: pose.rotation, space: ip }
+      },
+      (peers) => staticProvider.setPeerEntities(peers),
+    )
+  }
 }
 
 window.addEventListener('DOMContentLoaded', main)

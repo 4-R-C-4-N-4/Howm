@@ -59,6 +59,19 @@
       this.baseUrl = baseUrl;
       this.scene = null;
       this.dirty = true;
+      /** Live peer-avatar entities (multiplayer presence), merged into the scene. */
+      this.peers = [];
+    }
+    /**
+     * Set the current peer-avatar entities (from presence). They are merged into
+     * the scene returned by `getScene()`; we mark the scene structurally dirty so
+     * the render loop rebuilds the World/spatial grid to include their new
+     * positions. Same-district peers share this district's recentring origin, so
+     * their positions line up with ours.
+     */
+    setPeerEntities(entities) {
+      this.peers = entities;
+      this.dirty = true;
     }
     /** Fetch a district scene from the world API. */
     async loadDistrict(ip) {
@@ -101,16 +114,15 @@
       this.scene.camera.position.z -= oz;
     }
     getScene() {
-      if (!this.scene) {
-        return {
-          time: 0,
-          camera: { position: { x: 0, y: 5, z: 10 }, rotation: { x: 0, y: 0, z: 0 }, fov: 60, near: 0.1, far: 500 },
-          environment: { ambientLight: 0.3, backgroundColor: { r: 20, g: 20, b: 40 } },
-          lights: [],
-          entities: []
-        };
-      }
-      return this.scene;
+      const base = this.scene ?? {
+        time: 0,
+        camera: { position: { x: 0, y: 5, z: 10 }, rotation: { x: 0, y: 0, z: 0 }, fov: 60, near: 0.1, far: 500 },
+        environment: { ambientLight: 0.3, backgroundColor: { r: 20, g: 20, b: 40 } },
+        lights: [],
+        entities: []
+      };
+      if (this.peers.length === 0) return base;
+      return { ...base, entities: [...base.entities, ...this.peers] };
     }
     update(dt) {
       if (!this.scene) return;
@@ -131,6 +143,106 @@
       this.dirty = false;
     }
   };
+
+  // src/scene/PresenceClient.ts
+  var PresenceClient = class {
+    constructor(baseUrl) {
+      this.baseUrl = baseUrl;
+      this.peers = [];
+      this.timer = null;
+    }
+    async postPose(pose) {
+      try {
+        await fetch(`${this.baseUrl}/presence`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...pose, velocity: [0, 0, 0] })
+        });
+      } catch {
+      }
+    }
+    async fetchPeers() {
+      try {
+        const resp = await fetch(`${this.baseUrl}/presence`);
+        if (!resp.ok) return;
+        const data = await resp.json();
+        const poses = data.peers ?? [];
+        this.peers = poses.map(peerAvatarEntity);
+      } catch {
+      }
+    }
+    /** The current peer avatar entities (one per live peer). */
+    peerEntities() {
+      return this.peers;
+    }
+    /**
+     * Drive POST-pose + GET-peers on an interval (default ~4 Hz). `onPeers` is
+     * called after each fetch with the current peer avatar entities.
+     */
+    start(getPose, onPeers, intervalMs = 250) {
+      const tick = async () => {
+        await this.postPose(getPose());
+        await this.fetchPeers();
+        onPeers(this.peers);
+      };
+      void tick();
+      this.timer = setInterval(() => void tick(), intervalMs);
+    }
+    stop() {
+      if (this.timer !== null) {
+        clearInterval(this.timer);
+        this.timer = null;
+      }
+    }
+  };
+  function peerAvatarEntity(p) {
+    let h = 2166136261;
+    for (let i = 0; i < p.peer_id.length; i++) {
+      h = (h ^ p.peer_id.charCodeAt(i)) >>> 0;
+      h = h * 16777619 >>> 0;
+    }
+    const hue = h % 360;
+    const base = hslToColor(hue, 0.55, 0.6);
+    const glow = hslToColor(hue, 0.6, 0.72);
+    return {
+      id: `peer:${p.peer_id.slice(0, 10)}`,
+      transform: {
+        position: { x: p.position[0], y: p.position[1], z: p.position[2] },
+        rotation: { x: 0, y: p.orientation[1] ?? 0, z: 0 },
+        scale: { x: 1, y: 1, z: 1 }
+      },
+      geometry: { type: "cylinder", radius: 0.5, height: 1.8 },
+      material: {
+        baseColor: base,
+        brightness: 0.7,
+        emissive: 0.45,
+        emissionColor: glow,
+        roughness: 0.5,
+        reflectivity: 0.1,
+        glyphStyle: "round"
+      }
+    };
+  }
+  function hslToColor(h, s, l) {
+    const c = (1 - Math.abs(2 * l - 1)) * s;
+    const hp = h / 60;
+    const x = c * (1 - Math.abs(hp % 2 - 1));
+    let r = 0;
+    let g = 0;
+    let b = 0;
+    if (hp < 1) [r, g, b] = [c, x, 0];
+    else if (hp < 2) [r, g, b] = [x, c, 0];
+    else if (hp < 3) [r, g, b] = [0, c, x];
+    else if (hp < 4) [r, g, b] = [0, x, c];
+    else if (hp < 5) [r, g, b] = [x, 0, c];
+    else [r, g, b] = [c, 0, x];
+    const m = l - c / 2;
+    return {
+      r: Math.round((r + m) * 255),
+      g: Math.round((g + m) * 255),
+      b: Math.round((b + m) * 255)
+    };
+  }
 
   // src/scene/HowmStreamProvider.ts
   var HowmStreamProvider = class {
@@ -1847,6 +1959,13 @@
       this.running = false;
       this.provider.stop?.();
     }
+    /** Current camera pose, for sharing over presence (multiplayer). */
+    cameraPose() {
+      return {
+        position: [this.camera.position.x, this.camera.position.y, this.camera.position.z],
+        rotation: [this.camera.rotation.x, this.camera.rotation.y, this.camera.rotation.z]
+      };
+    }
     updateTime() {
       const now = performance.now();
       const deltaMs = now - this.lastTime;
@@ -2754,6 +2873,17 @@
       hud
     });
     loop.start();
+    if (provider instanceof HowmSceneProvider) {
+      const staticProvider = provider;
+      const presence = new PresenceClient(baseUrl);
+      presence.start(
+        () => {
+          const pose = loop.cameraPose();
+          return { position: pose.position, orientation: pose.rotation, space: ip };
+        },
+        (peers) => staticProvider.setPeerEntities(peers)
+      );
+    }
   }
   window.addEventListener("DOMContentLoaded", main);
 })();
