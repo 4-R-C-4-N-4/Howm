@@ -456,6 +456,15 @@ pub fn generate_buildings(cell: &Cell, block: &Block) -> BlockBuildings {
     let cfg = config();
     let mode = alley_mode(cell.popcount);
 
+    // Water and riverbank blocks are the reserved river corridor — no buildings.
+    if matches!(block.block_type, BlockType::Water | BlockType::Riverbank) {
+        return BlockBuildings {
+            block_idx: block.idx,
+            alley_mode: mode,
+            plots: Vec::new(),
+        };
+    }
+
     // Alley cutting produces sub-polygons
     let sub_polygons = match mode {
         AlleyMode::VoronoiGaps => vec![block.polygon.clone()],

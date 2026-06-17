@@ -14,6 +14,12 @@ use super::rivers::RiverSegment;
 use super::roads::{RoadNetwork, RoadFate};
 use crate::types::{Point, Polygon};
 
+/// A block whose centroid is within this distance (wu) of the river centreline
+/// is water; within [`RIVER_BANK_DIST`] it is riverbank. These reserve a
+/// no-build corridor around the river at the subdivision level.
+const RIVER_WATER_DIST: f64 = 8.0;
+const RIVER_BANK_DIST: f64 = 16.0;
+
 /// Block type classification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BlockType {
@@ -265,12 +271,34 @@ pub fn extract_blocks(
         ka.partial_cmp(&kb).unwrap()
     });
 
+    // River corridor as a first-class subdivision: blocks straddling the river
+    // centreline are water, the band beside them is riverbank. This makes the
+    // river structural (typed blocks, audit/map aware) rather than a cosmetic
+    // overlay — the generators below reserve it (no buildings in the water).
+    let river_polylines: Vec<Vec<Point>> = rivers.iter().map(|r| r.to_polyline(32)).collect();
+    let river_dist_sq = |c: Point| -> f64 {
+        river_polylines
+            .iter()
+            .flat_map(|l| l.windows(2))
+            .map(|w| crate::scene::groundpaint::point_segment_dist_sq(c, w[0], w[1]))
+            .fold(f64::MAX, f64::min)
+    };
+    let water_sq = RIVER_WATER_DIST * RIVER_WATER_DIST;
+    let bank_sq = RIVER_BANK_DIST * RIVER_BANK_DIST;
+
     let mut blocks: Vec<Block> = Vec::new();
     for (idx, (centroid, poly, area, river_adj)) in
         block_candidates.into_iter().enumerate()
     {
         let norm_area = area / median_area;
-        let block_type = classify_block(cell, idx, norm_area, river_adj);
+        let rd2 = river_dist_sq(centroid);
+        let block_type = if rd2 < water_sq {
+            BlockType::Water
+        } else if rd2 < bank_sq {
+            BlockType::Riverbank
+        } else {
+            classify_block(cell, idx, norm_area, river_adj)
+        };
 
         blocks.push(Block {
             idx,
@@ -278,7 +306,7 @@ pub fn extract_blocks(
             block_type,
             area,
             centroid,
-            river_adjacent: river_adj,
+            river_adjacent: river_adj || rd2 < bank_sq,
         });
     }
 
