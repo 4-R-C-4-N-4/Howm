@@ -8,7 +8,12 @@ use serde::Serialize;
 use crate::gen::blocks::{extract_blocks, Block};
 use crate::gen::buildings::{generate_buildings, BuildingPlot};
 use crate::gen::cell::Cell;
+use crate::gen::config::config;
+use crate::gen::conveyances::generate_conveyances;
 use crate::gen::district::{generate_district, DistrictGeometry};
+use crate::gen::fixtures::generate_fixtures;
+use crate::gen::flora::generate_flora;
+use crate::gen::creatures::generate_creatures;
 use crate::gen::rivers::{generate_rivers, is_river, RiverSegment};
 use crate::gen::roads::{generate_roads, RoadNetwork};
 use crate::types::{Point, Polygon, Segment};
@@ -51,6 +56,13 @@ struct DistrictData {
     blocks: Vec<Block>,
     /// (block_idx, plot) for every building.
     buildings: Vec<(usize, BuildingPlot)>,
+    /// Positions of every fixture (zone + road-edge).
+    fixtures: Vec<Point>,
+    /// Positions of every flora instance (block + road-edge).
+    flora: Vec<Point>,
+    /// Conveyance positions with a route flag (true = route-following).
+    conveyances: Vec<(Point, bool)>,
+    creature_count: usize,
 }
 
 impl DistrictData {
@@ -59,15 +71,27 @@ impl DistrictData {
         let roads = generate_roads(&geom);
         let rivers = generate_rivers(&geom);
         let blocks = extract_blocks(&cell, &geom.polygon, &roads, &rivers);
-        let buildings = blocks
+
+        let mut buildings = Vec::new();
+        let mut fixtures = Vec::new();
+        let mut flora = Vec::new();
+        let mut creature_count = 0;
+        for b in &blocks {
+            buildings.extend(generate_buildings(&cell, b).plots.into_iter().map(|p| (b.idx, p)));
+            let bf = generate_fixtures(&cell, b, Some(&roads));
+            fixtures.extend(bf.zone_fixtures.iter().chain(&bf.road_fixtures).map(|f| f.position));
+            let fl = generate_flora(&cell, b, Some(&roads));
+            flora.extend(fl.block_flora.iter().chain(&fl.road_flora).map(|f| f.position));
+            creature_count += generate_creatures(&cell, b).creatures.len();
+        }
+        let conv = generate_conveyances(&cell, &roads);
+        let conveyances = conv
+            .parked
             .iter()
-            .flat_map(|b| {
-                generate_buildings(&cell, b)
-                    .plots
-                    .into_iter()
-                    .map(move |p| (b.idx, p))
-            })
+            .map(|c| (c.position, false))
+            .chain(conv.route_following.iter().map(|c| (c.position, true)))
             .collect();
+
         Self {
             cell,
             geom,
@@ -75,6 +99,10 @@ impl DistrictData {
             rivers,
             blocks,
             buildings,
+            fixtures,
+            flora,
+            conveyances,
+            creature_count,
         }
     }
 }
@@ -425,6 +453,62 @@ fn check_rivers(d: &DistrictData) -> Check {
     )
 }
 
+fn finite(p: Point) -> bool {
+    p.x.is_finite() && p.y.is_finite()
+}
+
+fn check_objects_in_district(d: &DistrictData) -> Check {
+    // Every object must have a finite position within the district's footprint.
+    // We test a padded bounding box rather than strict polygon containment:
+    // road-edge fixtures/conveyances are offset from a road centreline, so a
+    // boundary (or district-exiting) road legitimately places them just outside
+    // the polygon. The check still catches NaN/inf and gross misplacement
+    // (an object at the origin when the district sits at x≈40000, etc.).
+    let (x0, y0, x1, y1) = d.geom.polygon.bbox();
+    let diag = ((x1 - x0).powi(2) + (y1 - y0).powi(2)).sqrt();
+    let pad = (0.08 * diag).max(config().lamp_offset * 2.0);
+    let outside = |p: Point| {
+        !finite(p) || p.x < x0 - pad || p.x > x1 + pad || p.y < y0 - pad || p.y > y1 + pad
+    };
+    let f = d.fixtures.iter().filter(|&&p| outside(p)).count();
+    let fl = d.flora.iter().filter(|&&p| outside(p)).count();
+    let cv = d.conveyances.iter().filter(|&&(p, _)| outside(p)).count();
+    Check::new(
+        "objects_in_district",
+        f + fl + cv == 0,
+        format!(
+            "out-of-bounds/total — fixtures {}/{}, flora {}/{}, conveyances {}/{}",
+            f,
+            d.fixtures.len(),
+            fl,
+            d.flora.len(),
+            cv,
+            d.conveyances.len()
+        ),
+    )
+}
+
+fn check_conveyances_on_roads(d: &DistrictData) -> Check {
+    // Conveyances are placed along road segments (with a road-edge offset), so
+    // each should sit near some road.
+    let thresh = config().lamp_offset * 2.0 + 6.0;
+    let off = d
+        .conveyances
+        .iter()
+        .filter(|&&(p, _)| {
+            !d.roads
+                .segments
+                .iter()
+                .any(|s| point_on_segment(p, &Segment::new(s.a, s.b), thresh))
+        })
+        .count();
+    Check::new(
+        "conveyances_on_roads",
+        off == 0,
+        format!("{}/{} conveyances not near a road (≤{:.0} wu)", off, d.conveyances.len(), thresh),
+    )
+}
+
 fn point_on_segment(p: Point, s: &Segment, tol: f64) -> bool {
     let dx = s.b.x - s.a.x;
     let dy = s.b.y - s.a.y;
@@ -449,11 +533,17 @@ pub fn audit_district(cell: &Cell) -> AuditReport {
         check_roads_present(&d),
         check_intersections_on_segments(&d),
         check_rivers(&d),
+        check_objects_in_district(&d),
+        check_conveyances_on_roads(&d),
     ];
     let pass = checks.iter().all(|c| c.pass);
     let metrics = serde_json::json!({
         "blocks": d.blocks.len(),
         "buildings": d.buildings.len(),
+        "fixtures": d.fixtures.len(),
+        "flora": d.flora.len(),
+        "creatures": d.creature_count,
+        "conveyances": d.conveyances.len(),
         "road_segments": d.roads.segments.len(),
         "intersections": d.roads.intersections.len(),
         "rivers": d.rivers.len(),
@@ -641,8 +731,9 @@ mod tests {
     fn harness_produces_report() {
         let cell = Cell::from_ip_str("93.184.216.0").unwrap();
         let r = audit_district(&cell);
-        assert_eq!(r.checks.len(), 8);
+        assert_eq!(r.checks.len(), 10);
         assert!(r.checks.iter().any(|c| c.name == "rivers_valid"));
+        assert!(r.checks.iter().any(|c| c.name == "objects_in_district"));
         assert!(r.checks.iter().any(|c| c.name == "buildings_no_overlap"));
     }
 

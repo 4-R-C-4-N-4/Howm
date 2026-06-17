@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use super::blocks::{Block, BlockType};
 use super::config::config;
 use super::hash::{ha, hb, hash_to_f64};
-use super::voronoi::{clip_polygon, voronoi_cells};
+use super::voronoi::{bounded_voronoi_cell, clip_to_convex};
 use crate::types::{Point, Polygon};
 
 /// A zone within a block.
@@ -48,8 +48,11 @@ pub fn point_in_polygon_seeded(polygon: &Polygon, seed: u32) -> Point {
         }
     }
 
-    // Fallback to centroid
-    polygon.centroid()
+    // Fallback: the bounding-box centre. NOT the area centroid — that formula
+    // divides by the signed area, so a degenerate (near-zero-area) polygon makes
+    // it explode to millions of wu, which previously flung zone objects far off
+    // the map. The bbox centre is always finite and inside the bbox.
+    Point::new((min_x + max_x) * 0.5, (min_y + max_y) * 0.5)
 }
 
 /// Compute spawn position for an object in a zone.
@@ -117,11 +120,16 @@ pub fn generate_zones(cell_key: u32, block: &Block) -> Vec<Zone> {
     };
 
     // Generate zone seed points within the block polygon
+    // Seed points with a minimum spacing — coincident seeds produce degenerate
+    // Voronoi cells whose centroid fallback can land far outside (it exploded
+    // zone-fixture positions by millions of wu).
     let mut zone_seed_pts: Vec<Point> = Vec::with_capacity(zone_count);
     for z in 0..zone_count {
         let pt_seed = ha(cell_key ^ block.idx as u32 ^ 0x7a3f ^ z as u32);
         let pt = point_in_polygon_seeded(&block.polygon, pt_seed);
-        zone_seed_pts.push(pt);
+        if zone_seed_pts.iter().all(|q| q.distance_sq(pt) > 1.0) {
+            zone_seed_pts.push(pt);
+        }
     }
 
     if zone_seed_pts.len() < 3 {
@@ -140,28 +148,26 @@ pub fn generate_zones(cell_key: u32, block: &Block) -> Vec<Zone> {
         }];
     }
 
-    // Voronoi subdivision within the block
-    let vcells = voronoi_cells(&zone_seed_pts);
+    // Exact, non-overlapping Voronoi cells via half-plane intersection, bounded
+    // to the block bbox, then clipped to the block polygon. (Replaces the old
+    // circumcenter-fan voronoi_cells, whose degenerate hull cells produced
+    // far-flung vertices and exploded zone polygons.)
     let (bmin_x, bmin_y, bmax_x, bmax_y) = block.polygon.bbox();
 
     let mut zones = Vec::new();
-    for (z_idx, vcell) in vcells.iter().enumerate() {
-        if vcell.vertices.is_empty() {
+    for z_idx in 0..zone_seed_pts.len() {
+        let vcell = bounded_voronoi_cell(z_idx, &zone_seed_pts, bmin_x, bmin_y, bmax_x, bmax_y);
+        if vcell.len() < 3 {
             continue;
         }
 
-        // Clip Voronoi cell to block bounding box first, then to block polygon
-        let clipped = clip_polygon(&vcell.vertices, bmin_x, bmin_y, bmax_x, bmax_y);
-        if clipped.is_empty() {
+        // Zone = block ∩ cell. The cell is convex (valid S-H clip region); the
+        // block is the subject.
+        let clipped = clip_to_convex(&block.polygon.vertices, &vcell);
+        if clipped.len() < 3 {
             continue;
         }
-
-        // Further clip to the actual block polygon using point-in-polygon filtering
-        // (Simplified: use the Voronoi cell vertices that are inside the block)
-        let zone_poly = clip_to_block(&clipped, &block.polygon);
-        if zone_poly.vertices.len() < 3 {
-            continue;
-        }
+        let zone_poly = Polygon::new(clipped);
 
         let seed = ha(cell_key ^ block.idx as u32 ^ z_idx as u32);
         let area = zone_poly.area();

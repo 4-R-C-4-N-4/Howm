@@ -745,3 +745,31 @@ Regression tests now include river-hosting districts. 166 tests pass; final
 sweep 168/168 districts clean (3 river routing gaps, correctly reported).
 
 ---
+
+## Audit Extension: Outside Objects + Object-Explosion Fix — 2026-06-17
+
+Extended the audit to the remaining Outside entity types (fixtures, flora,
+creatures, conveyances) — and it immediately found a serious bug.
+
+**New checks (single-district):**
+- `objects_in_district`: every fixture/flora/conveyance position is finite and
+  within the district's padded bbox (catches NaN/inf and gross misplacement;
+  tolerates road-edge objects that sit just outside on district-exiting roads).
+- `conveyances_on_roads`: conveyances sit near a road segment.
+- Metrics now include fixtures/flora/creatures/conveyances counts.
+
+**Bug found + fixed — objects flung millions of wu off the map.** Zone
+subdivision used the same buggy circumcenter-fan `voronoi_cells` (degenerate hull
+cells) as buildings once did; clipping produced near-zero-area zone polygons, and
+`point_in_polygon_seeded`'s fallback was `polygon.centroid()` — the area-weighted
+centroid divides by the signed area, so a ~0-area polygon explodes the result to
+±1e6 wu. Zone fixtures/flora then spawned millions of units away. Fixed by:
+- replacing zone Voronoi with `bounded_voronoi_cell` + `clip_to_convex` (exact,
+  convex, bounded) + minimum seed spacing (same fix as buildings), and
+- changing the `point_in_polygon_seeded` fallback to the bounding-box centre
+  (always finite/in-bounds) instead of the area centroid.
+
+166 tests pass; sweep clean across 198 districts (worst object escape dropped
+from ~15,700,000 wu to in-district).
+
+---
