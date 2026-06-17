@@ -795,3 +795,31 @@ The audit now covers **every entity type** the world generates:
 All as machine-checkable invariants in permanent CI regression tests.
 
 ---
+
+## Phase M: Multiplayer — 2026-06-17
+
+Presence + avatars, on the Phase-S SDK foundation.
+
+**Avatars (§8.2):** `hdl::mapping::map_avatar(peer_id, palette)` — tall/moderate
+figure built from the peer's home district aesthetic + per-peer warmth from
+`ha(peer_id ^ 0xface)`. `scene::compiler::compile_avatar` renders one at a world
+position. The `avatar.get` RPC (inbound handler) returns this node's avatar in
+the daemon's `{ response: base64(graph) }` form; `GET /avatar/:ip/:peer_id` is
+the HTTP/inspection form. `--home-ip` config gives the node its home district.
+
+**Presence (§4/§8.1):** in-memory pose map in `AppState`. The local UI `POST`s
+its pose to `/presence`; we broadcast it to every active world peer via
+`bridge.send_msg(peer, PRESENCE_MSG, json)`. Peer poses arriving at
+`/p2pcd/inbound` (PRESENCE_MSG) land in the map; `GET /presence` returns the live
+peer poses (TTL 10 s) for the renderer to place avatars. Verified end-to-end on
+one node: a pose POSTed to `/p2pcd/inbound` appears in `GET /presence`; broadcast
+degrades gracefully with no daemon/peers.
+
+167 tests pass.
+
+NOTE remaining for full multiplayer: Inside host-mediated relay + per-space
+scoping (currently broadcasts to all active peers — the Outside model), and the
+renderer wiring to send the camera pose, fetch peer poses/avatars, and draw the
+avatars (Phase M part 3).
+
+---

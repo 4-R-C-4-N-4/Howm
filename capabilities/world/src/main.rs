@@ -27,6 +27,34 @@ static UI_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/ui");
 /// access-group grants (`howm.world.room.1`).
 const CAP_NAME: &str = "howm.world.room.1";
 
+/// P2P-CD message type for player-presence position updates (fire-and-forget,
+/// distinct from RPC message type 22). "PR".
+const PRESENCE_MSG: u64 = 0x5052;
+
+/// How long a peer's last position stays "live" in the presence list.
+const PRESENCE_TTL_MS: u64 = 10_000;
+
+/// A player's pose, shared with peers (spaces §8.1).
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
+struct Pose {
+    position: [f64; 3],
+    #[serde(default)]
+    orientation: [f64; 3],
+    #[serde(default)]
+    velocity: [f64; 3],
+    /// The space the player is in (e.g. district ip, "inside:<peer>", "tunnel:..").
+    #[serde(default)]
+    space: String,
+}
+
+#[derive(Clone)]
+struct PeerPose {
+    pose: Pose,
+    updated_ms: u64,
+}
+
+type PresenceMap = std::sync::Arc<tokio::sync::RwLock<std::collections::HashMap<String, PeerPose>>>;
+
 /// Shared capability state. Handlers are stateless today (districts derive purely
 /// from the IP); `bridge`/`peers`/`local_id` are the multiplayer/spaces plumbing
 /// consumed by later phases (home placement, Inside, presence relay, avatars).
@@ -42,6 +70,8 @@ struct AppState {
     /// This node's home district cell (from `--home-ip`) — drives its avatar's
     /// aesthetic, so peers see where it's "from".
     home_cell: gen::cell::Cell,
+    /// Latest known pose of each peer (by base64 peer id), for rendering them.
+    presence: PresenceMap,
 }
 
 /// Inbound P2P-CD capability messages (`POST /p2pcd/inbound`). Handles the
@@ -53,6 +83,21 @@ async fn inbound(State(state): State<AppState>, Json(msg): Json<InboundMessage>)
         Ok(b) => b,
         Err(_) => return (StatusCode::BAD_REQUEST, "invalid payload").into_response(),
     };
+
+    // Player-presence position update from a peer (fire-and-forget): store the
+    // sender's latest pose so we can render their avatar.
+    if msg.message_type == PRESENCE_MSG {
+        if let Ok(pose) = serde_json::from_slice::<Pose>(&raw) {
+            state.presence.write().await.insert(
+                msg.peer_id.clone(),
+                PeerPose {
+                    pose,
+                    updated_ms: current_time_ms(),
+                },
+            );
+        }
+        return (StatusCode::OK, Json(serde_json::json!({}))).into_response();
+    }
 
     match sdk_rpc::extract_method(&raw).as_deref() {
         // A peer asks for our avatar. Generate it from our own peer id + home
@@ -500,6 +545,66 @@ async fn district_home_handler(
 /// inspect the doorway HDL that every portal (home/inside/tunnel) animates from.
 async fn portal_handler() -> Response {
     (StatusCode::OK, axum::Json(hdl::mapping::map_portal())).into_response()
+}
+
+// ─── Presence (player positions, spaces §4/§8.1) ────────────────────────────
+//
+// The local UI POSTs its pose at 2–4 Hz; we broadcast it to every active world
+// peer (the Outside peer-to-peer model). Incoming peer poses arrive at
+// /p2pcd/inbound (PRESENCE_MSG) and land in the presence map. The UI GETs the
+// live peer poses to render their avatars. (Inside host-mediated relay and
+// per-space scoping are a follow-up — this is the direct broadcast core.)
+
+/// Decode a base64 peer id to the 32-byte array `send_msg` expects.
+fn peer_id_bytes32(b64: &str) -> Option<[u8; 32]> {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    STANDARD.decode(b64).ok()?.as_slice().try_into().ok()
+}
+
+async fn presence_post(State(state): State<AppState>, Json(pose): Json<Pose>) -> Response {
+    let payload = serde_json::to_vec(&pose).unwrap_or_default();
+    let mut sent = 0usize;
+    for ap in state.peers.peers().await {
+        if let Some(bytes) = peer_id_bytes32(&ap.peer_id) {
+            if state
+                .bridge
+                .send_msg(&bytes, PRESENCE_MSG, &payload)
+                .await
+                .is_ok()
+            {
+                sent += 1;
+            }
+        }
+    }
+    (
+        StatusCode::OK,
+        axum::Json(serde_json::json!({ "broadcast_to": sent })),
+    )
+        .into_response()
+}
+
+async fn presence_get(State(state): State<AppState>) -> Response {
+    let now = current_time_ms();
+    let map = state.presence.read().await;
+    let peers: Vec<_> = map
+        .iter()
+        .filter(|(_, pp)| now.saturating_sub(pp.updated_ms) < PRESENCE_TTL_MS)
+        .map(|(id, pp)| {
+            serde_json::json!({
+                "peer_id": id,
+                "position": pp.pose.position,
+                "orientation": pp.pose.orientation,
+                "velocity": pp.pose.velocity,
+                "space": pp.pose.space,
+                "age_ms": now.saturating_sub(pp.updated_ms),
+            })
+        })
+        .collect();
+    (
+        StatusCode::OK,
+        axum::Json(serde_json::json!({ "peers": peers })),
+    )
+        .into_response()
 }
 
 // ─── Peer avatar (spaces §8.2) ──────────────────────────────────────────────
@@ -1001,6 +1106,7 @@ async fn main() -> anyhow::Result<()> {
         peers,
         local_id,
         home_cell,
+        presence: PresenceMap::default(),
     };
 
     CapabilityApp::new(CAP_NAME, config.port, state)
@@ -1054,6 +1160,7 @@ async fn main() -> anyhow::Result<()> {
                 .route("/neighbors/{ip}", get(neighbors_handler))
                 .route("/portal", get(portal_handler))
                 .route("/avatar/{ip}/{peer_id}", get(avatar_handler))
+                .route("/presence", get(presence_get).post(presence_post))
         })
         .run()
         .await
