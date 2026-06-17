@@ -60,7 +60,9 @@ async function main() {
   // Get IP from URL params
   const params = new URLSearchParams(window.location.search)
   const ip = params.get('ip') || '93.184.216.0'
-  const useLive = params.has('live')
+  // Live (WebSocket, server-streamed view) is the default; opt out with
+  // ?static or ?live=0 to use the bulk HTTP scene fetch instead.
+  const useLive = params.get('live') !== '0' && !params.has('static')
 
   // Status overlay
   const status = document.getElementById('status')

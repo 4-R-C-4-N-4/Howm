@@ -3038,7 +3038,7 @@
     const { cols, rows } = presenter;
     const params = new URLSearchParams(window.location.search);
     const ip = params.get("ip") || "93.184.216.0";
-    const useLive = params.has("live");
+    const useLive = params.get("live") !== "0" && !params.has("static");
     const status = document.getElementById("status");
     if (status) status.textContent = `Loading district ${ip}...`;
     const uiMatch = window.location.pathname.match(/^(.*)\/ui(?:\/|$)/);
