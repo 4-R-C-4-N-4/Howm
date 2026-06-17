@@ -2216,6 +2216,65 @@
       }
       return lit;
     }
+    /**
+     * Turn a surface hit into a shaded glyph cell — the single shading path shared
+     * by the full-raymarch and temporal-reuse loops. (Keeping these two in lockstep
+     * is the whole point: when they diverged, the ground paint applied on one path
+     * but not the other, and a stale entity crashed the path that wasn't guarded.)
+     * Lighting → ground-paint tint → glyph query (with optional HDL enrichment and
+     * motion animation) → character + colour.
+     */
+    shadeHit(scene, entityId, hitPos, normal, material, de) {
+      const lit = computeLighting(hitPos, normal, material, scene);
+      this.tintGround(entityId, hitPos.x, hitPos.z, lit);
+      const params = {
+        targetCoverage: lit.brightness,
+        targetRoundness: Math.abs(normal.z),
+        targetComplexity: material.roughness,
+        glyphStyle: material.glyphStyle
+      };
+      if (de?.description) {
+        const desc = de.description;
+        const sym = desc.traits.find((t) => t.path === "being.form.symmetry");
+        if (sym) {
+          if (sym.term === "bilateral") {
+            params.targetSymmetryH = 0.8;
+          } else if (sym.term === "radial") {
+            params.targetSymmetryH = 0.8;
+            params.targetSymmetryV = 0.8;
+          } else if (sym.term === "asymmetric") {
+            params.targetSymmetryH = 0.2;
+            params.targetSymmetryV = 0.2;
+          }
+        }
+        const comp = desc.traits.find((t) => t.path === "being.form.composition");
+        if (comp) {
+          if (comp.term === "dispersed") {
+            params.targetComponents = 0.8;
+          } else if (comp.term === "clustered") {
+            params.targetComponents = 0.5;
+          }
+        }
+        const surfCtrl = de.controllers.find((c) => c.path === "being.surface");
+        if (surfCtrl) {
+          const cplx = surfCtrl.getValue("complexity");
+          if (isFinite(cplx)) params.targetComplexity = cplx;
+        }
+      }
+      let glyph = this.glyphCache ? this.glyphCache.select(params) : null;
+      if (glyph && material.motionBehavior && this.glyphCache) {
+        const pixelOffset = Math.sin(hitPos.x * 1.7 + hitPos.y * 2.3 + hitPos.z * 1.1);
+        glyph = animateGlyph(glyph, material, scene.time + pixelOffset * 0.5, params, this.glyphCache);
+      }
+      const char = glyph ? glyph.char : RAMP[clamp4(Math.floor((lit.brightness || 0) * (RAMP.length - 1)), 0, RAMP.length - 1)] || " ";
+      return {
+        cp: char.codePointAt(0) ?? 32,
+        r: lit.r || 0,
+        g: lit.g || 0,
+        b: lit.b || 0,
+        brightness: lit.brightness || 0
+      };
+    }
     updateTime() {
       const now = performance.now();
       const deltaMs = now - this.lastTime;
@@ -2268,18 +2327,8 @@
                 if (anyFlicker || anyAnimated) {
                   const hitPos = temporal.getHitPos(x, y);
                   const normal = temporal.getNormal(x, y);
-                  const material = entity.material;
-                  const lit = computeLighting(hitPos, normal, material, scene);
-                  this.tintGround(entity.id, hitPos.x, hitPos.z, lit);
-                  const params = {
-                    targetCoverage: lit.brightness,
-                    targetRoundness: Math.abs(normal.z),
-                    targetComplexity: material.roughness,
-                    glyphStyle: material.glyphStyle
-                  };
-                  const glyph = this.glyphCache ? this.glyphCache.select(params) : null;
-                  const char = glyph ? glyph.char : RAMP[clamp4(Math.floor((lit.brightness || 0) * (RAMP.length - 1)), 0, RAMP.length - 1)] || " ";
-                  frameBuffer.set(x, y, char.codePointAt(0) ?? 32, lit.r || 0, lit.g || 0, lit.b || 0, lit.brightness || 0);
+                  const sh = this.shadeHit(scene, entity.id, hitPos, normal, entity.material, this.describedEntities[eIdx]);
+                  frameBuffer.set(x, y, sh.cp, sh.r, sh.g, sh.b, sh.brightness);
                 }
                 continue;
               }
@@ -2291,52 +2340,10 @@
           const maxSteps = cameraChanged ? Math.floor(baseSteps * 0.6) : baseSteps;
           const result = raymarch(ray, world, maxSteps, farDist);
           if (result.hit) {
-            const material = result.material;
-            const lit = computeLighting(result.position, result.normal, material, scene);
-            const hitId = result.entityIndex >= 0 ? this.describedEntities[result.entityIndex]?.entity.id ?? "" : "";
-            this.tintGround(hitId, result.position.x, result.position.z, lit);
-            const params = {
-              targetCoverage: lit.brightness,
-              targetRoundness: Math.abs(result.normal.z),
-              targetComplexity: material.roughness,
-              glyphStyle: material.glyphStyle
-            };
             const de = result.entityIndex >= 0 && result.entityIndex < this.describedEntities.length ? this.describedEntities[result.entityIndex] : void 0;
-            if (de?.description) {
-              const desc = de.description;
-              const sym = desc.traits.find((t) => t.path === "being.form.symmetry");
-              if (sym) {
-                if (sym.term === "bilateral") {
-                  params.targetSymmetryH = 0.8;
-                } else if (sym.term === "radial") {
-                  params.targetSymmetryH = 0.8;
-                  params.targetSymmetryV = 0.8;
-                } else if (sym.term === "asymmetric") {
-                  params.targetSymmetryH = 0.2;
-                  params.targetSymmetryV = 0.2;
-                }
-              }
-              const comp = desc.traits.find((t) => t.path === "being.form.composition");
-              if (comp) {
-                if (comp.term === "dispersed") {
-                  params.targetComponents = 0.8;
-                } else if (comp.term === "clustered") {
-                  params.targetComponents = 0.5;
-                }
-              }
-              const surfCtrl = de.controllers.find((c) => c.path === "being.surface");
-              if (surfCtrl) {
-                const cplx = surfCtrl.getValue("complexity");
-                if (isFinite(cplx)) params.targetComplexity = cplx;
-              }
-            }
-            let glyph = this.glyphCache ? this.glyphCache.select(params) : null;
-            if (glyph && result.material.motionBehavior && this.glyphCache) {
-              const pixelOffset = Math.sin(result.position.x * 1.7 + result.position.y * 2.3 + result.position.z * 1.1);
-              glyph = animateGlyph(glyph, result.material, scene.time + pixelOffset * 0.5, params, this.glyphCache);
-            }
-            const char = glyph ? glyph.char : RAMP[clamp4(Math.floor((lit.brightness || 0) * (RAMP.length - 1)), 0, RAMP.length - 1)] || " ";
-            frameBuffer.set(x, y, char.codePointAt(0) ?? 32, lit.r || 0, lit.g || 0, lit.b || 0, lit.brightness || 0);
+            const hitId = de?.entity.id ?? "";
+            const sh = this.shadeHit(scene, hitId, result.position, result.normal, result.material, de);
+            frameBuffer.set(x, y, sh.cp, sh.r, sh.g, sh.b, sh.brightness);
             const depthRatio = clamp4(result.distance / 100, 0, 1);
             const atmos = depthRatio * depthRatio;
             const abgR = Math.floor(bg.r * atmos);
@@ -2348,11 +2355,11 @@
               frameBuffer.set(
                 x,
                 y,
-                char.codePointAt(0) ?? 32,
-                Math.floor((lit.r || 0) * fgWeight + abgR * trans),
-                Math.floor((lit.g || 0) * fgWeight + abgG * trans),
-                Math.floor((lit.b || 0) * fgWeight + abgB * trans),
-                (lit.brightness || 0) * fgWeight
+                sh.cp,
+                Math.floor(sh.r * fgWeight + abgR * trans),
+                Math.floor(sh.g * fgWeight + abgG * trans),
+                Math.floor(sh.b * fgWeight + abgB * trans),
+                sh.brightness * fgWeight
               );
             }
             frameBuffer.setBg(x, y, abgR, abgG, abgB);

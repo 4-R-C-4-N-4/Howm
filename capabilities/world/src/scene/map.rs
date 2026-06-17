@@ -8,7 +8,6 @@ use crate::gen::aesthetic::AestheticPalette;
 use crate::gen::blocks::{Block, BlockType};
 use crate::gen::buildings::BuildingPlot;
 use crate::gen::cell::Cell;
-use crate::gen::creatures::Creature;
 use crate::gen::fixtures::Fixture;
 use crate::gen::flora::Flora;
 use crate::gen::rivers::RiverSegment;
@@ -178,7 +177,7 @@ pub fn generate_district_map(
     }
 
     // Buildings
-    for (block_idx, plots) in buildings_per_block.iter().enumerate() {
+    for (_block_idx, plots) in buildings_per_block.iter().enumerate() {
         for plot in plots {
             let fill = if plot.is_public {
                 hsl(palette.hue, 0.4, 0.45)
@@ -341,7 +340,7 @@ pub fn generate_neighborhood_map(center: &Cell) -> String {
     use crate::gen::{blocks, buildings, creatures, district, fixtures, flora, hash, roads, rivers, zones, aesthetic::AestheticPalette};
 
     let [o1, o2, o3] = center.octets;
-    let cfg = crate::gen::config::config();
+    let _cfg = crate::gen::config::config();
 
     // Collect all districts to render (center + 8 neighbors)
     struct DistrictData {
@@ -375,7 +374,7 @@ pub fn generate_neighborhood_map(center: &Cell) -> String {
             }
 
             let cell = Cell::from_octets(o1, n2 as u8, n3 as u8);
-            let palette = AestheticPalette::from_cell(&cell);
+            let _palette = AestheticPalette::from_cell(&cell);
             let dist = district::generate_district(&cell);
             let road_net = roads::generate_roads(&dist);
             let river_data = rivers::generate_rivers(&dist);

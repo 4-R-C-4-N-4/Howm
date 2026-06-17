@@ -1,4 +1,4 @@
-import { Scene, Entity, Camera, GroundPaint } from '../core/types'
+import { Scene, Entity, Camera, GroundPaint, Material, Vec3 } from '../core/types'
 import { SceneProvider } from '../scene/SceneProvider'
 import { GroundPaintSampler } from '../scene/GroundPaint'
 import { FrameBuffer } from './FrameBuffer'
@@ -188,6 +188,72 @@ export class RenderLoop {
     return lit
   }
 
+  /**
+   * Turn a surface hit into a shaded glyph cell — the single shading path shared
+   * by the full-raymarch and temporal-reuse loops. (Keeping these two in lockstep
+   * is the whole point: when they diverged, the ground paint applied on one path
+   * but not the other, and a stale entity crashed the path that wasn't guarded.)
+   * Lighting → ground-paint tint → glyph query (with optional HDL enrichment and
+   * motion animation) → character + colour.
+   */
+  private shadeHit(
+    scene: Scene,
+    entityId: string,
+    hitPos: Vec3,
+    normal: Vec3,
+    material: Material,
+    de: DescribedEntity | undefined,
+  ): { cp: number; r: number; g: number; b: number; brightness: number } {
+    const lit = computeLighting(hitPos, normal, material, scene)
+    this.tintGround(entityId, hitPos.x, hitPos.z, lit)
+
+    const params: GlyphQueryParams = {
+      targetCoverage: lit.brightness,
+      targetRoundness: Math.abs(normal.z),
+      targetComplexity: material.roughness,
+      glyphStyle: material.glyphStyle,
+    }
+
+    // Enrich the query from the entity's HDL description, if any.
+    if (de?.description) {
+      const desc = de.description
+      const sym = desc.traits.find(t => t.path === 'being.form.symmetry')
+      if (sym) {
+        if (sym.term === 'bilateral') { params.targetSymmetryH = 0.8 }
+        else if (sym.term === 'radial') { params.targetSymmetryH = 0.8; params.targetSymmetryV = 0.8 }
+        else if (sym.term === 'asymmetric') { params.targetSymmetryH = 0.2; params.targetSymmetryV = 0.2 }
+      }
+      const comp = desc.traits.find(t => t.path === 'being.form.composition')
+      if (comp) {
+        if (comp.term === 'dispersed') { params.targetComponents = 0.8 }
+        else if (comp.term === 'clustered') { params.targetComponents = 0.5 }
+      }
+      const surfCtrl = de.controllers.find(c => c.path === 'being.surface')
+      if (surfCtrl) {
+        const cplx = surfCtrl.getValue('complexity')
+        if (isFinite(cplx)) params.targetComplexity = cplx
+      }
+    }
+
+    let glyph = this.glyphCache ? this.glyphCache.select(params) : null
+    if (glyph && material.motionBehavior && this.glyphCache) {
+      const pixelOffset = Math.sin(hitPos.x * 1.7 + hitPos.y * 2.3 + hitPos.z * 1.1)
+      glyph = animateGlyph(glyph, material, scene.time + pixelOffset * 0.5, params, this.glyphCache)
+    }
+
+    const char = glyph
+      ? glyph.char
+      : RAMP[clamp(Math.floor((lit.brightness || 0) * (RAMP.length - 1)), 0, RAMP.length - 1)] || ' '
+
+    return {
+      cp: char.codePointAt(0) ?? 0x20,
+      r: lit.r || 0,
+      g: lit.g || 0,
+      b: lit.b || 0,
+      brightness: lit.brightness || 0,
+    }
+  }
+
   private updateTime(): number {
     const now = performance.now()
     const deltaMs = now - this.lastTime
@@ -262,24 +328,12 @@ export class RenderLoop {
 
             if (entity && !entityMoving) {
               if (anyFlicker || anyAnimated) {
-                // Recompute lighting with current (controller-modified) material
-                // This is cheap — reuses cached hit position and normal
+                // Recompute shading with the current (controller-modified)
+                // material, reusing the cached hit position and normal.
                 const hitPos = temporal.getHitPos(x, y)
                 const normal = temporal.getNormal(x, y)
-                const material = entity.material
-                const lit = computeLighting(hitPos, normal, material, scene)
-                this.tintGround(entity.id, hitPos.x, hitPos.z, lit)
-                const params: GlyphQueryParams = {
-                  targetCoverage: lit.brightness,
-                  targetRoundness: Math.abs(normal.z),
-                  targetComplexity: material.roughness,
-                  glyphStyle: material.glyphStyle,
-                }
-                const glyph = this.glyphCache
-                  ? this.glyphCache.select(params)
-                  : null
-                const char = glyph ? glyph.char : RAMP[clamp(Math.floor((lit.brightness || 0) * (RAMP.length - 1)), 0, RAMP.length - 1)] || ' '
-                frameBuffer.set(x, y, char.codePointAt(0) ?? 0x20, lit.r || 0, lit.g || 0, lit.b || 0, lit.brightness || 0)
+                const sh = this.shadeHit(scene, entity.id, hitPos, normal, entity.material, this.describedEntities[eIdx])
+                frameBuffer.set(x, y, sh.cp, sh.r, sh.g, sh.b, sh.brightness)
               }
               // else: fully static — leave framebuffer as-is
               continue
@@ -297,63 +351,14 @@ export class RenderLoop {
         const result = raymarch(ray, world, maxSteps, farDist)
 
         if (result.hit) {
-          const material = result.material
-          const lit = computeLighting(result.position, result.normal, material, scene)
-          // Ground hits get their colour from the zone/road paint (streets,
-          // parks, water), brightness-modulated so the hue survives lighting.
-          const hitId = result.entityIndex >= 0
-            ? this.describedEntities[result.entityIndex]?.entity.id ?? ''
-            : ''
-          this.tintGround(hitId, result.position.x, result.position.z, lit)
-
-          const params: GlyphQueryParams = {
-            targetCoverage: lit.brightness,
-            targetRoundness: Math.abs(result.normal.z),
-            targetComplexity: material.roughness,
-            glyphStyle: material.glyphStyle,
-          }
-
-          // Enrich query from HDL description if available
           const de = result.entityIndex >= 0 && result.entityIndex < this.describedEntities.length
             ? this.describedEntities[result.entityIndex]
             : undefined
-          if (de?.description) {
-            const desc = de.description
-            // Symmetry from being.form.symmetry
-            const sym = desc.traits.find(t => t.path === 'being.form.symmetry')
-            if (sym) {
-              if (sym.term === 'bilateral') { params.targetSymmetryH = 0.8 }
-              else if (sym.term === 'radial') { params.targetSymmetryH = 0.8; params.targetSymmetryV = 0.8 }
-              else if (sym.term === 'asymmetric') { params.targetSymmetryH = 0.2; params.targetSymmetryV = 0.2 }
-            }
-            // Components from being.form.composition
-            const comp = desc.traits.find(t => t.path === 'being.form.composition')
-            if (comp) {
-              if (comp.term === 'dispersed') { params.targetComponents = 0.8 }
-              else if (comp.term === 'clustered') { params.targetComponents = 0.5 }
-            }
-            // Animated complexity from surface controller
-            const surfCtrl = de.controllers.find(c => c.path === 'being.surface')
-            if (surfCtrl) {
-              const cplx = surfCtrl.getValue('complexity')
-              if (isFinite(cplx)) params.targetComplexity = cplx
-            }
-          }
-
-          let glyph = this.glyphCache ? this.glyphCache.select(params) : null
-
-          // Glyph animation
-          if (glyph && result.material.motionBehavior && this.glyphCache) {
-            const pixelOffset = Math.sin(result.position.x * 1.7 + result.position.y * 2.3 + result.position.z * 1.1)
-            glyph = animateGlyph(glyph, result.material, scene.time + pixelOffset * 0.5, params, this.glyphCache)
-          }
-
-          const char = glyph
-            ? glyph.char
-            : RAMP[clamp(Math.floor((lit.brightness || 0) * (RAMP.length - 1)), 0, RAMP.length - 1)] || ' '
+          const hitId = de?.entity.id ?? ''
+          const sh = this.shadeHit(scene, hitId, result.position, result.normal, result.material, de)
 
           // Foreground
-          frameBuffer.set(x, y, char.codePointAt(0) ?? 0x20, lit.r || 0, lit.g || 0, lit.b || 0, lit.brightness || 0)
+          frameBuffer.set(x, y, sh.cp, sh.r, sh.g, sh.b, sh.brightness)
 
           // Background: atmosphere depth blend toward sky colour
           const depthRatio = clamp(result.distance / 100.0, 0, 1)
@@ -366,11 +371,11 @@ export class RenderLoop {
           const trans = result.material.transparency
           if (trans && trans > 0) {
             const fgWeight = 1.0 - trans
-            frameBuffer.set(x, y, char.codePointAt(0) ?? 0x20,
-              Math.floor((lit.r || 0) * fgWeight + abgR * trans),
-              Math.floor((lit.g || 0) * fgWeight + abgG * trans),
-              Math.floor((lit.b || 0) * fgWeight + abgB * trans),
-              (lit.brightness || 0) * fgWeight)
+            frameBuffer.set(x, y, sh.cp,
+              Math.floor(sh.r * fgWeight + abgR * trans),
+              Math.floor(sh.g * fgWeight + abgG * trans),
+              Math.floor(sh.b * fgWeight + abgB * trans),
+              sh.brightness * fgWeight)
           }
 
           frameBuffer.setBg(x, y, abgR, abgG, abgB)

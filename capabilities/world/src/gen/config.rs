@@ -50,6 +50,22 @@ pub struct Config {
     /// Minimum world units between crossing points on shared edge
     pub min_road_spacing: f64,
 
+    // ── River & ground paint (wu) ─────────────────────────────────────────
+    /// Half-width of a painted road on the ground raster.
+    pub road_paint_half: f64,
+    /// Half-width of a river's painted water channel.
+    pub river_paint_half: f64,
+    /// Painted riverbank margin beyond the water channel.
+    pub river_paint_bank: f64,
+    /// Block-centroid distance to the river centreline classified as water.
+    pub river_block_water_dist: f64,
+    /// Block-centroid distance classified as riverbank (a no-build corridor).
+    pub river_block_bank_dist: f64,
+    /// Render-time clearance keeping buildings out of the river channel.
+    pub river_clear_building: f64,
+    /// Render-time clearance keeping props (fixtures/flora/conveyances) out.
+    pub river_clear_prop: f64,
+
     // ── Alley system ──────────────────────────────────────────────────────
     /// popcount >= this: no alley
     pub alley_popcount_none: u32,
@@ -198,6 +214,15 @@ impl Default for Config {
             jitter_default: 0.72,
             player_speed: 8.0,
             min_road_spacing: 28.0,
+
+            // River & ground paint
+            road_paint_half: 3.5,
+            river_paint_half: 6.0,
+            river_paint_bank: 3.0,
+            river_block_water_dist: 8.0,
+            river_block_bank_dist: 16.0,
+            river_clear_building: 10.0,
+            river_clear_prop: 6.0,
 
             // Alley system
             alley_popcount_none: 20,

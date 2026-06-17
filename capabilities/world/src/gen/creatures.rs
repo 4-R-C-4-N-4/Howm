@@ -9,7 +9,9 @@ use serde::{Deserialize, Serialize};
 use super::blocks::{Block, BlockType};
 use super::cell::Cell;
 use super::config::config;
-use super::hash::{ha, hb, hash_to_f64};
+use super::hash::{ha, hash_to_f64};
+#[cfg(test)]
+use super::hash::hb;
 use super::objects::{compute_form_id, compute_object_id, ObjectSeeds, Tier};
 use super::zones::{point_in_polygon_seeded, Zone};
 use crate::types::{Point, Polygon};

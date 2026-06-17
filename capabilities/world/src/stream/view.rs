@@ -10,10 +10,7 @@ use crate::gen::aesthetic::AestheticPalette;
 use crate::gen::atmosphere;
 use crate::gen::cell::Cell;
 use crate::gen::config::config;
-use crate::scene::compiler::{self, Entity, Light, Scene};
-use crate::scene::geometry::Vec3;
-use crate::scene::material::Color;
-use crate::types::Point;
+use crate::scene::compiler::{self, Entity, Light};
 
 /// LOD level for an entity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -11,6 +11,7 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 
 use crate::gen::blocks::{Block, BlockType};
+use crate::gen::config::config;
 use crate::gen::rivers::RiverSegment;
 use crate::gen::roads::RoadNetwork;
 use crate::types::Point;
@@ -22,12 +23,6 @@ pub const CODE_WATER: u8 = 2;
 pub const CODE_RIVERBANK: u8 = 3;
 pub const CODE_PLAZA: u8 = 4;
 pub const CODE_ROAD: u8 = 5;
-
-/// Half-width of a painted road (wu).
-const ROAD_HALF: f64 = 3.5;
-/// Half-width of a river's water channel (wu), and its riverbank margin.
-const RIVER_HALF: f64 = 6.0;
-const RIVER_BANK: f64 = 3.0;
 
 /// A square raster of zone codes covering one district, in world coordinates.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -41,19 +36,6 @@ pub struct GroundPaint {
     pub res: usize,
     /// base64 of `res*res` zone-code bytes, row-major (z-major, then x).
     pub codes: String,
-}
-
-/// Squared distance from point `p` to segment `a`–`b`.
-pub(crate) fn point_segment_dist_sq(p: Point, a: Point, b: Point) -> f64 {
-    let dx = b.x - a.x;
-    let dy = b.y - a.y;
-    let len_sq = dx * dx + dy * dy;
-    if len_sq < 1e-9 {
-        return p.distance_sq(a);
-    }
-    let t = (((p.x - a.x) * dx + (p.y - a.y) * dy) / len_sq).clamp(0.0, 1.0);
-    let proj = Point::new(a.x + t * dx, a.y + t * dy);
-    p.distance_sq(proj)
 }
 
 fn block_code(bt: BlockType) -> u8 {
@@ -81,9 +63,11 @@ pub fn paint_ground(
     let oz = cz - size * 0.5;
     let res = ((size / 2.5) as usize).clamp(64, 140);
 
-    let road_half_sq = ROAD_HALF * ROAD_HALF;
-    let water_sq = RIVER_HALF * RIVER_HALF;
-    let bank_sq = (RIVER_HALF + RIVER_BANK) * (RIVER_HALF + RIVER_BANK);
+    let cfg = config();
+    let road_half_sq = cfg.road_paint_half * cfg.road_paint_half;
+    let water_sq = cfg.river_paint_half * cfg.river_paint_half;
+    let bank = cfg.river_paint_half + cfg.river_paint_bank;
+    let bank_sq = bank * bank;
     // Pre-flatten river bezier curves to polylines once.
     let river_lines: Vec<Vec<Point>> = rivers.iter().map(|r| r.to_polyline(48)).collect();
     let mut codes = vec![CODE_GRASS; res * res];
@@ -108,7 +92,7 @@ pub fn paint_ground(
             let river_d2 = river_lines
                 .iter()
                 .flat_map(|line| line.windows(2))
-                .map(|w| point_segment_dist_sq(p, w[0], w[1]))
+                .map(|w| p.distance_sq_to_segment(w[0], w[1]))
                 .fold(f64::MAX, f64::min);
             if river_d2 < water_sq {
                 code = CODE_WATER;
@@ -120,7 +104,7 @@ pub fn paint_ground(
             let on_road = roads
                 .segments
                 .iter()
-                .any(|s| point_segment_dist_sq(p, s.a, s.b) < road_half_sq);
+                .any(|s| p.distance_sq_to_segment(s.a, s.b) < road_half_sq);
             if on_road {
                 code = CODE_ROAD;
             }

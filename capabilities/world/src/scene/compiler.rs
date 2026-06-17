@@ -7,10 +7,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::gen::aesthetic::AestheticPalette;
 use crate::gen::atmosphere::AtmosphereState;
-use crate::gen::blocks::Block;
-use crate::gen::buildings::{generate_buildings, BuildingPlot};
+use crate::gen::buildings::BuildingPlot;
 use crate::gen::cell::Cell;
-use crate::gen::conveyances::{Conveyance, ConveyanceType};
+use crate::gen::conveyances::Conveyance;
 use crate::gen::creatures::Creature;
 use crate::gen::fixtures::Fixture;
 use crate::gen::flora::Flora;
@@ -20,7 +19,6 @@ use crate::gen::inside::Inside;
 use crate::gen::room_features::RoomFeature;
 use crate::gen::tunnel::{Tunnel, TunnelAesthetic};
 use crate::hdl::mapping;
-use crate::hdl::traits::DescriptionGraph;
 
 use super::geometry::{self, Geometry, Transform, Vec3};
 use super::material::{self, Color, Material};
@@ -674,12 +672,13 @@ pub fn compile_district_scene(
         river_lines
             .iter()
             .flat_map(|l| l.windows(2))
-            .map(|w| crate::scene::groundpaint::point_segment_dist_sq(p, w[0], w[1]))
+            .map(|w| p.distance_sq_to_segment(w[0], w[1]))
             .fold(f64::MAX, f64::min)
     };
     // Clearances (squared): buildings need more room than small props.
-    let build_clear_sq = 10.0_f64 * 10.0;
-    let prop_clear_sq = 6.0_f64 * 6.0;
+    let cfg = crate::gen::config::config();
+    let build_clear_sq = cfg.river_clear_building * cfg.river_clear_building;
+    let prop_clear_sq = cfg.river_clear_prop * cfg.river_clear_prop;
 
     // Ground — centred on district
     entities.push(compile_ground(palette, &dist.seed_position));

@@ -14,12 +14,6 @@ use super::rivers::RiverSegment;
 use super::roads::{RoadNetwork, RoadFate};
 use crate::types::{Point, Polygon};
 
-/// A block whose centroid is within this distance (wu) of the river centreline
-/// is water; within [`RIVER_BANK_DIST`] it is riverbank. These reserve a
-/// no-build corridor around the river at the subdivision level.
-const RIVER_WATER_DIST: f64 = 8.0;
-const RIVER_BANK_DIST: f64 = 16.0;
-
 /// Block type classification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BlockType {
@@ -280,11 +274,11 @@ pub fn extract_blocks(
         river_polylines
             .iter()
             .flat_map(|l| l.windows(2))
-            .map(|w| crate::scene::groundpaint::point_segment_dist_sq(c, w[0], w[1]))
+            .map(|w| c.distance_sq_to_segment(w[0], w[1]))
             .fold(f64::MAX, f64::min)
     };
-    let water_sq = RIVER_WATER_DIST * RIVER_WATER_DIST;
-    let bank_sq = RIVER_BANK_DIST * RIVER_BANK_DIST;
+    let water_sq = cfg.river_block_water_dist * cfg.river_block_water_dist;
+    let bank_sq = cfg.river_block_bank_dist * cfg.river_block_bank_dist;
 
     let mut blocks: Vec<Block> = Vec::new();
     for (idx, (centroid, poly, area, river_adj)) in

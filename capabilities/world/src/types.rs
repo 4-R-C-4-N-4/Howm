@@ -24,6 +24,18 @@ impl Point {
         dx * dx + dy * dy
     }
 
+    /// Squared distance from this point to the segment `a`–`b`.
+    pub fn distance_sq_to_segment(self, a: Point, b: Point) -> f64 {
+        let dx = b.x - a.x;
+        let dy = b.y - a.y;
+        let len_sq = dx * dx + dy * dy;
+        if len_sq < 1e-9 {
+            return self.distance_sq(a);
+        }
+        let t = (((self.x - a.x) * dx + (self.y - a.y) * dy) / len_sq).clamp(0.0, 1.0);
+        self.distance_sq(Point::new(a.x + t * dx, a.y + t * dy))
+    }
+
     pub fn midpoint(self, other: Point) -> Point {
         Point {
             x: (self.x + other.x) * 0.5,
