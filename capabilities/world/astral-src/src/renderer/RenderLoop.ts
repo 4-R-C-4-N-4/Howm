@@ -4,7 +4,7 @@ import { FrameBuffer } from './FrameBuffer'
 import { Presenter } from './Presenter'
 import { World } from './World'
 import { createRay } from './Camera'
-import { raymarch, DEFAULT_MAX_STEPS } from './Raymarch'
+import { raymarch, DEFAULT_MAX_STEPS, DEFAULT_MAX_DISTANCE } from './Raymarch'
 import { computeLighting } from './Lighting'
 import { GlyphCache } from '../glyph/GlyphCache'
 import { GlyphQueryParams } from '../glyph/GlyphDB'
@@ -132,6 +132,37 @@ export class RenderLoop {
     }
   }
 
+  // ── Debug / external control ─────────────────────────────────────────────
+  // Exposed via `window.__howm` so the world can be driven programmatically
+  // (headless harness, agent-controlled survey) without WASD.
+
+  /** Absolute camera position in shared-origin world space. */
+  cameraPosition(): { x: number; y: number; z: number } {
+    return { x: this.camera.position.x, y: this.camera.position.y, z: this.camera.position.z }
+  }
+
+  /** Move the camera by a world-space delta. Returns the new position. */
+  teleport(dx: number, dz: number, dy = 0): { x: number; y: number; z: number } {
+    this.camera.position.x += dx
+    this.camera.position.y += dy
+    this.camera.position.z += dz
+    return this.cameraPosition()
+  }
+
+  /** Jump the camera to an absolute world-space position. */
+  teleportTo(x: number, y: number, z: number): { x: number; y: number; z: number } {
+    this.camera.position.x = x
+    this.camera.position.y = y
+    this.camera.position.z = z
+    return this.cameraPosition()
+  }
+
+  /** Set the render distance (camera far clip), clamped to [50, 2000]. */
+  setFar(far: number): number {
+    this.camera.far = Math.max(50, Math.min(2000, far))
+    return this.camera.far
+  }
+
   private updateTime(): number {
     const now = performance.now()
     const deltaMs = now - this.lastTime
@@ -164,6 +195,10 @@ export class RenderLoop {
     const anyMoving = this.hasAnyMoving()
     const anyFlicker = this.hasAnyFlicker()
     const anyAnimated = this.hasAnyAnimatedEntities()
+    // Render distance from the camera's far clip (clamped for sanity).
+    const farDist = this.camera.far && this.camera.far > 0
+      ? Math.min(this.camera.far, 2000)
+      : DEFAULT_MAX_DISTANCE
     const frameStart = performance.now()
 
     for (let y = 0; y < height; y++) {
@@ -216,10 +251,12 @@ export class RenderLoop {
 
         // --- Full raymarch ---
         const ray = createRay(this.camera, x, y, width, height)
-        // Fewer steps during movement — rough but fast; full quality when still
-        const baseSteps = this.useAdaptiveQuality ? getMaxSteps(x, y, width, height) : DEFAULT_MAX_STEPS
+        // Fewer steps during movement — rough but fast; full quality when still.
+        // Step budget scales with render distance so far districts are reachable.
+        const distSteps = Math.min(220, Math.max(DEFAULT_MAX_STEPS, Math.round(farDist / 3)))
+        const baseSteps = this.useAdaptiveQuality ? getMaxSteps(x, y, width, height) : distSteps
         const maxSteps = cameraChanged ? Math.floor(baseSteps * 0.6) : baseSteps
-        const result = raymarch(ray, world, maxSteps)
+        const result = raymarch(ray, world, maxSteps, farDist)
 
         if (result.hit) {
           const lit = computeLighting(result.position, result.normal, result.material, scene)
@@ -391,6 +428,12 @@ export class RenderLoop {
     // Camera input (must happen before rendering so temporal cache sees the new camera position)
     if (this.cameraController && this.inputState) {
       this.cameraController.update(this.camera, this.inputState, dt)
+    }
+
+    // Feed camera position to provider so a multi-district provider can load
+    // the neighbour ring as we cross district boundaries.
+    if (this.provider.setViewerPosition) {
+      this.provider.setViewerPosition(this.camera.position.x, this.camera.position.z)
     }
 
     // Feed camera state to provider (for WebSocket streaming)

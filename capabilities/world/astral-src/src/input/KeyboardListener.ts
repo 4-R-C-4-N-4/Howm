@@ -3,7 +3,7 @@ import { InputState } from './InputState'
 const GAME_KEYS = new Set([
   'KeyW', 'KeyA', 'KeyS', 'KeyD',
   'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
-  'Space', 'ShiftLeft', 'ShiftRight',
+  'Space', 'ShiftLeft', 'ShiftRight', 'ControlLeft', 'KeyF',
 ])
 
 export class KeyboardListener {
@@ -11,6 +11,8 @@ export class KeyboardListener {
   private boundKeyDown: EventListener
   private boundKeyUp: EventListener
   private target: EventTarget
+  /** Fired on each `F` press — wired to the fly/noclip toggle. */
+  onToggleFly?: () => void
 
   constructor(inputState: InputState, target: EventTarget) {
     this.inputState = inputState
@@ -22,6 +24,8 @@ export class KeyboardListener {
   }
 
   private onKeyDown(e: KeyboardEvent): void {
+    // Edge-triggered fly toggle (ignore key-repeat).
+    if (e.code === 'KeyF' && !e.repeat) this.onToggleFly?.()
     this.updateKey(e.code, true)
     if (GAME_KEYS.has(e.code)) e.preventDefault()
     if (e.code === 'Escape') document.exitPointerLock()
@@ -45,13 +49,13 @@ export class KeyboardListener {
       case 'KeyD':
       case 'ArrowRight':
         this.inputState.right = pressed; break
-      // case 'Space':
-      //   this.inputState.up = pressed; break
-      // case 'ShiftLeft':
-      // case 'ShiftRight':
-      //   this.inputState.down = pressed; break
-      // case 'ControlLeft':
-      //   this.inputState.sprint = pressed; break
+      case 'Space':
+        this.inputState.up = pressed; break
+      case 'ShiftLeft':
+      case 'ShiftRight':
+        this.inputState.down = pressed; break
+      case 'ControlLeft':
+        this.inputState.sprint = pressed; break
     }
   }
 

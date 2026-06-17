@@ -54,87 +54,207 @@
   }
 
   // src/scene/HowmSceneProvider.ts
+  var LOAD_RADIUS = 1;
+  var PRUNE_RADIUS = 2;
+  var MAX_LIGHTS = 28;
+  function parseCell(ip) {
+    const [o1, o2, o3] = ip.split(".").map(Number);
+    return { gx: o3 & 255, gy: (o1 & 255) << 8 | o2 & 255 };
+  }
+  function cellIp(gx, gy) {
+    const ngx = (gx % 256 + 256) % 256;
+    const ngy = (gy % 65536 + 65536) % 65536;
+    return `${ngy >> 8 & 255}.${ngy & 255}.${ngx}.0`;
+  }
+  function canon(ip) {
+    const c = parseCell(ip);
+    return cellIp(c.gx, c.gy);
+  }
+  function ringIps(ip, r) {
+    const { gx, gy } = parseCell(ip);
+    const out = [cellIp(gx, gy)];
+    for (let d = 1; d <= r; d++) {
+      for (let dx = -d; dx <= d; dx++) {
+        for (let dz = -d; dz <= d; dz++) {
+          if (Math.max(Math.abs(dx), Math.abs(dz)) === d) out.push(cellIp(gx + dx, gy + dz));
+        }
+      }
+    }
+    return out;
+  }
+  function gridDist(a, b) {
+    const ca = parseCell(a), cb = parseCell(b);
+    const dx = Math.abs(ca.gx - cb.gx), dz = Math.abs(ca.gy - cb.gy);
+    return Math.max(Math.min(dx, 256 - dx), Math.min(dz, 65536 - dz));
+  }
   var HowmSceneProvider = class {
     constructor(baseUrl) {
       this.baseUrl = baseUrl;
-      this.scene = null;
+      this.districts = /* @__PURE__ */ new Map();
+      this.pending = /* @__PURE__ */ new Set();
+      this.origin = null;
+      this.centerIp = "";
+      this.base = null;
       this.dirty = true;
+      /** Merged scene cache, rebuilt only when the district set changes. */
+      this.merged = null;
       /** Live peer-avatar entities (multiplayer presence), merged into the scene. */
       this.peers = [];
     }
     /**
-     * Set the current peer-avatar entities (from presence). They are merged into
-     * the scene returned by `getScene()`; we mark the scene structurally dirty so
-     * the render loop rebuilds the World/spatial grid to include their new
-     * positions. Same-district peers share this district's recentring origin, so
-     * their positions line up with ours.
+     * Set the current peer-avatar entities (from presence). They share our shared
+     * origin (same-space peers), so their positions line up with ours.
      */
     setPeerEntities(entities) {
       this.peers = entities;
-      this.dirty = true;
     }
-    /** Fetch a district scene from the world API. */
+    /** Load the initial district and its neighbour ring. */
     async loadDistrict(ip) {
-      const url = `${this.baseUrl}/district/${ip}/scene`;
-      const resp = await fetch(url);
-      if (!resp.ok) {
-        throw new Error(`Failed to load district ${ip}: ${resp.status} ${resp.statusText}`);
-      }
-      this.scene = await resp.json();
-      this.recentreToOrigin();
-      this.dirty = true;
+      await this.fetchInto(ip);
+      if (!this.base) throw new Error(`Failed to load district ${ip}`);
+      this.centerIp = canon(ip);
+      await Promise.all(ringIps(this.centerIp, LOAD_RADIUS).map((n) => this.fetchInto(n)));
     }
-    /** Recentre scene to ground-level origin, preserving camera height and offset. */
-    recentreToOrigin() {
-      if (!this.scene) return;
-      let ox = 0, oz = 0;
-      const ground = this.scene.entities.find((e) => e.id === "ground");
-      if (ground) {
-        ox = ground.transform.position.x;
-        oz = ground.transform.position.z;
-      } else if (this.scene.entities.length > 0) {
-        for (const e of this.scene.entities) {
-          ox += e.transform.position.x;
-          oz += e.transform.position.z;
+    /** Fetch one district, shift it into shared-origin space, and store it. */
+    async fetchInto(ip) {
+      const key = canon(ip);
+      if (this.districts.has(key) || this.pending.has(key)) return;
+      this.pending.add(key);
+      try {
+        const resp = await fetch(`${this.baseUrl}/district/${ip}/scene`);
+        if (!resp.ok) throw new Error(`${resp.status} ${resp.statusText}`);
+        const scene = await resp.json();
+        const ground = scene.entities.find((e) => e.id === "ground");
+        const gx = ground ? ground.transform.position.x : 0;
+        const gz = ground ? ground.transform.position.z : 0;
+        if (!this.origin) {
+          this.origin = { x: gx, z: gz };
+          this.base = {
+            time: scene.time,
+            environment: scene.environment,
+            camera: {
+              ...scene.camera,
+              position: {
+                x: scene.camera.position.x - gx,
+                y: scene.camera.position.y,
+                z: scene.camera.position.z - gz
+              },
+              rotation: { ...scene.camera.rotation }
+            }
+          };
         }
-        ox /= this.scene.entities.length;
-        oz /= this.scene.entities.length;
+        const ox = this.origin.x, oz = this.origin.z;
+        const entities = scene.entities.map((e) => ({
+          ...e,
+          id: `${key}#${e.id}`,
+          // namespace ids so districts don't collide
+          transform: {
+            ...e.transform,
+            position: { x: e.transform.position.x - ox, y: e.transform.position.y, z: e.transform.position.z - oz }
+          }
+        }));
+        const lights = scene.lights.map((l) => l.position ? { ...l, position: { x: l.position.x - ox, y: l.position.y, z: l.position.z - oz } } : { ...l });
+        this.districts.set(key, { entities, lights, seed: { x: gx - ox, z: gz - oz } });
+        this.dirty = true;
+        this.merged = null;
+      } catch (err) {
+        console.warn(`district ${ip} load failed:`, err);
+      } finally {
+        this.pending.delete(key);
       }
-      for (const e of this.scene.entities) {
-        e.transform.position.x -= ox;
-        e.transform.position.z -= oz;
-      }
-      for (const l of this.scene.lights) {
-        if (l.position) {
-          l.position.x -= ox;
-          l.position.z -= oz;
+    }
+    /**
+     * Camera feedback (called each frame by the render loop). Finds the loaded
+     * district whose seed is nearest the camera; if the camera has crossed into a
+     * different cell, recentre the loaded window on it.
+     */
+    setViewerPosition(x, z) {
+      if (this.districts.size === 0) return;
+      let bestIp = this.centerIp;
+      let bestD2 = Infinity;
+      for (const [ip, d] of this.districts) {
+        const dx = d.seed.x - x, dz = d.seed.z - z;
+        const d2 = dx * dx + dz * dz;
+        if (d2 < bestD2) {
+          bestD2 = d2;
+          bestIp = ip;
         }
       }
-      this.scene.camera.position.x -= ox;
-      this.scene.camera.position.z -= oz;
+      if (bestIp !== this.centerIp) {
+        this.centerIp = bestIp;
+        for (const n of ringIps(bestIp, LOAD_RADIUS)) void this.fetchInto(n);
+        this.prune();
+      }
+    }
+    /** Drop districts outside the prune radius of the current centre. */
+    prune() {
+      for (const ip of [...this.districts.keys()]) {
+        if (gridDist(ip, this.centerIp) > PRUNE_RADIUS) {
+          this.districts.delete(ip);
+          this.dirty = true;
+          this.merged = null;
+        }
+      }
+    }
+    /** Rebuild the merged entity/light arrays from the loaded district window. */
+    rebuildMerged() {
+      const entities = [];
+      for (const d of this.districts.values()) entities.push(...d.entities);
+      const sorted = [...this.districts.entries()].sort(
+        (a, b) => gridDist(a[0], this.centerIp) - gridDist(b[0], this.centerIp)
+      );
+      const lights = [];
+      for (const [, d] of sorted) {
+        for (const l of d.lights) {
+          if (lights.length >= MAX_LIGHTS) break;
+          lights.push(l);
+        }
+      }
+      this.merged = { entities, lights };
     }
     getScene() {
-      const base = this.scene ?? {
-        time: 0,
-        camera: { position: { x: 0, y: 5, z: 10 }, rotation: { x: 0, y: 0, z: 0 }, fov: 60, near: 0.1, far: 500 },
-        environment: { ambientLight: 0.3, backgroundColor: { r: 20, g: 20, b: 40 } },
-        lights: [],
-        entities: []
+      if (!this.base) {
+        return {
+          time: 0,
+          camera: { position: { x: 0, y: 5, z: 10 }, rotation: { x: 0, y: 0, z: 0 }, fov: 60, near: 0.1, far: 500 },
+          environment: { ambientLight: 0.3, backgroundColor: { r: 20, g: 20, b: 40 } },
+          lights: [],
+          entities: []
+        };
+      }
+      if (!this.merged) this.rebuildMerged();
+      const m = this.merged;
+      return {
+        time: this.base.time,
+        camera: this.base.camera,
+        environment: this.base.environment,
+        lights: m.lights,
+        entities: this.peers.length ? [...m.entities, ...this.peers] : m.entities
       };
-      if (this.peers.length === 0) return base;
-      return { ...base, entities: [...base.entities, ...this.peers] };
     }
     update(dt) {
-      if (!this.scene) return;
-      this.scene.time += dt;
-      updateLightFlicker(this.scene.lights, this.scene.time);
-      for (const entity of this.scene.entities) {
+      if (!this.base) return;
+      this.base.time += dt;
+      if (!this.merged) this.rebuildMerged();
+      const m = this.merged;
+      updateLightFlicker(m.lights, this.base.time);
+      for (const entity of m.entities) {
         if (entity.velocity) {
           entity.transform.position.x += entity.velocity.x * dt;
           entity.transform.position.y += entity.velocity.y * dt;
           entity.transform.position.z += entity.velocity.z * dt;
         }
       }
+    }
+    /** Diagnostics for the debug hook / headless harness. */
+    debugStats() {
+      if (!this.merged) this.rebuildMerged();
+      return {
+        districts: this.districts.size,
+        centerIp: this.centerIp,
+        entities: this.merged.entities.length,
+        lights: this.merged.lights.length
+      };
     }
     structurallyDirty() {
       return this.dirty;
@@ -1195,7 +1315,7 @@
   // src/renderer/Raymarch.ts
   var DEFAULT_MAX_STEPS = 80;
   var HIT_THRESHOLD = 0.01;
-  var MAX_DISTANCE = 200;
+  var DEFAULT_MAX_DISTANCE = 200;
   var NORMAL_EPSILON = 1e-3;
   function computeNormal(pos, world) {
     const eps = NORMAL_EPSILON;
@@ -1204,7 +1324,7 @@
     const nz = world.sample({ x: pos.x, y: pos.y, z: pos.z + eps }).distance - world.sample({ x: pos.x, y: pos.y, z: pos.z - eps }).distance;
     return normalize({ x: nx, y: ny, z: nz });
   }
-  function raymarch(ray, world, maxSteps = DEFAULT_MAX_STEPS) {
+  function raymarch(ray, world, maxSteps = DEFAULT_MAX_STEPS, maxDistance = DEFAULT_MAX_DISTANCE) {
     let t = 0;
     for (let i = 0; i < maxSteps; i++) {
       const pos = add(ray.origin, mul(ray.direction, t));
@@ -1222,7 +1342,7 @@
         };
       }
       t += Math.max(sample.distance, minStep);
-      if (t > MAX_DISTANCE) break;
+      if (t > maxDistance) break;
     }
     return { hit: false };
   }
@@ -1966,6 +2086,32 @@
         rotation: [this.camera.rotation.x, this.camera.rotation.y, this.camera.rotation.z]
       };
     }
+    // ── Debug / external control ─────────────────────────────────────────────
+    // Exposed via `window.__howm` so the world can be driven programmatically
+    // (headless harness, agent-controlled survey) without WASD.
+    /** Absolute camera position in shared-origin world space. */
+    cameraPosition() {
+      return { x: this.camera.position.x, y: this.camera.position.y, z: this.camera.position.z };
+    }
+    /** Move the camera by a world-space delta. Returns the new position. */
+    teleport(dx, dz, dy = 0) {
+      this.camera.position.x += dx;
+      this.camera.position.y += dy;
+      this.camera.position.z += dz;
+      return this.cameraPosition();
+    }
+    /** Jump the camera to an absolute world-space position. */
+    teleportTo(x, y, z) {
+      this.camera.position.x = x;
+      this.camera.position.y = y;
+      this.camera.position.z = z;
+      return this.cameraPosition();
+    }
+    /** Set the render distance (camera far clip), clamped to [50, 2000]. */
+    setFar(far) {
+      this.camera.far = Math.max(50, Math.min(2e3, far));
+      return this.camera.far;
+    }
     updateTime() {
       const now = performance.now();
       const deltaMs = now - this.lastTime;
@@ -1994,6 +2140,7 @@
       const anyMoving = this.hasAnyMoving();
       const anyFlicker = this.hasAnyFlicker();
       const anyAnimated = this.hasAnyAnimatedEntities();
+      const farDist = this.camera.far && this.camera.far > 0 ? Math.min(this.camera.far, 2e3) : DEFAULT_MAX_DISTANCE;
       const frameStart = performance.now();
       for (let y = 0; y < height; y++) {
         for (let x = 0; x < width; x++) {
@@ -2029,9 +2176,10 @@
             }
           }
           const ray = createRay(this.camera, x, y, width, height);
-          const baseSteps = this.useAdaptiveQuality ? getMaxSteps(x, y, width, height) : DEFAULT_MAX_STEPS;
+          const distSteps = Math.min(220, Math.max(DEFAULT_MAX_STEPS, Math.round(farDist / 3)));
+          const baseSteps = this.useAdaptiveQuality ? getMaxSteps(x, y, width, height) : distSteps;
           const maxSteps = cameraChanged ? Math.floor(baseSteps * 0.6) : baseSteps;
-          const result = raymarch(ray, world, maxSteps);
+          const result = raymarch(ray, world, maxSteps, farDist);
           if (result.hit) {
             const lit = computeLighting(result.position, result.normal, result.material, scene);
             const params = {
@@ -2173,6 +2321,9 @@
       const dt = this.updateTime();
       if (this.cameraController && this.inputState) {
         this.cameraController.update(this.camera, this.inputState, dt);
+      }
+      if (this.provider.setViewerPosition) {
+        this.provider.setViewerPosition(this.camera.position.x, this.camera.position.z);
       }
       const prov = this.provider;
       if (typeof prov.updateCamera === "function") {
@@ -2528,7 +2679,9 @@
     "ArrowRight",
     "Space",
     "ShiftLeft",
-    "ShiftRight"
+    "ShiftRight",
+    "ControlLeft",
+    "KeyF"
   ]);
   var KeyboardListener = class {
     constructor(inputState, target) {
@@ -2540,6 +2693,7 @@
       target.addEventListener("keyup", this.boundKeyUp);
     }
     onKeyDown(e) {
+      if (e.code === "KeyF" && !e.repeat) this.onToggleFly?.();
       this.updateKey(e.code, true);
       if (GAME_KEYS.has(e.code)) e.preventDefault();
       if (e.code === "Escape") document.exitPointerLock();
@@ -2564,6 +2718,16 @@
         case "KeyD":
         case "ArrowRight":
           this.inputState.right = pressed;
+          break;
+        case "Space":
+          this.inputState.up = pressed;
+          break;
+        case "ShiftLeft":
+        case "ShiftRight":
+          this.inputState.down = pressed;
+          break;
+        case "ControlLeft":
+          this.inputState.sprint = pressed;
           break;
       }
     }
@@ -2634,6 +2798,14 @@
       // units/sec²
       this.floorY = 1.5;
       // eye height — camera never goes below this
+      /**
+       * Fly / noclip mode: no gravity, no floor clamp, full 6-DOF. Movement follows
+       * the full look direction (pitch included) and Space/Shift move straight
+       * up/down. Faster than walking — built for debugging/surveying the city from
+       * above instead of threading through building interiors. Toggle with `F`.
+       */
+      this.flyMode = false;
+      this.flySpeed = 40;
       this.acceleration = 30;
       this.friction = 10;
       this.velocity = { x: 0, y: 0, z: 0 };
@@ -2663,6 +2835,10 @@
       camera.rotation.x = this.pitch;
       camera.rotation.y = this.yaw;
       camera.rotation.z = 0;
+      if (this.flyMode) {
+        this.updateFly(camera, inputState, dt);
+        return;
+      }
       let moveX = 0;
       let moveZ = 0;
       if (inputState.forward) moveZ -= 1;
@@ -2703,6 +2879,53 @@
         camera.position.y = this.floorY;
         this.velocity.y = 0;
       }
+    }
+    /** Free 6-DOF flight: full look direction + vertical, no gravity/floor. */
+    updateFly(camera, inputState, dt) {
+      let moveX = 0, moveZ = 0, moveY = 0;
+      if (inputState.forward) moveZ -= 1;
+      if (inputState.backward) moveZ += 1;
+      if (inputState.left) moveX -= 1;
+      if (inputState.right) moveX += 1;
+      if (inputState.up) moveY += 1;
+      if (inputState.down) moveY -= 1;
+      const sy = Math.sin(this.yaw), cy = Math.cos(this.yaw);
+      const sp = Math.sin(this.pitch), cp = Math.cos(this.pitch);
+      const fwdX = -sy * cp, fwdY = sp, fwdZ = -cy * cp;
+      const rgtX = cy, rgtZ = -sy;
+      let dx = -moveZ * fwdX + moveX * rgtX;
+      let dy = -moveZ * fwdY + moveY;
+      let dz = -moveZ * fwdZ + moveX * rgtZ;
+      const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      if (len > 0) {
+        dx /= len;
+        dy /= len;
+        dz /= len;
+      }
+      const speed = this.flySpeed * (inputState.sprint ? this.sprintMultiplier : 1);
+      const lf = 1 - Math.exp(-this.acceleration * dt);
+      this.velocity.x = lerp(this.velocity.x, dx * speed, lf);
+      this.velocity.y = lerp(this.velocity.y, dy * speed, lf);
+      this.velocity.z = lerp(this.velocity.z, dz * speed, lf);
+      camera.position.x += this.velocity.x * dt;
+      camera.position.y += this.velocity.y * dt;
+      camera.position.z += this.velocity.z * dt;
+    }
+    /** Toggle fly/noclip; clears velocity so the camera doesn't lurch. */
+    toggleFly() {
+      this.flyMode = !this.flyMode;
+      this.velocity = { x: 0, y: 0, z: 0 };
+      return this.flyMode;
+    }
+    /**
+     * Set look direction directly (radians). pitch<0 looks down. Used by the debug
+     * hook for surveying; the controller owns yaw/pitch so setting camera.rotation
+     * alone would be overwritten next frame.
+     */
+    setLook(yaw, pitch) {
+      this.yaw = yaw;
+      this.pitch = Math.max(-this.pitchLimit, Math.min(this.pitchLimit, pitch));
+      this.initialized = true;
     }
     reset(camera) {
       this.yaw = camera.rotation.y;
@@ -2857,11 +3080,14 @@
     }
     const frameBuffer = new FrameBuffer(cols, rows);
     const inputState = new InputState();
-    new KeyboardListener(inputState, window);
+    const keyboard = new KeyboardListener(inputState, window);
     new MouseListener(inputState, canvas);
     const cameraController = new CameraController();
     const hud = new HUD();
     hud.setDistrictIp(ip);
+    if (params.has("fly")) cameraController.flyMode = true;
+    const farParam = Number(params.get("far"));
+    const eyeParam = Number(params.get("eye"));
     if (status) status.textContent = "";
     const loop = new RenderLoop(provider, frameBuffer, presenter, glyphCache, {
       targetFPS: 30,
@@ -2873,6 +3099,49 @@
       hud
     });
     loop.start();
+    loop.setFar(Number.isFinite(farParam) && farParam > 0 ? farParam : 650);
+    if (Number.isFinite(eyeParam) && eyeParam > 0) {
+      const p = loop.cameraPosition();
+      loop.teleportTo(p.x, eyeParam, p.z);
+    }
+    keyboard.onToggleFly = () => {
+      const on = cameraController.toggleFly();
+      if (status) {
+        status.textContent = on ? "Fly mode ON (Space/Shift up\xB7down, Ctrl sprint)" : "";
+        if (!on) setTimeout(() => {
+          if (status) status.textContent = "";
+        }, 1);
+        else setTimeout(() => {
+          if (status) status.textContent = "";
+        }, 1500);
+      }
+    };
+    window.__howm = {
+      loop,
+      cameraController,
+      provider,
+      stats: () => ({
+        camera: loop.cameraPosition(),
+        fly: cameraController.flyMode,
+        ...provider.debugStats ? provider.debugStats() : {}
+      }),
+      fly: (on) => {
+        cameraController.flyMode = on ?? !cameraController.flyMode;
+        return cameraController.flyMode;
+      },
+      goto: (x, y, z) => loop.teleportTo(x, y, z),
+      move: (dx, dz, dy = 0) => loop.teleport(dx, dz, dy),
+      far: (f) => loop.setFar(f),
+      look: (yaw, pitch) => cameraController.setLook(yaw, pitch),
+      // Rise to `height` looking straight down — a quick survey of the grid.
+      birdsEye: (height = 140) => {
+        cameraController.flyMode = true;
+        const p = loop.cameraPosition();
+        loop.teleportTo(p.x, height, p.z);
+        cameraController.setLook(0, -Math.PI / 2 + 0.05);
+        return loop.cameraPosition();
+      }
+    };
     if (provider instanceof HowmSceneProvider) {
       const staticProvider = provider;
       const presence = new PresenceClient(baseUrl);

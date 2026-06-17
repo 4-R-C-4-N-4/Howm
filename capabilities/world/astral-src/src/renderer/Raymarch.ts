@@ -4,7 +4,8 @@ import { World } from './World'
 
 export const DEFAULT_MAX_STEPS = 80
 const HIT_THRESHOLD = 0.01
-const MAX_DISTANCE = 200.0
+/** Default far clip when a caller does not supply one. */
+export const DEFAULT_MAX_DISTANCE = 200.0
 const NORMAL_EPSILON = 0.001
 
 function computeNormal(pos: { x: number; y: number; z: number }, world: World) {
@@ -21,7 +22,12 @@ function computeNormal(pos: { x: number; y: number; z: number }, world: World) {
   return normalize({ x: nx, y: ny, z: nz })
 }
 
-export function raymarch(ray: Ray, world: World, maxSteps = DEFAULT_MAX_STEPS): RaymarchResult {
+export function raymarch(
+  ray: Ray,
+  world: World,
+  maxSteps = DEFAULT_MAX_STEPS,
+  maxDistance = DEFAULT_MAX_DISTANCE,
+): RaymarchResult {
   let t = 0
 
   for (let i = 0; i < maxSteps; i++) {
@@ -45,7 +51,7 @@ export function raymarch(ray: Ray, world: World, maxSteps = DEFAULT_MAX_STEPS): 
 
     t += Math.max(sample.distance, minStep)
 
-    if (t > MAX_DISTANCE) break
+    if (t > maxDistance) break
   }
 
   return { hit: false }

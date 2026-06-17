@@ -23,6 +23,13 @@ export interface SceneProvider {
   structurallyDirty(): boolean
   acknowledgeStructuralChange(): void
 
+  /**
+   * Optional: feed the viewer's world position (x, z) each frame. Providers that
+   * stream a moving window of districts use this to load the neighbour ring as
+   * the camera crosses district boundaries.
+   */
+  setViewerPosition?(x: number, z: number): void
+
   /** Lifecycle hook — called when the render loop starts/stops. */
   start?(): void
   stop?(): void

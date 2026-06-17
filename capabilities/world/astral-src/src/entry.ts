@@ -116,12 +116,18 @@ async function main() {
   const frameBuffer = new FrameBuffer(cols, rows)
 
   const inputState = new InputState()
-  new KeyboardListener(inputState, window)
+  const keyboard = new KeyboardListener(inputState, window)
   new MouseListener(inputState, canvas)
 
   const cameraController = new CameraController()
   const hud = new HUD()
   hud.setDistrictIp(ip)
+
+  // Optional camera/debug params: ?fly (start in noclip), ?far=<units> (render
+  // distance), ?eye=<height> (initial camera height).
+  if (params.has('fly')) cameraController.flyMode = true
+  const farParam = Number(params.get('far'))
+  const eyeParam = Number(params.get('eye'))
 
   // Clear loading status — rendering is about to start
   if (status) status.textContent = ''
@@ -137,6 +143,52 @@ async function main() {
   })
 
   loop.start()
+
+  // Render distance: default well past one district so stitched neighbours are
+  // visible (the old hard cap was a single district span). `?far=` overrides.
+  loop.setFar(Number.isFinite(farParam) && farParam > 0 ? farParam : 650)
+  if (Number.isFinite(eyeParam) && eyeParam > 0) {
+    const p = loop.cameraPosition()
+    loop.teleportTo(p.x, eyeParam, p.z)
+  }
+
+  // Fly/noclip toggle on `F`.
+  keyboard.onToggleFly = () => {
+    const on = cameraController.toggleFly()
+    if (status) {
+      status.textContent = on ? 'Fly mode ON (Space/Shift up·down, Ctrl sprint)' : ''
+      if (!on) setTimeout(() => { if (status) status.textContent = '' }, 1)
+      else setTimeout(() => { if (status) status.textContent = '' }, 1500)
+    }
+  }
+
+  // Debug control surface: drive the camera/world without WASD.
+  ;(window as any).__howm = {
+    loop,
+    cameraController,
+    provider,
+    stats: () => ({
+      camera: loop.cameraPosition(),
+      fly: cameraController.flyMode,
+      ...((provider as any).debugStats ? (provider as any).debugStats() : {}),
+    }),
+    fly: (on?: boolean) => {
+      cameraController.flyMode = on ?? !cameraController.flyMode
+      return cameraController.flyMode
+    },
+    goto: (x: number, y: number, z: number) => loop.teleportTo(x, y, z),
+    move: (dx: number, dz: number, dy = 0) => loop.teleport(dx, dz, dy),
+    far: (f: number) => loop.setFar(f),
+    look: (yaw: number, pitch: number) => cameraController.setLook(yaw, pitch),
+    // Rise to `height` looking straight down — a quick survey of the grid.
+    birdsEye: (height = 140) => {
+      cameraController.flyMode = true
+      const p = loop.cameraPosition()
+      loop.teleportTo(p.x, height, p.z)
+      cameraController.setLook(0, -Math.PI / 2 + 0.05)
+      return loop.cameraPosition()
+    },
+  }
 
   // Multiplayer presence: share our camera pose with peers and render theirs as
   // avatars. Only the static district provider supports peer-entity injection;
