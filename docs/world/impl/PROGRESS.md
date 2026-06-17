@@ -711,3 +711,37 @@ Both audit regression tests are now active and green:
 (5 districts × 4 neighbours). 166 tests pass, 0 ignored.
 
 ---
+
+## Audit Extension: Rivers + River Generation Fix — 2026-06-17
+
+Extended the audit with river invariants (single-district + cross-district), and
+the new checks immediately found a real river-routing bug.
+
+**New checks:**
+- `rivers_valid` (single): any generated river segment must have its entry/exit
+  on the district boundary and its bezier path within bounds. Metric
+  `river_routing_gap` flags `is_river(gx)` cells that can't route a river.
+- `river_continuity` (cross): vertical neighbours (same gx, adjacent gy) that
+  both host a river must share the crossing on their boundary — the river flows
+  unbroken across the border.
+
+**Generation fix:** `generate_rivers` used a fuzzy seed-bisector heuristic to find
+the north/south shared edge, which could pick mismatched edges on the two sides
+of a border → rivers misaligned or present on only one side. Refactored it to
+take `&DistrictGeometry` and use the district's exact `shared_edges` (matched by
+neighbour key). Both districts now derive the SAME canonical crossing, so rivers
+align exactly across borders (Δ=0.00 in testing). Updated all 17 callers.
+
+**Known limitation surfaced (not a bug):** a river can't route through a cell that
+isn't Voronoi-adjacent to both its grid gy-neighbours (grid-rivers on a Voronoi
+tiling) — it dead-ends. Reported via the `river_routing_gap` metric; the
+continuity check treats one-sided presence as this gap, not a misalignment fail.
+
+**Also:** `buildings_no_overlap` now separates same-block (strict, >10% — the
+real tiling invariant) from cross-block boundary touches (tolerated to 30% — a
+cosmetic artifact of edge-sharing blocks the footprint inset can't fully remove).
+
+Regression tests now include river-hosting districts. 166 tests pass; final
+sweep 168/168 districts clean (3 river routing gaps, correctly reported).
+
+---

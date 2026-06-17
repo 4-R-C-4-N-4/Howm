@@ -89,7 +89,7 @@ async fn district_handler(AxumPath(ip): AxumPath<String>) -> Response {
     let district = gen::district::generate_district(&cell);
     let palette = gen::aesthetic::AestheticPalette::from_cell(&cell);
     let road_network = gen::roads::generate_roads(&district);
-    let rivers = gen::rivers::generate_rivers(&cell, &district.polygon.vertices);
+    let rivers = gen::rivers::generate_rivers(&district);
     let blocks = gen::blocks::extract_blocks(
         &cell,
         &district.polygon,
@@ -208,7 +208,7 @@ async fn district_geometry_handler(AxumPath(ip): AxumPath<String>) -> Response {
 
     let district = gen::district::generate_district(&cell);
     let road_network = gen::roads::generate_roads(&district);
-    let rivers = gen::rivers::generate_rivers(&cell, &district.polygon.vertices);
+    let rivers = gen::rivers::generate_rivers(&district);
     let blocks = gen::blocks::extract_blocks(
         &cell,
         &district.polygon,
@@ -245,7 +245,7 @@ async fn district_objects_handler(AxumPath(ip): AxumPath<String>) -> Response {
     let palette = gen::aesthetic::AestheticPalette::from_cell(&cell);
     let district = gen::district::generate_district(&cell);
     let road_network = gen::roads::generate_roads(&district);
-    let rivers = gen::rivers::generate_rivers(&cell, &district.polygon.vertices);
+    let rivers = gen::rivers::generate_rivers(&district);
     let blocks = gen::blocks::extract_blocks(
         &cell,
         &district.polygon,
@@ -730,7 +730,7 @@ async fn district_map_handler(AxumPath(ip): AxumPath<String>) -> Response {
     let palette = gen::aesthetic::AestheticPalette::from_cell(&cell);
     let district = gen::district::generate_district(&cell);
     let road_network = gen::roads::generate_roads(&district);
-    let rivers = gen::rivers::generate_rivers(&cell, &district.polygon.vertices);
+    let rivers = gen::rivers::generate_rivers(&district);
     let blocks = gen::blocks::extract_blocks(
         &cell,
         &district.polygon,
@@ -829,7 +829,7 @@ async fn district_ascii_handler(AxumPath(ip): AxumPath<String>) -> Response {
     };
     let dist = gen::district::generate_district(&cell);
     let roads = gen::roads::generate_roads(&dist);
-    let rivers = gen::rivers::generate_rivers(&cell, &dist.polygon.vertices);
+    let rivers = gen::rivers::generate_rivers(&dist);
     let blocks = gen::blocks::extract_blocks(&cell, &dist.polygon, &roads, &rivers);
     let buildings: Vec<_> = blocks
         .iter()

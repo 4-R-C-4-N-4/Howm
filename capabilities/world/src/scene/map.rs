@@ -378,7 +378,7 @@ pub fn generate_neighborhood_map(center: &Cell) -> String {
             let palette = AestheticPalette::from_cell(&cell);
             let dist = district::generate_district(&cell);
             let road_net = roads::generate_roads(&dist);
-            let river_data = rivers::generate_rivers(&cell, &dist.polygon.vertices);
+            let river_data = rivers::generate_rivers(&dist);
             let blks = blocks::extract_blocks(&cell, &dist.polygon, &road_net, &river_data);
 
             // Update global bounds
@@ -645,7 +645,7 @@ mod tests {
         let palette = AestheticPalette::from_cell(&cell);
         let dist = crate::gen::district::generate_district(&cell);
         let roads = crate::gen::roads::generate_roads(&dist);
-        let rivers = crate::gen::rivers::generate_rivers(&cell, &dist.polygon.vertices);
+        let rivers = crate::gen::rivers::generate_rivers(&dist);
         let blocks = crate::gen::blocks::extract_blocks(
             &cell, &dist.polygon, &roads, &rivers,
         );

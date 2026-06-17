@@ -584,7 +584,7 @@ mod tests {
         let cell = Cell::from_octets(93, 184, 216);
         let district = generate_district(&cell);
         let roads = generate_roads(&district);
-        let rivers = generate_rivers(&cell, &district.polygon.vertices);
+        let rivers = generate_rivers(&district);
         let blocks = extract_blocks(&cell, &district.polygon, &roads, &rivers);
 
         assert!(
@@ -617,7 +617,7 @@ mod tests {
             let cell = Cell::from_octets(o1, o2, o3);
             let district = generate_district(&cell);
             let roads = generate_roads(&district);
-            let rivers = generate_rivers(&cell, &district.polygon.vertices);
+            let rivers = generate_rivers(&district);
 
             let through_count = roads
                 .segments
@@ -648,7 +648,7 @@ mod tests {
         for cell in &cells {
             let district = generate_district(cell);
             let roads = generate_roads(&district);
-            let rivers = generate_rivers(cell, &district.polygon.vertices);
+            let rivers = generate_rivers(&district);
             let blocks = extract_blocks(cell, &district.polygon, &roads, &rivers);
 
             if !blocks.is_empty() {
@@ -669,7 +669,7 @@ mod tests {
         let cell = Cell::from_octets(93, 184, 216);
         let district = generate_district(&cell);
         let roads = generate_roads(&district);
-        let rivers = generate_rivers(&cell, &district.polygon.vertices);
+        let rivers = generate_rivers(&district);
         let b1 = extract_blocks(&cell, &district.polygon, &roads, &rivers);
         let b2 = extract_blocks(&cell, &district.polygon, &roads, &rivers);
         assert_eq!(b1.len(), b2.len());

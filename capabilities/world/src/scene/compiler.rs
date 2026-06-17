@@ -603,7 +603,7 @@ pub fn compile_district_scene(
 
     let dist = district::generate_district(cell);
     let road_network = roads::generate_roads(&dist);
-    let river_data = rivers::generate_rivers(cell, &dist.polygon.vertices);
+    let river_data = rivers::generate_rivers(&dist);
     let blocks = crate::gen::blocks::extract_blocks(cell, &dist.polygon, &road_network, &river_data);
 
     let mut entities = Vec::new();

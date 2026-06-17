@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use super::cell::Cell;
 use super::config::config;
+use super::district::{DistrictGeometry, SharedEdge};
 use super::hash::{ha, hash_to_f64};
 use crate::types::Point;
 
@@ -99,76 +100,45 @@ fn canonicalize_edge(a: Point, b: Point) -> (Point, Point) {
     }
 }
 
-/// Find the shared edge between a cell and its neighbor at dy offset.
+/// Find the shared edge between a cell and its grid neighbour at `dy` offset,
+/// using the district's already-computed `shared_edges` (exact — matched by
+/// neighbour key). Returns the canonicalised edge (start, end) and the neighbour
+/// key, or None when the cell isn't Voronoi-adjacent to that grid neighbour (so
+/// the river legitimately can't cross there).
 ///
-/// Returns the canonicalized edge (start, end) and the neighbor key, or None.
+/// Both districts derive the SAME canonical edge for a shared boundary, so the
+/// river crossing matches across the border — the old seed-bisector heuristic
+/// could pick mismatched edges and break continuity.
 fn find_vertical_neighbor_edge(
     cell: &Cell,
-    polygon_verts: &[Point],
+    shared_edges: &[SharedEdge],
     dy: i32,
 ) -> Option<(Point, Point, u32)> {
     let neighbor_key = cell.neighbor_key(0, dy);
-
-    // Look through polygon edges to find one shared with this neighbor.
-    // We identify shared edges by checking if the edge midpoint is on the
-    // appropriate side (north or south) of the cell.
-    //
-    // For a more precise approach, we'd match against the neighbor's Voronoi
-    // cell. For now, we use the seed position of the neighbor as a heuristic:
-    // the shared edge is the one whose midpoint is closest to the perpendicular
-    // bisector of the two seed points.
-    let cell_pos = super::district::seed_position(cell);
-    let neighbor_cell = Cell::from_key(neighbor_key);
-    let neighbor_pos = super::district::seed_position(&neighbor_cell);
-
-    let n = polygon_verts.len();
-    let mut best_edge: Option<(usize, f64)> = None;
-
-    for i in 0..n {
-        let a = polygon_verts[i];
-        let b = polygon_verts[(i + 1) % n];
-        let mid = Point::new((a.x + b.x) * 0.5, (a.y + b.y) * 0.5);
-
-        // The shared edge should be roughly equidistant from both seed points
-        let dist_to_cell = mid.distance_sq(cell_pos);
-        let dist_to_neighbor = mid.distance_sq(neighbor_pos);
-        let ratio = (dist_to_cell / (dist_to_neighbor + 1e-10) - 1.0).abs();
-
-        if let Some((_, best_ratio)) = best_edge {
-            if ratio < best_ratio {
-                best_edge = Some((i, ratio));
-            }
-        } else {
-            best_edge = Some((i, ratio));
-        }
-    }
-
-    best_edge.and_then(|(i, ratio)| {
-        // Only accept if the edge is reasonably close to the bisector
-        if ratio < 0.5 {
-            let a = polygon_verts[i];
-            let b = polygon_verts[(i + 1) % n];
-            let (ca, cb) = canonicalize_edge(a, b);
-            Some((ca, cb, neighbor_key))
-        } else {
-            None
-        }
-    })
+    shared_edges
+        .iter()
+        .find(|e| e.neighbor_key == neighbor_key)
+        .map(|e| {
+            let (ca, cb) = canonicalize_edge(e.start, e.end);
+            (ca, cb, neighbor_key)
+        })
 }
 
 /// Generate river segments for a cell.
 ///
 /// Returns segments for each river that passes through this cell's `gx`.
-pub fn generate_rivers(cell: &Cell, polygon_verts: &[Point]) -> Vec<RiverSegment> {
+pub fn generate_rivers(district: &DistrictGeometry) -> Vec<RiverSegment> {
+    let cell = &district.cell;
     let gx = cell.gx;
 
     if !is_river(gx) {
         return vec![];
     }
 
-    // Find north (gy+1) and south (gy-1) shared edges
-    let north_edge = find_vertical_neighbor_edge(cell, polygon_verts, 1);
-    let south_edge = find_vertical_neighbor_edge(cell, polygon_verts, -1);
+    // North (gy+1) and south (gy-1) shared edges, from the district's exact
+    // shared-edge list.
+    let north_edge = find_vertical_neighbor_edge(cell, &district.shared_edges, 1);
+    let south_edge = find_vertical_neighbor_edge(cell, &district.shared_edges, -1);
 
     let (north_start, north_end, north_key) = match north_edge {
         Some(e) => e,

@@ -127,7 +127,7 @@ pub fn place_home(
 pub fn place_home_in_cell(cell: &Cell, peer_id: &[u8]) -> HomeStructure {
     let dist = generate_district(cell);
     let roads = generate_roads(&dist);
-    let rivers = generate_rivers(cell, &dist.polygon.vertices);
+    let rivers = generate_rivers(&dist);
     let blocks = extract_blocks(cell, &dist.polygon, &roads, &rivers);
     place_home(cell, &dist.polygon, &blocks, &roads, peer_id)
 }
@@ -188,7 +188,7 @@ mod tests {
         let c = cell();
         let dist = generate_district(&c);
         let roads = generate_roads(&dist);
-        let rivers = generate_rivers(&c, &dist.polygon.vertices);
+        let rivers = generate_rivers(&dist);
         let blocks = extract_blocks(&c, &dist.polygon, &roads, &rivers);
         let tol = config().lamp_offset;
         for n in 0u32..32 {

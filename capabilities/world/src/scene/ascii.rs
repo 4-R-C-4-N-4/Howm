@@ -246,7 +246,7 @@ mod tests {
         let cell = Cell::from_ip_str("93.184.216.0").unwrap();
         let dist = crate::gen::district::generate_district(&cell);
         let roads = crate::gen::roads::generate_roads(&dist);
-        let rivers = crate::gen::rivers::generate_rivers(&cell, &dist.polygon.vertices);
+        let rivers = crate::gen::rivers::generate_rivers(&dist);
         let blocks = crate::gen::blocks::extract_blocks(&cell, &dist.polygon, &roads, &rivers);
         let buildings: Vec<_> = blocks
             .iter()
