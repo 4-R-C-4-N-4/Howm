@@ -3,6 +3,7 @@ pub mod atmosphere;
 pub mod blocks;
 pub mod buildings;
 pub mod cell;
+pub mod chunk;
 pub mod config;
 pub mod conveyances;
 pub mod creatures;

@@ -166,16 +166,11 @@ async fn district_handler(AxumPath(ip): AxumPath<String>) -> Response {
         None => return bad_request(),
     };
 
-    let district = gen::district::generate_district(&cell);
+    let dd = gen::chunk::district_data(&cell);
+    let district = dd.geometry.clone();
     let palette = gen::aesthetic::AestheticPalette::from_cell(&cell);
-    let road_network = gen::roads::generate_roads(&district);
-    let rivers = gen::rivers::generate_rivers(&district);
-    let blocks = gen::blocks::extract_blocks(
-        &cell,
-        &district.polygon,
-        &road_network,
-        &rivers,
-    );
+    let road_network = dd.roads.clone();
+    let blocks = dd.blocks.clone();
 
     let now_ms = current_time_ms();
     let atmosphere = gen::atmosphere::compute_atmosphere(&cell, now_ms);
@@ -286,15 +281,11 @@ async fn district_geometry_handler(AxumPath(ip): AxumPath<String>) -> Response {
         None => return bad_request(),
     };
 
-    let district = gen::district::generate_district(&cell);
-    let road_network = gen::roads::generate_roads(&district);
-    let rivers = gen::rivers::generate_rivers(&district);
-    let blocks = gen::blocks::extract_blocks(
-        &cell,
-        &district.polygon,
-        &road_network,
-        &rivers,
-    );
+    let dd = gen::chunk::district_data(&cell);
+    let district = dd.geometry.clone();
+    let road_network = dd.roads.clone();
+    let rivers = dd.rivers.clone();
+    let blocks = dd.blocks.clone();
 
     let response = serde_json::json!({
         "cell": {
@@ -323,15 +314,9 @@ async fn district_objects_handler(AxumPath(ip): AxumPath<String>) -> Response {
     };
 
     let palette = gen::aesthetic::AestheticPalette::from_cell(&cell);
-    let district = gen::district::generate_district(&cell);
-    let road_network = gen::roads::generate_roads(&district);
-    let rivers = gen::rivers::generate_rivers(&district);
-    let blocks = gen::blocks::extract_blocks(
-        &cell,
-        &district.polygon,
-        &road_network,
-        &rivers,
-    );
+    let dd = gen::chunk::district_data(&cell);
+    let road_network = dd.roads.clone();
+    let blocks = dd.blocks.clone();
 
     let mut buildings_out = Vec::new();
     let mut fixtures_out = Vec::new();
@@ -893,15 +878,11 @@ async fn district_map_handler(AxumPath(ip): AxumPath<String>) -> Response {
     };
 
     let palette = gen::aesthetic::AestheticPalette::from_cell(&cell);
-    let district = gen::district::generate_district(&cell);
-    let road_network = gen::roads::generate_roads(&district);
-    let rivers = gen::rivers::generate_rivers(&district);
-    let blocks = gen::blocks::extract_blocks(
-        &cell,
-        &district.polygon,
-        &road_network,
-        &rivers,
-    );
+    let dd = gen::chunk::district_data(&cell);
+    let district = dd.geometry.clone();
+    let road_network = dd.roads.clone();
+    let rivers = dd.rivers.clone();
+    let blocks = dd.blocks.clone();
 
     let mut buildings = Vec::new();
     let mut fixtures = Vec::new();
@@ -1013,10 +994,11 @@ async fn district_ascii_handler(AxumPath(ip): AxumPath<String>) -> Response {
         Some(c) => c,
         None => return bad_request(),
     };
-    let dist = gen::district::generate_district(&cell);
-    let roads = gen::roads::generate_roads(&dist);
-    let rivers = gen::rivers::generate_rivers(&dist);
-    let blocks = gen::blocks::extract_blocks(&cell, &dist.polygon, &roads, &rivers);
+    let dd = gen::chunk::district_data(&cell);
+    let dist = dd.geometry.clone();
+    let roads = dd.roads.clone();
+    let rivers = dd.rivers.clone();
+    let blocks = dd.blocks.clone();
     let buildings: Vec<_> = blocks
         .iter()
         .flat_map(|b| gen::buildings::generate_buildings(&cell, b).plots)

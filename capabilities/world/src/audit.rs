@@ -6,7 +6,7 @@
 use serde::Serialize;
 
 use crate::gen::aesthetic::AestheticPalette;
-use crate::gen::blocks::{extract_blocks, Block};
+use crate::gen::blocks::Block;
 use crate::gen::buildings::{generate_buildings, BuildingPlot};
 use crate::gen::cell::Cell;
 use crate::gen::config::config;
@@ -73,10 +73,13 @@ struct DistrictData {
 
 impl DistrictData {
     fn build(cell: Cell) -> Self {
-        let geom = generate_district(&cell);
-        let roads = generate_roads(&geom);
-        let rivers = generate_rivers(&geom);
-        let blocks = extract_blocks(&cell, &geom.polygon, &roads, &rivers);
+        // Structural layer from the shared cache (same instance the renderer and
+        // map see), then audit-specific per-block generation below.
+        let dd = crate::gen::chunk::district_data(&cell);
+        let geom = dd.geometry.clone();
+        let roads = dd.roads.clone();
+        let rivers = dd.rivers.clone();
+        let blocks = dd.blocks.clone();
 
         let mut buildings = Vec::new();
         let mut fixtures = Vec::new();

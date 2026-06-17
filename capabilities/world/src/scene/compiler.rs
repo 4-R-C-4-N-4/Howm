@@ -653,13 +653,17 @@ pub fn compile_district_scene(
     atmo: &AtmosphereState,
     now_ms: u64,
 ) -> Scene {
-    use crate::gen::{buildings, conveyances, creatures, fixtures, flora, roads, rivers, district, zones};
+    use crate::gen::{buildings, conveyances, creatures, fixtures, flora, zones};
     let is_night = crate::gen::atmosphere::is_night(atmo.time_of_day);
 
-    let dist = district::generate_district(cell);
-    let road_network = roads::generate_roads(&dist);
-    let river_data = rivers::generate_rivers(&dist);
-    let blocks = crate::gen::blocks::extract_blocks(cell, &dist.polygon, &road_network, &river_data);
+    // Structural layer (geometry/roads/rivers/blocks) comes from the shared cache
+    // so every consumer agrees; cloning it is far cheaper than re-running the
+    // Voronoi + PSLG pipeline.
+    let dd = crate::gen::chunk::district_data(cell);
+    let dist = dd.geometry.clone();
+    let road_network = dd.roads.clone();
+    let river_data = dd.rivers.clone();
+    let blocks = dd.blocks.clone();
 
     let mut entities = Vec::new();
     let mut light_positions: Vec<(f64, f64, f64, bool)> = Vec::new(); // (x, y, z, emissive)
