@@ -15,6 +15,7 @@ use crate::gen::creatures::Creature;
 use crate::gen::fixtures::Fixture;
 use crate::gen::flora::Flora;
 use crate::gen::home::HomeStructure;
+use crate::gen::home::peer_id_u32;
 use crate::gen::inside::Inside;
 use crate::gen::room_features::RoomFeature;
 use crate::gen::tunnel::{Tunnel, TunnelAesthetic};
@@ -152,6 +153,28 @@ pub fn compile_room_feature(f: &RoomFeature, palette: &AestheticPalette) -> Enti
         id: format!("feature:{}:{}:{}", f.room, f.kind, f.index),
         transform: Transform::at(f.position.x, y, f.position.y)
             .with_scale(scale.x * 0.6, scale.y * 0.6, scale.z * 0.6),
+        geometry: geo,
+        material: mat,
+        velocity: None,
+        description: Some(graph),
+    }
+}
+
+/// Compile a peer avatar (spaces §8.2) at a world position. Used to render
+/// other players in the live scene.
+pub fn compile_avatar(
+    peer_id: &[u8],
+    palette: &AestheticPalette,
+    x: f64,
+    y: f64,
+    z: f64,
+) -> Entity {
+    let graph = mapping::map_avatar(peer_id, palette);
+    let (geo, scale) = geometry::resolve_geometry(&graph);
+    let mat = material::resolve_material(&graph, palette.hue);
+    Entity {
+        id: format!("avatar:{:08x}", peer_id_u32(peer_id)),
+        transform: Transform::at(x, y, z).with_scale(scale.x, scale.y, scale.z),
         geometry: geo,
         material: mat,
         velocity: None,

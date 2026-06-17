@@ -5,6 +5,7 @@
 
 use serde::Serialize;
 
+use crate::gen::aesthetic::AestheticPalette;
 use crate::gen::blocks::{extract_blocks, Block};
 use crate::gen::buildings::{generate_buildings, BuildingPlot};
 use crate::gen::cell::Cell;
@@ -16,6 +17,7 @@ use crate::gen::fixtures::generate_fixtures;
 use crate::gen::flora::generate_flora;
 use crate::gen::home::{place_home_in_cell, HOME_ARCHETYPES};
 use crate::gen::inside::generate_inside;
+use crate::hdl::mapping::map_avatar;
 use crate::gen::rivers::{generate_rivers, is_river, RiverSegment};
 use crate::gen::roads::{generate_roads, RoadNetwork};
 use crate::gen::tunnel::{generate_tunnel, TunnelMetrics};
@@ -850,6 +852,36 @@ pub fn audit_spaces(cell_a: &Cell, peer_a: &[u8], cell_b: &Cell, peer_b: &[u8]) 
             )
         } else {
             tun_issues.join("; ")
+        },
+    ));
+
+    // ── Avatar ──
+    let palette = AestheticPalette::from_cell(cell_a);
+    let avatar = map_avatar(peer_a, &palette);
+    let avatar2 = map_avatar(peer_a, &palette);
+    let term = |g: &crate::hdl::traits::DescriptionGraph, path: &str| {
+        g.traits.iter().find(|t| t.path == path).map(|t| t.term.clone())
+    };
+    let mut av_issues = Vec::new();
+    if term(&avatar, "being.form.silhouette").as_deref() != Some("tall") {
+        av_issues.push("silhouette not tall");
+    }
+    if term(&avatar, "behavior.motion.method").as_deref() != Some("continuous") {
+        av_issues.push("motion not continuous");
+    }
+    if term(&avatar, "effect.emission.channel").as_deref() != Some("background") {
+        av_issues.push("emission not background");
+    }
+    if avatar.traits.len() != avatar2.traits.len() {
+        av_issues.push("non-deterministic");
+    }
+    checks.push(Check::new(
+        "avatar_valid",
+        av_issues.is_empty(),
+        if av_issues.is_empty() {
+            format!("{} traits", avatar.traits.len())
+        } else {
+            av_issues.join("; ")
         },
     ));
 

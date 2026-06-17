@@ -17,7 +17,7 @@ use crate::gen::creatures::*;
 use crate::gen::fixtures::{Fixture, FixtureRole};
 use crate::gen::flora::{DensityMode, Flora, GrowthForm};
 use crate::gen::hash::{ha, hash_to_f64};
-use crate::gen::home::HomeStructure;
+use crate::gen::home::{peer_id_u32, HomeStructure};
 use crate::gen::objects::FormClass;
 use crate::gen::room_features::RoomFeature;
 use crate::hdl::traits::*;
@@ -1333,6 +1333,52 @@ pub fn map_room_feature(f: &RoomFeature, palette: &AestheticPalette) -> Descript
         _ => "constructed",
     };
     g.push_trait(Trait::new("being.material.substance", substance));
+    g
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// AVATAR MAPPING (spaces §8.2)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// The default peer avatar description graph (spaces §8.2): a tall, moderate
+/// figure built from the peer's *home* district aesthetic (so you recognise
+/// where someone is from), moving continuously with a faint background glow.
+/// `avatar_seed = ha(peer_id ^ 0xface)` adds a small per-peer variation.
+pub fn map_avatar(peer_id: &[u8], palette: &AestheticPalette) -> DescriptionGraph {
+    let mut g = DescriptionGraph::new();
+    let avatar_seed = ha(peer_id_u32(peer_id) ^ 0xface);
+
+    g.push_trait(Trait::new("being.form.silhouette", "tall"));
+    g.push_trait(Trait::new("being.form.scale", "moderate"));
+
+    // Surface + material carried from the peer's home district.
+    let substance = match palette.domain {
+        Domain::Loopback => "mineral",
+        Domain::Reserved => "elemental",
+        Domain::Documentation => "mineral",
+        _ => "constructed",
+    };
+    g.push_trait(Trait::new("being.material.substance", substance));
+    let texture = if palette.popcount_ratio < 0.33 {
+        "smooth"
+    } else if palette.popcount_ratio < 0.66 {
+        "faceted"
+    } else {
+        "rough"
+    };
+    g.push_trait(Trait::new("being.surface.texture", texture));
+    // Per-peer warmth variation from the avatar seed.
+    let temp = match avatar_seed & 0x3 {
+        0 => "cold",
+        1 => "warm",
+        _ => "neutral",
+    };
+    g.push_trait(Trait::new("being.material.temperature", temp));
+
+    g.push_trait(Trait::new("behavior.motion.method", "continuous"));
+    g.push_trait(Trait::new("effect.emission.type", "glow"));
+    g.push_trait(Trait::new("effect.emission.intensity", "faint").with_param("value", 0.2));
+    g.push_trait(Trait::new("effect.emission.channel", "background"));
     g
 }
 

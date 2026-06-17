@@ -10,7 +10,8 @@ use include_dir::{include_dir, Dir};
 
 use p2pcd::bridge_client::BridgeClient;
 use p2pcd::capability_sdk::{
-    init_tracing, CapabilityApp, InboundMessage, LocalPeerId, PeerStream, PeerTracker,
+    init_tracing, rpc as sdk_rpc, CapabilityApp, InboundMessage, LocalPeerId, PeerStream,
+    PeerTracker,
 };
 
 mod audit;
@@ -38,13 +39,42 @@ struct AppState {
     peers: PeerTracker,
     /// This node's own peer id — the seed for home/Inside/avatar generation.
     local_id: LocalPeerId,
+    /// This node's home district cell (from `--home-ip`) — drives its avatar's
+    /// aesthetic, so peers see where it's "from".
+    home_cell: gen::cell::Cell,
 }
 
-/// Inbound P2P-CD capability messages (`POST /p2pcd/inbound`). Phase S wires the
-/// route; presence (`presence.*`) and avatar (`avatar.*`) handling land in the
-/// multiplayer phase.
-async fn inbound(State(_state): State<AppState>, Json(_msg): Json<InboundMessage>) -> Response {
-    (StatusCode::OK, Json(serde_json::json!({}))).into_response()
+/// Inbound P2P-CD capability messages (`POST /p2pcd/inbound`). Handles the
+/// `avatar.get` RPC (returns this node's avatar); other methods are accepted
+/// and ignored for now (presence updates land in the next multiplayer slice).
+async fn inbound(State(state): State<AppState>, Json(msg): Json<InboundMessage>) -> Response {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    let raw = match STANDARD.decode(&msg.payload) {
+        Ok(b) => b,
+        Err(_) => return (StatusCode::BAD_REQUEST, "invalid payload").into_response(),
+    };
+
+    match sdk_rpc::extract_method(&raw).as_deref() {
+        // A peer asks for our avatar. Generate it from our own peer id + home
+        // district aesthetic and return it as the RPC response.
+        Some("avatar.get") => {
+            let palette = gen::aesthetic::AestheticPalette::from_cell(&state.home_cell);
+            let pid = state
+                .local_id
+                .get()
+                .await
+                .and_then(|s| decode_peer_id(&s))
+                .unwrap_or_default();
+            let graph = hdl::mapping::map_avatar(&pid, &palette);
+            let body = serde_json::to_vec(&graph).unwrap_or_default();
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({ "response": STANDARD.encode(body) })),
+            )
+                .into_response()
+        }
+        _ => (StatusCode::OK, Json(serde_json::json!({}))).into_response(),
+    }
 }
 
 #[derive(Parser, Debug)]
@@ -61,6 +91,11 @@ struct Config {
 
     #[arg(long, default_value = "http://127.0.0.1:7000", env = "HOWM_DAEMON_URL")]
     daemon_url: String,
+
+    /// This node's home district IP — its avatar's aesthetic comes from this
+    /// district (ideally the node's own public IP).
+    #[arg(long, default_value = "1.0.0.0", env = "HOWM_WORLD_HOME_IP")]
+    home_ip: String,
 }
 
 fn current_time_ms() -> u64 {
@@ -465,6 +500,31 @@ async fn district_home_handler(
 /// inspect the doorway HDL that every portal (home/inside/tunnel) animates from.
 async fn portal_handler() -> Response {
     (StatusCode::OK, axum::Json(hdl::mapping::map_portal())).into_response()
+}
+
+// ─── Peer avatar (spaces §8.2) ──────────────────────────────────────────────
+//
+// A peer's avatar description graph, built from their peer id and home district
+// (`:ip`) aesthetic. Peers fetch each other's avatars over the `avatar.get` RPC
+// (handled in `inbound`); this HTTP form lets the renderer/clients fetch one by
+// (home-ip, peer-id) and is the inspection/test surface.
+
+async fn avatar_handler(AxumPath((ip, peer_id)): AxumPath<(String, String)>) -> Response {
+    let cell = match parse_cell(&ip) {
+        Some(c) => c,
+        None => return bad_request(),
+    };
+    let pid = match decode_peer_id(&peer_id) {
+        Some(p) => p,
+        None => return (StatusCode::BAD_REQUEST, "Invalid peer id").into_response(),
+    };
+    let palette = gen::aesthetic::AestheticPalette::from_cell(&cell);
+    let graph = hdl::mapping::map_avatar(&pid, &palette);
+    (
+        StatusCode::OK,
+        axum::Json(serde_json::json!({ "peer_id": peer_id, "description": graph })),
+    )
+        .into_response()
 }
 
 // ─── Peer Inside (spaces §2) ────────────────────────────────────────────────
@@ -933,11 +993,14 @@ async fn main() -> anyhow::Result<()> {
     peers.init_from_daemon(&bridge).await;
     let _stream = PeerStream::drive_existing(peers.clone(), bridge.events_url(CAP_NAME), None, None);
     let local_id = LocalPeerId::lazy(bridge.clone()).await;
+    let home_cell = parse_cell(&config.home_ip)
+        .unwrap_or_else(|| gen::cell::Cell::from_octets(1, 0, 0));
 
     let state = AppState {
         bridge,
         peers,
         local_id,
+        home_cell,
     };
 
     CapabilityApp::new(CAP_NAME, config.port, state)
@@ -990,6 +1053,7 @@ async fn main() -> anyhow::Result<()> {
                 .route("/district/{ip}/live", get(stream::handler::ws_handler))
                 .route("/neighbors/{ip}", get(neighbors_handler))
                 .route("/portal", get(portal_handler))
+                .route("/avatar/{ip}/{peer_id}", get(avatar_handler))
         })
         .run()
         .await
