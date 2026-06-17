@@ -96,7 +96,9 @@ pub fn paint_ground(
                 .fold(f64::MAX, f64::min);
             if river_d2 < water_sq {
                 code = CODE_WATER;
-            } else if river_d2 < bank_sq {
+            } else if river_d2 < bank_sq && code != CODE_WATER {
+                // Riverbank only forms where the river meets land. Where the river
+                // runs through a lake (already water), there is no bank.
                 code = CODE_RIVERBANK;
             }
 
@@ -110,6 +112,33 @@ pub fn paint_ground(
             }
 
             codes[j * res + i] = code;
+        }
+    }
+
+    // Cleanup: a riverbank only forms where the river meets land. A bank cell
+    // with no land neighbour is wedged between waters (the river running through
+    // a lake, or a thin spit between the channel and a lake) — there is no bank
+    // there, it is water. Decided against a snapshot so the pass is independent
+    // of scan order and matches the `riverbank_not_in_water` audit invariant.
+    let snapshot = codes.clone();
+    let is_land = |c: u8| c != CODE_WATER && c != CODE_RIVERBANK;
+    for j in 0..res as i32 {
+        for i in 0..res as i32 {
+            if snapshot[(j * res as i32 + i) as usize] != CODE_RIVERBANK {
+                continue;
+            }
+            let touches_land = [(-1, 0), (1, 0), (0, -1), (0, 1)].iter().any(|&(di, dj)| {
+                let (ni, nj) = (i + di, j + dj);
+                // Off-grid (district edge) counts as land — no spurious conversion.
+                ni < 0
+                    || nj < 0
+                    || ni >= res as i32
+                    || nj >= res as i32
+                    || is_land(snapshot[(nj * res as i32 + ni) as usize])
+            });
+            if !touches_land {
+                codes[(j * res as i32 + i) as usize] = CODE_WATER;
+            }
         }
     }
 

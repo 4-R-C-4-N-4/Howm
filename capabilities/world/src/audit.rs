@@ -667,6 +667,57 @@ fn check_entries_on_wall(d: &DistrictData) -> Check {
     )
 }
 
+/// A riverbank only forms where the river meets land — never inside open water.
+/// Where a river runs through a lake the band beside it must stay water, so no
+/// painted riverbank cell may be enclosed by water (a bank floating in a lake).
+fn check_riverbank_not_in_water(d: &DistrictData) -> Check {
+    use crate::scene::groundpaint::{paint_ground, CODE_RIVERBANK, CODE_WATER};
+    use base64::Engine;
+
+    let gp = paint_ground(&d.blocks, &d.roads, &d.rivers, &d.geom.polygon);
+    let codes = base64::engine::general_purpose::STANDARD
+        .decode(gp.codes.as_bytes())
+        .unwrap_or_default();
+    let res = gp.res as i32;
+    let at = |i: i32, j: i32| -> Option<u8> {
+        if i < 0 || j < 0 || i >= res || j >= res {
+            None
+        } else {
+            codes.get((j * res + i) as usize).copied()
+        }
+    };
+
+    let mut enclosed = 0usize;
+    for j in 0..res {
+        for i in 0..res {
+            if at(i, j) != Some(CODE_RIVERBANK) {
+                continue;
+            }
+            // A valid bank touches land (a non-water, non-bank cell). Off-grid
+            // neighbours (district edge) count as land to avoid edge false flags.
+            let touches_land = [(-1, 0), (1, 0), (0, -1), (0, 1)].iter().any(|&(di, dj)| {
+                match at(i + di, j + dj) {
+                    None => true,
+                    Some(c) => c != CODE_WATER && c != CODE_RIVERBANK,
+                }
+            });
+            if !touches_land {
+                enclosed += 1;
+            }
+        }
+    }
+
+    Check::new(
+        "riverbank_not_in_water",
+        enclosed == 0,
+        if enclosed == 0 {
+            "no riverbank enclosed by water".to_string()
+        } else {
+            format!("{enclosed} riverbank cell(s) enclosed by water (river through a lake)")
+        },
+    )
+}
+
 /// Run all single-district checks.
 pub fn audit_district(cell: &Cell) -> AuditReport {
     let d = DistrictData::build(cell.clone());
@@ -684,6 +735,7 @@ pub fn audit_district(cell: &Cell) -> AuditReport {
         check_fixtures_match_affinity(&d),
         check_creatures_placed(&d),
         check_entries_on_wall(&d),
+        check_riverbank_not_in_water(&d),
     ];
     let pass = checks.iter().all(|c| c.pass);
     let metrics = serde_json::json!({
@@ -1028,7 +1080,7 @@ mod tests {
     fn harness_produces_report() {
         let cell = Cell::from_ip_str("93.184.216.0").unwrap();
         let r = audit_district(&cell);
-        assert_eq!(r.checks.len(), 13);
+        assert_eq!(r.checks.len(), 14);
         assert!(r.checks.iter().any(|c| c.name == "rivers_valid"));
         assert!(r.checks.iter().any(|c| c.name == "objects_in_district"));
         assert!(r.checks.iter().any(|c| c.name == "buildings_no_overlap"));

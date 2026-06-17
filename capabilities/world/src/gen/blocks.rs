@@ -286,12 +286,16 @@ pub fn extract_blocks(
     {
         let norm_area = area / median_area;
         let rd2 = river_dist_sq(centroid);
+        // Base classification first: a riverbank only forms where the river meets
+        // land, so a block that is already water (a lake the river runs through)
+        // stays water rather than being downgraded to riverbank.
+        let base = classify_block(cell, idx, norm_area, river_adj);
         let block_type = if rd2 < water_sq {
             BlockType::Water
-        } else if rd2 < bank_sq {
+        } else if rd2 < bank_sq && base != BlockType::Water {
             BlockType::Riverbank
         } else {
-            classify_block(cell, idx, norm_area, river_adj)
+            base
         };
 
         blocks.push(Block {
