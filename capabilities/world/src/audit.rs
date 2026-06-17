@@ -10,12 +10,15 @@ use crate::gen::buildings::{generate_buildings, BuildingPlot};
 use crate::gen::cell::Cell;
 use crate::gen::config::config;
 use crate::gen::conveyances::generate_conveyances;
+use crate::gen::creatures::generate_creatures;
 use crate::gen::district::{generate_district, DistrictGeometry};
 use crate::gen::fixtures::generate_fixtures;
 use crate::gen::flora::generate_flora;
-use crate::gen::creatures::generate_creatures;
+use crate::gen::home::{place_home_in_cell, HOME_ARCHETYPES};
+use crate::gen::inside::generate_inside;
 use crate::gen::rivers::{generate_rivers, is_river, RiverSegment};
 use crate::gen::roads::{generate_roads, RoadNetwork};
+use crate::gen::tunnel::{generate_tunnel, TunnelMetrics};
 use crate::types::{Point, Polygon, Segment};
 
 /// Point-equality tolerance in world units (sub-cell).
@@ -77,11 +80,26 @@ impl DistrictData {
         let mut flora = Vec::new();
         let mut creature_count = 0;
         for b in &blocks {
-            buildings.extend(generate_buildings(&cell, b).plots.into_iter().map(|p| (b.idx, p)));
+            buildings.extend(
+                generate_buildings(&cell, b)
+                    .plots
+                    .into_iter()
+                    .map(|p| (b.idx, p)),
+            );
             let bf = generate_fixtures(&cell, b, Some(&roads));
-            fixtures.extend(bf.zone_fixtures.iter().chain(&bf.road_fixtures).map(|f| f.position));
+            fixtures.extend(
+                bf.zone_fixtures
+                    .iter()
+                    .chain(&bf.road_fixtures)
+                    .map(|f| f.position),
+            );
             let fl = generate_flora(&cell, b, Some(&roads));
-            flora.extend(fl.block_flora.iter().chain(&fl.road_flora).map(|f| f.position));
+            flora.extend(
+                fl.block_flora
+                    .iter()
+                    .chain(&fl.road_flora)
+                    .map(|f| f.position),
+            );
             creature_count += generate_creatures(&cell, b).creatures.len();
         }
         let conv = generate_conveyances(&cell, &roads);
@@ -505,7 +523,12 @@ fn check_conveyances_on_roads(d: &DistrictData) -> Check {
     Check::new(
         "conveyances_on_roads",
         off == 0,
-        format!("{}/{} conveyances not near a road (≤{:.0} wu)", off, d.conveyances.len(), thresh),
+        format!(
+            "{}/{} conveyances not near a road (≤{:.0} wu)",
+            off,
+            d.conveyances.len(),
+            thresh
+        ),
     )
 }
 
@@ -722,6 +745,124 @@ pub fn audit_cross_cells(cell_a: &Cell, cell_b: &Cell) -> CrossAuditReport {
     }
 }
 
+// ── Spaces entities (home / inside / tunnel) ────────────────────────────────
+
+/// Default capability set used when auditing an Inside.
+const SPACES_CAPS: [&str; 5] = [
+    "social.feed",
+    "social.files",
+    "social.messaging",
+    "social.presence",
+    "social.voice",
+];
+
+/// Audit a peer's spaces entities: home placement in the Outside, Inside room
+/// layout, and the underground tunnel to a second peer. Pure/deterministic.
+pub fn audit_spaces(cell_a: &Cell, peer_a: &[u8], cell_b: &Cell, peer_b: &[u8]) -> AuditReport {
+    let geom = generate_district(cell_a);
+    let mut checks = Vec::new();
+
+    // ── Home ──
+    let home = place_home_in_cell(cell_a, peer_a);
+    let home2 = place_home_in_cell(cell_a, peer_a);
+    let tol = containment_tol(&geom.polygon);
+    let mut home_issues = Vec::new();
+    if !finite(home.position) || !point_within(home.position, &geom.polygon, tol) {
+        home_issues.push("home outside district");
+    }
+    if !HOME_ARCHETYPES.contains(&home.archetype.as_str()) {
+        home_issues.push("bad archetype");
+    }
+    if !(1.0..=5.0).contains(&home.footprint_radius) || !(2.0..=6.0).contains(&home.height) {
+        home_issues.push("radius/height out of range");
+    }
+    if home.home_seed != home2.home_seed
+        || home.position.x != home2.position.x
+        || home.archetype != home2.archetype
+    {
+        home_issues.push("non-deterministic");
+    }
+    checks.push(Check::new(
+        "home_valid",
+        home_issues.is_empty(),
+        if home_issues.is_empty() {
+            format!(
+                "{} radius {:.1} height {:.1}",
+                home.archetype, home.footprint_radius, home.height
+            )
+        } else {
+            home_issues.join("; ")
+        },
+    ));
+
+    // ── Inside ──
+    let caps: Vec<String> = SPACES_CAPS.iter().map(|s| s.to_string()).collect();
+    let inside = generate_inside(cell_a, peer_a, &caps, 1);
+    let hall_half = inside.rooms[0].width / 2.0;
+    let mut inside_issues = Vec::new();
+    if inside.rooms.len() != caps.len() + 1 {
+        inside_issues.push(format!("rooms {} != caps+1", inside.rooms.len()));
+    }
+    if inside.doors.len() != caps.len() {
+        inside_issues.push(format!("doors {} != caps", inside.doors.len()));
+    }
+    for r in &inside.rooms {
+        if r.width <= 0.0 || r.depth <= 0.0 || r.height <= 0.0 {
+            inside_issues.push(format!("room {} non-positive dims", r.name));
+        }
+    }
+    for r in &inside.rooms[1..] {
+        if (r.position.x.powi(2) + r.position.y.powi(2)).sqrt() <= hall_half {
+            inside_issues.push(format!("room {} overlaps hall", r.name));
+        }
+    }
+    checks.push(Check::new(
+        "inside_valid",
+        inside_issues.is_empty(),
+        if inside_issues.is_empty() {
+            format!("{} rooms, {} layout", inside.rooms.len(), inside.layout)
+        } else {
+            inside_issues.join("; ")
+        },
+    ));
+
+    // ── Tunnel ──
+    let m = TunnelMetrics::default();
+    let t1 = generate_tunnel(cell_a, peer_a, cell_b, peer_b, &m);
+    let t2 = generate_tunnel(cell_b, peer_b, cell_a, peer_a, &m);
+    let mut tun_issues = Vec::new();
+    if t1.tunnel_seed != t2.tunnel_seed {
+        tun_issues.push("seed not order-independent".to_string());
+    }
+    if t1.length < 10.0 || !(2.0..=6.0).contains(&t1.width) || t1.height < 3.0 {
+        tun_issues.push("dims out of range".to_string());
+    }
+    if t1.markers.iter().any(|mk| mk.t <= 0.0 || mk.t >= 1.0) {
+        tun_issues.push("marker t out of (0,1)".to_string());
+    }
+    checks.push(Check::new(
+        "tunnel_valid",
+        tun_issues.is_empty(),
+        if tun_issues.is_empty() {
+            format!(
+                "len {:.0} width {:.1} xsection {}",
+                t1.length, t1.width, t1.cross_section
+            )
+        } else {
+            tun_issues.join("; ")
+        },
+    ));
+
+    let pass = checks.iter().all(|c| c.pass);
+    AuditReport {
+        ip: format!("{} / {}", cell_a.ip_prefix(), cell_b.ip_prefix()),
+        cell_key: cell_a.key,
+        pass,
+        checks,
+        metrics: serde_json::json!({ "peer_a_home_seed": home.home_seed, "tunnel_seed": t1.tunnel_seed }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -797,6 +938,36 @@ mod tests {
         assert!(
             failures.is_empty(),
             "cross-district failures:\n{}",
+            failures.join("\n")
+        );
+    }
+
+    /// Spaces entities (home/inside/tunnel) hold their invariants across a spread
+    /// of districts and peer-id pairs.
+    #[test]
+    fn audit_spaces_sweep() {
+        let cells = ["93.184.216.0", "1.0.0.0", "50.50.12.0", "254.254.254.0"];
+        let peers: [&[u8]; 4] = [
+            &[0xde, 0xad, 0xbe, 0xef],
+            &[1, 2, 3, 4],
+            &[0xff, 0x00, 0xab, 0xcd, 0x99],
+            &[7, 7, 7, 7],
+        ];
+        let mut failures = Vec::new();
+        for ipa in cells {
+            let ca = Cell::from_ip_str(ipa).unwrap();
+            let cb = Cell::from_ip_str("8.8.8.0").unwrap();
+            for (i, pa) in peers.iter().enumerate() {
+                let pb = peers[(i + 1) % peers.len()];
+                let report = audit_spaces(&ca, pa, &cb, pb);
+                for c in report.checks.iter().filter(|c| !c.pass) {
+                    failures.push(format!("{ipa} peer{i}: {} — {}", c.name, c.detail));
+                }
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "spaces failures:\n{}",
             failures.join("\n")
         );
     }

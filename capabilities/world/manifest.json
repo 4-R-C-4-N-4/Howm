@@ -20,6 +20,10 @@
       { "name": "underground_scene", "method": "GET", "path": "/underground/:ip_a/:peer_a/:ip_b/:peer_b/scene" },
       { "name": "portal", "method": "GET", "path": "/portal" },
       { "name": "district_live", "method": "GET", "path": "/district/:ip/live" },
+      { "name": "district_map_ascii", "method": "GET", "path": "/district/:ip/map.txt" },
+      { "name": "district_audit", "method": "GET", "path": "/district/:ip/audit" },
+      { "name": "audit_cross", "method": "GET", "path": "/audit/cross/:ip_a/:ip_b" },
+      { "name": "audit_spaces", "method": "GET", "path": "/audit/spaces/:ip_a/:peer_a/:ip_b/:peer_b" },
       { "name": "health", "method": "GET", "path": "/health" }
     ]
   },

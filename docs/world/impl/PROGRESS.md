@@ -773,3 +773,25 @@ centroid divides by the signed area, so a ~0-area polygon explodes the result to
 from ~15,700,000 wu to in-district).
 
 ---
+
+## Audit Extension: Spaces Entities — 2026-06-17
+
+Completed "all entities" by adding the spaces entities (home / inside / tunnel)
+to the audit. `audit_spaces(cell_a, peer_a, cell_b, peer_b)` runs:
+- `home_valid`: home placed within the district, finite, archetype in the set,
+  radius/height in range, deterministic.
+- `inside_valid`: rooms = caps+1, doors = caps, all room dims positive, every
+  capability room sits outside the entry-hall footprint.
+- `tunnel_valid`: order-independent seed, dimensions in configured bounds,
+  capability markers at t ∈ (0,1).
+
+Endpoint `GET /audit/spaces/:ip_a/:peer_a/:ip_b/:peer_b`. Regression test
+`audit_spaces_sweep` covers a spread of districts × peer-id pairs. 167 tests pass.
+
+The audit now covers **every entity type** the world generates:
+- Outside: blocks, roads, intersections, rivers, buildings, fixtures, flora,
+  creatures, conveyances (+ cross-district edge/road/river continuity)
+- Spaces: home, inside (rooms/doors), tunnel
+All as machine-checkable invariants in permanent CI regression tests.
+
+---

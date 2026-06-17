@@ -820,6 +820,21 @@ async fn cross_audit_handler(AxumPath((ip_a, ip_b)): AxumPath<(String, String)>)
     (StatusCode::OK, axum::Json(audit::audit_cross_cells(&a, &b))).into_response()
 }
 
+/// Audit a peer's spaces entities (home/inside/tunnel to a second peer).
+async fn spaces_audit_handler(
+    AxumPath((ip_a, peer_a, ip_b, peer_b)): AxumPath<(String, String, String, String)>,
+) -> Response {
+    let (cell_a, pa, cell_b, pb) = match parse_tunnel_endpoints(&ip_a, &peer_a, &ip_b, &peer_b) {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+    (
+        StatusCode::OK,
+        axum::Json(audit::audit_spaces(&cell_a, &pa, &cell_b, &pb)),
+    )
+        .into_response()
+}
+
 // ─── ASCII map (agent/terminal-inspectable) ─────────────────────────────────
 
 async fn district_ascii_handler(AxumPath(ip): AxumPath<String>) -> Response {
@@ -964,6 +979,10 @@ async fn main() -> anyhow::Result<()> {
                 .route("/district/{ip}/map.txt", get(district_ascii_handler))
                 .route("/district/{ip}/audit", get(district_audit_handler))
                 .route("/audit/cross/{ip_a}/{ip_b}", get(cross_audit_handler))
+                .route(
+                    "/audit/spaces/{ip_a}/{peer_a}/{ip_b}/{peer_b}",
+                    get(spaces_audit_handler),
+                )
                 .route(
                     "/district/{ip}/neighborhood",
                     get(neighborhood_map_handler),
