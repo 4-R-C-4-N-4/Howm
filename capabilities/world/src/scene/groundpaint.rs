@@ -11,6 +11,7 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 
 use crate::gen::blocks::{Block, BlockType};
+use crate::gen::rivers::RiverSegment;
 use crate::gen::roads::RoadNetwork;
 use crate::types::Point;
 
@@ -24,6 +25,9 @@ pub const CODE_ROAD: u8 = 5;
 
 /// Half-width of a painted road (wu).
 const ROAD_HALF: f64 = 3.5;
+/// Half-width of a river's water channel (wu), and its riverbank margin.
+const RIVER_HALF: f64 = 6.0;
+const RIVER_BANK: f64 = 3.0;
 
 /// A square raster of zone codes covering one district, in world coordinates.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -62,8 +66,13 @@ fn block_code(bt: BlockType) -> u8 {
     }
 }
 
-/// Rasterise the district's zones and roads into a [`GroundPaint`].
-pub fn paint_ground(blocks: &[Block], roads: &RoadNetwork, district: &crate::types::Polygon) -> GroundPaint {
+/// Rasterise the district's zones, rivers and roads into a [`GroundPaint`].
+pub fn paint_ground(
+    blocks: &[Block],
+    roads: &RoadNetwork,
+    rivers: &[RiverSegment],
+    district: &crate::types::Polygon,
+) -> GroundPaint {
     let (min_x, min_y, max_x, max_y) = district.bbox();
     let cx = (min_x + max_x) * 0.5;
     let cz = (min_y + max_y) * 0.5;
@@ -73,6 +82,10 @@ pub fn paint_ground(blocks: &[Block], roads: &RoadNetwork, district: &crate::typ
     let res = ((size / 2.5) as usize).clamp(64, 140);
 
     let road_half_sq = ROAD_HALF * ROAD_HALF;
+    let water_sq = RIVER_HALF * RIVER_HALF;
+    let bank_sq = (RIVER_HALF + RIVER_BANK) * (RIVER_HALF + RIVER_BANK);
+    // Pre-flatten river bezier curves to polylines once.
+    let river_lines: Vec<Vec<Point>> = rivers.iter().map(|r| r.to_polyline(48)).collect();
     let mut codes = vec![CODE_GRASS; res * res];
 
     for j in 0..res {
@@ -91,7 +104,19 @@ pub fn paint_ground(blocks: &[Block], roads: &RoadNetwork, district: &crate::typ
                 }
             }
 
-            // Roads paint over zones.
+            // Rivers paint over zones: water channel with a riverbank margin.
+            let river_d2 = river_lines
+                .iter()
+                .flat_map(|line| line.windows(2))
+                .map(|w| point_segment_dist_sq(p, w[0], w[1]))
+                .fold(f64::MAX, f64::min);
+            if river_d2 < water_sq {
+                code = CODE_WATER;
+            } else if river_d2 < bank_sq {
+                code = CODE_RIVERBANK;
+            }
+
+            // Roads paint over everything (a bridge across a river).
             let on_road = roads
                 .segments
                 .iter()

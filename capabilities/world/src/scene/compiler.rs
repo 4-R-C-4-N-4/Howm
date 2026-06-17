@@ -751,10 +751,11 @@ pub fn compile_district_scene(
         far: 500.0,
     };
 
-    // Ground zone/road raster — sampled by the renderer on ground hits.
+    // Ground zone/road/river raster — sampled by the renderer on ground hits.
     let ground_paint = Some(crate::scene::groundpaint::paint_ground(
         &blocks,
         &road_network,
+        &river_data,
         &dist.polygon,
     ));
 
