@@ -418,9 +418,12 @@ pub fn compile_fixture(f: &Fixture, palette: &AestheticPalette) -> Entity {
     let (geo, scale) = geometry::resolve_geometry(&graph);
     let mat = material::resolve_material(&graph, palette.hue);
 
+    // Rest the fixture on the ground: lift so its lowest point is at y = 0.
+    let y = (f.scale_height * 0.5).max(vertical_half_extent(&geo, &scale));
+
     Entity {
         id: format!("fixture_{}", f.object_id),
-        transform: Transform::at(f.position.x, f.scale_height * 0.5, f.position.y)
+        transform: Transform::at(f.position.x, y, f.position.y)
             .with_scale(scale.x, scale.y, scale.z)
             .with_rotation_y(f.orientation),
         geometry: geo,
@@ -436,15 +439,33 @@ pub fn compile_flora(f: &Flora, palette: &AestheticPalette) -> Entity {
     let (geo, scale) = geometry::resolve_geometry(&graph);
     let mat = material::resolve_material(&graph, palette.hue);
 
+    // Flora is rooted in the ground; the transform scale is scale*f.scale, so the
+    // y offset must use that same effective scale to plant the base at y = 0
+    // (a tall tree was sinking most of its trunk below ground).
+    let eff = Vec3::new(scale.x * f.scale, scale.y * f.scale, scale.z * f.scale);
+    let y = vertical_half_extent(&geo, &eff);
+
     Entity {
         id: format!("flora_{}", f.object_id),
-        transform: Transform::at(f.position.x, f.scale * 0.5, f.position.y)
-            .with_scale(scale.x * f.scale, scale.y * f.scale, scale.z * f.scale)
+        transform: Transform::at(f.position.x, y, f.position.y)
+            .with_scale(eff.x, eff.y, eff.z)
             .with_rotation_y(f.orientation),
         geometry: geo,
         material: mat,
         velocity: None,
         description: Some(graph),
+    }
+}
+
+/// Vertical half-extent of a geometry (after applying the entity's y-scale).
+/// Used to keep ground-dwelling entities resting on the ground (bottom >= 0)
+/// instead of sinking their lower half below the ground plane (y = 0).
+fn vertical_half_extent(geo: &Geometry, scale: &Vec3) -> f64 {
+    match geo {
+        Geometry::Sphere { radius } => radius * scale.y,
+        Geometry::Box { size } => size.y * 0.5 * scale.y,
+        Geometry::Cylinder { height, .. } => height * 0.5 * scale.y,
+        Geometry::Plane { .. } => 0.0,
     }
 }
 
@@ -460,6 +481,9 @@ pub fn compile_creature(
     let (geo, scale) = geometry::resolve_geometry(&graph);
     let mat = material::resolve_material(&graph, palette.hue);
     let offsets = geometry::resolve_composition(&graph);
+    // Keep each body part above the ground plane (aerial/perching creatures have
+    // a large `height` and are unaffected; ground creatures no longer sink in).
+    let half_h = vertical_half_extent(&geo, &scale);
 
     offsets
         .iter()
@@ -474,7 +498,7 @@ pub fn compile_creature(
                 id: suffix,
                 transform: Transform::at(
                     base_pos.x + offset.x,
-                    height + offset.y,
+                    (height + offset.y).max(half_h),
                     base_pos.y + offset.z,
                 )
                     .with_scale(scale.x, scale.y, scale.z),
@@ -492,10 +516,12 @@ pub fn compile_conveyance(c: &Conveyance, palette: &AestheticPalette) -> Entity 
     let graph = mapping::map_conveyance(c, palette);
     let (geo, scale) = geometry::resolve_geometry(&graph);
     let mat = material::resolve_material(&graph, palette.hue);
+    // Rest the chassis on the ground rather than sinking it to its centre.
+    let y = 0.5_f64.max(vertical_half_extent(&geo, &scale));
 
     Entity {
         id: format!("conveyance_{}", c.object_id),
-        transform: Transform::at(c.position.x, 0.5, c.position.y)
+        transform: Transform::at(c.position.x, y, c.position.y)
             .with_scale(scale.x, scale.y, scale.z)
             .with_rotation_y(c.orientation),
         geometry: geo,
@@ -588,7 +614,7 @@ fn compile_ground(palette: &AestheticPalette, centroid: &crate::types::Point) ->
     let hue = palette.hue;
     let lightness = 0.25 + palette.popcount_ratio * 0.1;
     let base = Color::from_hsl(hue, 0.15, lightness);
-    let ground_size = 600.0; // big enough to cover any district (~200 wu across)
+    let ground_size = 1200.0; // covers the district plus its loaded neighbours
 
     Entity {
         id: "ground".into(),

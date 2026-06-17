@@ -104,11 +104,7 @@ pub struct ViewState {
     view_range: f64,
     max_lights: usize,
 
-    /// District boundary detection threshold (wu).
-    /// Load neighbor when player is within this distance of any district edge.
-    neighbor_load_distance: f64,
-
-    /// Keys of districts we've already attempted to load.
+    /// Keys of districts currently loaded (kept in sync with `districts`).
     loaded_keys: HashSet<u32>,
 }
 
@@ -150,8 +146,7 @@ impl ViewState {
             districts,
             primary_cell: cell,
             view_range,
-            max_lights: 8,
-            neighbor_load_distance: view_range * 0.8,
+            max_lights: 24,
             loaded_keys,
         }
     }
@@ -166,16 +161,9 @@ impl ViewState {
         let atmo = atmosphere::compute_atmosphere(&self.primary_cell, now_ms);
         let (env, _) = compiler::compile_environment(&self.primary_cell, &atmo, &palette);
 
-        // Ground entity from primary district
-        let ground = self.districts.get(&self.primary_cell.key)
-            .and_then(|d| d.entities.iter().find(|e| e.id == "ground"))
-            .map(|g| {
-                let mut g = g.clone();
-                g.transform.position.x -= self.origin_x;
-                g.transform.position.z -= self.origin_z;
-                serde_json::to_value(&g).unwrap_or_default()
-            })
-            .unwrap_or(serde_json::json!(null));
+        // Grounds stream per-district (namespaced) in the entity loop so the floor
+        // tiles across the loaded window; nothing to send up-front here.
+        let ground = serde_json::json!(null);
 
         let cam = serde_json::json!({
             "position": { "x": 0.0, "y": self.player_y, "z": 0.0 },
@@ -188,47 +176,66 @@ impl ViewState {
         (serde_json::to_value(&env).unwrap_or_default(), cam, ground)
     }
 
-    /// Check if neighboring districts need loading based on player position.
+    /// The district the player currently stands in (nearest seed — Voronoi cell).
+    fn current_cell(&self) -> Cell {
+        let cfg = config();
+        let mut best = self.primary_cell.clone();
+        let mut best_d = f64::MAX;
+        for district in self.districts.values() {
+            let cx = district.cell.gx as f64 * cfg.scale;
+            let cz = district.cell.gy as f64 * cfg.scale;
+            let dx = cx - self.player_x;
+            let dz = cz - self.player_z;
+            let d = dx * dx + dz * dz;
+            if d < best_d {
+                best_d = d;
+                best = district.cell.clone();
+            }
+        }
+        best
+    }
+
+    /// Keep the 3x3 ring around the player's current cell loaded, and drop
+    /// districts that have fallen outside the window — a moving window that
+    /// follows the camera so crossing any boundary reveals the neighbour.
     fn maybe_load_neighbors(&mut self) {
         let cfg = config();
-        let [o1, o2, o3] = self.primary_cell.octets;
+        let center = self.current_cell();
 
-        // Check 8 neighbors
-        let deltas: &[(i16, i16)] = &[
-            (0, 1), (0, -1), (1, 0), (-1, 0),
-            (1, 1), (1, -1), (-1, 1), (-1, -1),
-        ];
-
-        for &(do3, do2) in deltas {
-            let n3 = o3 as i16 + do3;
-            let n2 = o2 as i16 + do2;
-            if n3 < 0 || n3 > 255 || n2 < 0 || n2 > 255 {
-                continue;
+        // Load the ring around the current cell (neighbor_key wraps correctly,
+        // including across the octet2/octet1 boundary).
+        for dx in -1..=1 {
+            for dy in -1..=1 {
+                let ncell = Cell::from_key(center.neighbor_key(dx, dy));
+                if self.loaded_keys.contains(&ncell.key) {
+                    continue;
+                }
+                let nx = ncell.gx as f64 * cfg.scale;
+                let nz = ncell.gy as f64 * cfg.scale;
+                let ddx = nx - self.player_x;
+                let ddz = nz - self.player_z;
+                if (ddx * ddx + ddz * ddz).sqrt() < self.view_range + cfg.scale * 1.5 {
+                    let district = LoadedDistrict::generate(ncell.clone());
+                    self.districts.insert(ncell.key, district);
+                    self.loaded_keys.insert(ncell.key);
+                }
             }
+        }
 
-            let ncell = Cell::from_octets(o1, n2 as u8, n3 as u8);
-
-            if self.loaded_keys.contains(&ncell.key) {
-                continue;
-            }
-
-            // Distance from player to neighbor district centre
-            let nx = ncell.gx as f64 * cfg.scale;
-            let nz = ncell.gy as f64 * cfg.scale;
-            let dx = nx - self.player_x;
-            let dz = nz - self.player_z;
-            let dist = (dx * dx + dz * dz).sqrt();
-
-            if dist < self.view_range + cfg.scale * 0.5 {
-                // Close enough — load this neighbor
-                tracing::info!(
-                    "Loading neighbor district {} (dist={:.0} wu, player at {:.0},{:.0})",
-                    ncell.ip_prefix(), dist, self.player_x, self.player_z
-                );
-                let district = LoadedDistrict::generate(ncell.clone());
-                self.districts.insert(ncell.key, district);
-                self.loaded_keys.insert(ncell.key);
-            }
+        // Prune districts more than 2 cells from the current centre.
+        let to_drop: Vec<u32> = self
+            .districts
+            .values()
+            .filter(|d| {
+                let ddx = (d.cell.gx as i32 - center.gx as i32).abs();
+                let ddy = (d.cell.gy as i32 - center.gy as i32).abs();
+                ddx.max(ddy) > 2
+            })
+            .map(|d| d.cell.key)
+            .collect();
+        for k in to_drop {
+            self.districts.remove(&k);
+            self.loaded_keys.remove(&k);
         }
     }
 
@@ -258,29 +265,34 @@ impl ViewState {
         let mut should_be_visible: HashSet<String> = HashSet::new();
         let range_sq = self.view_range * self.view_range;
 
-        // Iterate ALL loaded districts' entities
+        // Iterate ALL loaded districts' entities. Ids are namespaced per district
+        // so grounds (and any same-named entities) from different districts don't
+        // collide in the client's entity map.
         for district in self.districts.values() {
+            let key = district.cell.key;
             for (i, entity) in district.entities.iter().enumerate() {
-                if entity.id == "ground" {
-                    continue;
-                }
-
+                let is_ground = entity.id == "ground";
                 let (wx, wz) = district.world_pos[i];
                 let ddx = wx - self.player_x;
                 let ddz = wz - self.player_z;
                 let dist_sq = ddx * ddx + ddz * ddz;
 
-                if dist_sq < range_sq {
-                    should_be_visible.insert(entity.id.clone());
+                // Ground is large and always relevant for a loaded district;
+                // everything else is range-culled.
+                if is_ground || dist_sq < range_sq {
+                    let nid = format!("{}#{}", key, entity.id);
+                    should_be_visible.insert(nid.clone());
 
-                    if !self.visible.contains_key(&entity.id) {
-                        // Entity entering — translate to player-relative
+                    if !self.visible.contains_key(&nid) {
+                        // Entering — anchor to the shared origin (world-anchored),
+                        // NOT player-relative, so it stays put as the camera moves.
                         let mut e = entity.clone();
-                        e.transform.position.x = wx - self.player_x;
-                        e.transform.position.z = wz - self.player_z;
+                        e.id = nid.clone();
+                        e.transform.position.x = wx - self.origin_x;
+                        e.transform.position.z = wz - self.origin_z;
 
                         let dist = dist_sq.sqrt();
-                        let lod = lod_for_distance(dist);
+                        let lod = if is_ground { Lod::Full } else { lod_for_distance(dist) };
                         if lod != Lod::Full {
                             e.material.displacement = None;
                             if lod == Lod::Billboard {
@@ -288,10 +300,7 @@ impl ViewState {
                             }
                         }
 
-                        self.visible.insert(
-                            entity.id.clone(),
-                            TrackedEntity { lod },
-                        );
+                        self.visible.insert(nid, TrackedEntity { lod });
                         events.push(ViewEvent::Enter(e));
                     }
                 }
@@ -324,8 +333,9 @@ impl ViewState {
                 };
                 let mut light = l.clone();
                 if let Some(pos) = &mut light.position {
-                    pos.x -= self.player_x;
-                    pos.z -= self.player_z;
+                    // Origin-relative, matching the world-anchored entities.
+                    pos.x -= self.origin_x;
+                    pos.z -= self.origin_z;
                 }
                 all_lights.push((dist_sq, light));
             }

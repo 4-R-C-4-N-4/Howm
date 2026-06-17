@@ -146,7 +146,7 @@ async function main() {
 
   // Render distance: default well past one district so stitched neighbours are
   // visible (the old hard cap was a single district span). `?far=` overrides.
-  loop.setFar(Number.isFinite(farParam) && farParam > 0 ? farParam : 650)
+  loop.setFar(Number.isFinite(farParam) && farParam > 0 ? farParam : 1000)
   if (Number.isFinite(eyeParam) && eyeParam > 0) {
     const p = loop.cameraPosition()
     loop.teleportTo(p.x, eyeParam, p.z)

@@ -28,7 +28,7 @@ async fn handle_socket(socket: WebSocket, ip: String) {
         None => return,
     };
 
-    let mut view = ViewState::new(cell, 80.0);
+    let mut view = ViewState::new(cell, 200.0);
 
     let (mut sender, mut receiver) = socket.split();
 

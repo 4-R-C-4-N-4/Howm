@@ -10,7 +10,7 @@ import { updateLightFlicker } from '../renderer/Animator'
 const SCALE = 200
 
 /** How many rings of neighbours to keep loaded around the cell under the camera. */
-const LOAD_RADIUS = 1
+const LOAD_RADIUS = 2
 /** Districts further than this (grid distance from centre) are dropped. */
 const PRUNE_RADIUS = 2
 /** Cap on merged point lights — too many tanks the per-pixel lighting loop. */
@@ -109,8 +109,11 @@ export class HowmSceneProvider implements SceneProvider {
     await this.fetchInto(ip)
     if (!this.base) throw new Error(`Failed to load district ${ip}`)
     this.centerIp = canon(ip)
-    // Await the first ring so the opening view already has neighbours stitched.
-    await Promise.all(ringIps(this.centerIp, LOAD_RADIUS).map(n => this.fetchInto(n)))
+    // Await the inner ring so the opening view is stitched immediately, then
+    // background-load out to LOAD_RADIUS so the wider vista fills in without
+    // blocking first paint.
+    await Promise.all(ringIps(this.centerIp, 1).map(n => this.fetchInto(n)))
+    for (const n of ringIps(this.centerIp, LOAD_RADIUS)) void this.fetchInto(n)
   }
 
   /** Fetch one district, shift it into shared-origin space, and store it. */

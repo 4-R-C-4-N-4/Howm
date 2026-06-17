@@ -54,7 +54,7 @@
   }
 
   // src/scene/HowmSceneProvider.ts
-  var LOAD_RADIUS = 1;
+  var LOAD_RADIUS = 2;
   var PRUNE_RADIUS = 2;
   var MAX_LIGHTS = 28;
   function parseCell(ip) {
@@ -113,7 +113,8 @@
       await this.fetchInto(ip);
       if (!this.base) throw new Error(`Failed to load district ${ip}`);
       this.centerIp = canon(ip);
-      await Promise.all(ringIps(this.centerIp, LOAD_RADIUS).map((n) => this.fetchInto(n)));
+      await Promise.all(ringIps(this.centerIp, 1).map((n) => this.fetchInto(n)));
+      for (const n of ringIps(this.centerIp, LOAD_RADIUS)) void this.fetchInto(n);
     }
     /** Fetch one district, shift it into shared-origin space, and store it. */
     async fetchInto(ip) {
@@ -2796,7 +2797,7 @@
       // Gravity pulls the camera down each frame; future jump sets velocity.y = jumpSpeed
       this.gravity = -20;
       // units/sec²
-      this.floorY = 1.5;
+      this.floorY = 2.5;
       // eye height — camera never goes below this
       /**
        * Fly / noclip mode: no gravity, no floor clamp, full 6-DOF. Movement follows
@@ -3099,7 +3100,7 @@
       hud
     });
     loop.start();
-    loop.setFar(Number.isFinite(farParam) && farParam > 0 ? farParam : 650);
+    loop.setFar(Number.isFinite(farParam) && farParam > 0 ? farParam : 1e3);
     if (Number.isFinite(eyeParam) && eyeParam > 0) {
       const p = loop.cameraPosition();
       loop.teleportTo(p.x, eyeParam, p.z);

@@ -13,7 +13,7 @@ export class CameraController {
 
   // Gravity pulls the camera down each frame; future jump sets velocity.y = jumpSpeed
   readonly gravity = -20.0    // units/sec²
-  floorY = 1.5                // eye height — camera never goes below this
+  floorY = 2.5                // eye height — camera never goes below this
 
   /**
    * Fly / noclip mode: no gravity, no floor clamp, full 6-DOF. Movement follows
