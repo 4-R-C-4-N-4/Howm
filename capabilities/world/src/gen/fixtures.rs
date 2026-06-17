@@ -258,9 +258,15 @@ pub fn generate_fixtures(
     let zones = generate_zones(cell.key, block);
     let mut zone_fixtures = Vec::new();
 
-    // Zone-based fixture spawning
+    // Zone-based fixture spawning. Each zone derives 1–3 preferred fixture roles
+    // (its affinity, §6.4); only those roles spawn here, so zones specialise —
+    // a seating zone fills with seating, an illumination zone with lamps, etc.
+    // (Previously every zone iterated all roles, making affinity inert.)
     for zone in &zones {
         for &role in FixtureRole::all() {
+            if !zone.affinity.is_empty() && !zone.affinity.contains(&role.id()) {
+                continue; // role is not preferred in this zone
+            }
             let (base, bonus) = spawn_counts(role, block.block_type);
             let count = base + (zone.density * bonus as f64).floor() as u32;
             if count == 0 {
