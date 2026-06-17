@@ -2264,7 +2264,7 @@
             } else {
               const entity = scene.entities[eIdx];
               const entityMoving = !!(entity?.velocity || entity?.angularVelocity);
-              if (!entityMoving) {
+              if (entity && !entityMoving) {
                 if (anyFlicker || anyAnimated) {
                   const hitPos = temporal.getHitPos(x, y);
                   const normal = temporal.getNormal(x, y);

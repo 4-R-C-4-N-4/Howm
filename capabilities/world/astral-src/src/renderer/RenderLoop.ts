@@ -255,9 +255,12 @@ export class RenderLoop {
             if (!anyMoving) continue
           } else {
             const entity = scene.entities[eIdx]
+            // Stale index: the entity list changed (streaming/pruning) since this
+            // pixel was cached, so eIdx no longer resolves. Fall through to a full
+            // raymarch instead of dereferencing undefined.
             const entityMoving = !!(entity?.velocity || entity?.angularVelocity)
 
-            if (!entityMoving) {
+            if (entity && !entityMoving) {
               if (anyFlicker || anyAnimated) {
                 // Recompute lighting with current (controller-modified) material
                 // This is cheap — reuses cached hit position and normal
