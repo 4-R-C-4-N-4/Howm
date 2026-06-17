@@ -907,6 +907,10 @@ async fn district_map_handler(AxumPath(ip): AxumPath<String>) -> Response {
     let mut fixtures = Vec::new();
     let mut flora = Vec::new();
     let mut creatures = Vec::new();
+    let now_ms = current_time_ms();
+    let is_night = gen::atmosphere::is_night(
+        gen::atmosphere::compute_atmosphere(&cell, now_ms).time_of_day,
+    );
     for block in &blocks {
         let b = gen::buildings::generate_buildings(&cell, block);
         buildings.push(b.plots);
@@ -918,12 +922,14 @@ async fn district_map_handler(AxumPath(ip): AxumPath<String>) -> Response {
         let mut all_flora = fl.block_flora;
         all_flora.extend(fl.road_flora);
         flora.push(all_flora);
-        // Creatures with positions
-        let block_creatures = gen::creatures::generate_creatures(&cell, block);
-        for (ci, c) in block_creatures.creatures.iter().enumerate() {
-            let pos_seed = gen::hash::ha(c.creature_seed ^ block.idx as u32 ^ ci as u32 ^ 0x9f3a);
-            let pos = gen::zones::point_in_polygon_seeded(&block.polygon, pos_seed);
-            creatures.push((pos, c.ecological_role.archetype_str().to_string()));
+        // Creatures with habitat-aware, time-synced, night-gated placement (so the
+        // map reflects where they actually are — verification surface).
+        let block_zones = gen::zones::generate_zones(cell.key, block);
+        for pc in gen::creatures::place_creatures(&cell, block, &block_zones, now_ms, is_night) {
+            creatures.push((
+                pc.position,
+                pc.creature.ecological_role.archetype_str().to_string(),
+            ));
         }
     }
 
@@ -1054,7 +1060,7 @@ async fn district_scene_handler(
     let now_ms = current_time_ms();
     let atmo = gen::atmosphere::compute_atmosphere(&cell, now_ms);
 
-    let mut astral_scene = scene::compiler::compile_district_scene(&cell, &palette, &[], &atmo);
+    let mut astral_scene = scene::compiler::compile_district_scene(&cell, &palette, &atmo, now_ms);
 
     // Optionally place peer homes into the rendered district (spaces §1.2).
     if let Some(homes) = params.homes {

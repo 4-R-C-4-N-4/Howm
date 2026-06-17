@@ -49,7 +49,7 @@ impl LoadedDistrict {
             .unwrap_or_default()
             .as_millis() as u64;
         let atmo = atmosphere::compute_atmosphere(&cell, now_ms);
-        let scene = compiler::compile_district_scene(&cell, &palette, &[], &atmo);
+        let scene = compiler::compile_district_scene(&cell, &palette, &atmo, now_ms);
 
         let world_pos: Vec<(f64, f64)> = scene
             .entities

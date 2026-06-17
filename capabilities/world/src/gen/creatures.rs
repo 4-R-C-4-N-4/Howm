@@ -11,8 +11,8 @@ use super::cell::Cell;
 use super::config::config;
 use super::hash::{ha, hb, hash_to_f64};
 use super::objects::{compute_form_id, compute_object_id, ObjectSeeds, Tier};
-use super::zones::point_in_polygon_seeded;
-use crate::types::Point;
+use super::zones::{point_in_polygon_seeded, Zone};
+use crate::types::{Point, Polygon};
 
 /// Ecological role.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -351,11 +351,173 @@ pub fn generate_creatures(cell: &Cell, block: &Block) -> BlockCreatures {
     }
 }
 
+/// A creature placed at a world position for rendering.
+pub struct PlacedCreature {
+    pub creature: Creature,
+    /// Ground position (x, y = world z).
+    pub position: Point,
+    /// Elevation (world y) — raised for aerial/perching habitats.
+    pub height: f64,
+}
+
+/// Place a block's creatures with full positioning intent (§15.2/§15.5):
+/// - nocturnal/diurnal gating by time of day (`is_night`),
+/// - zone assignment + time-slot migration (creatures drift between zones),
+/// - habitat-aware position: subterranean emerge at block-perimeter points,
+///   aerial/perching are elevated, aquatic/ground sit in their assigned zone.
+pub fn place_creatures(
+    cell: &Cell,
+    block: &Block,
+    zones: &[Zone],
+    now_ms: u64,
+    is_night: bool,
+) -> Vec<PlacedCreature> {
+    let time_slot = now_ms / config().creature_interval_ms.max(1);
+    generate_creatures(cell, block)
+        .creatures
+        .into_iter()
+        .filter(|c| creature_active(c.activity_pattern, is_night))
+        .map(|c| {
+            let (position, height) = habitat_position(&c, block, zones, time_slot);
+            PlacedCreature {
+                creature: c,
+                position,
+                height,
+            }
+        })
+        .collect()
+}
+
+/// Is a creature present at this time of day (§15.5)? Nocturnal only at night,
+/// diurnal only by day; crepuscular/continuous always.
+fn creature_active(pattern: ActivityPattern, is_night: bool) -> bool {
+    match pattern {
+        ActivityPattern::Nocturnal => is_night,
+        ActivityPattern::Diurnal => !is_night,
+        ActivityPattern::Crepuscular | ActivityPattern::Continuous => true,
+    }
+}
+
+/// Habitat-aware position + elevation for a creature (§15.2).
+fn habitat_position(c: &Creature, block: &Block, zones: &[Zone], time_slot: u64) -> (Point, f64) {
+    match c.ecological_role {
+        // Subterranean creatures surface at emergence points on the block
+        // perimeter (salt 0xe3e3).
+        EcologicalRole::Subterranean => {
+            let seed = ha(c.creature_seed ^ c.creature_idx as u32 ^ 0xe3e3);
+            (perimeter_point(&block.polygon, seed), 0.0)
+        }
+        role => {
+            let pos = zoned_position(c, block, zones, time_slot);
+            // Aerial drift above the zone; perching sits on a ledge height.
+            let height = match role {
+                EcologicalRole::Aerial => 6.0,
+                EcologicalRole::Perching => 3.0,
+                _ => 1.0,
+            };
+            (pos, height)
+        }
+    }
+}
+
+/// Position in the creature's time-assigned zone (or the block if none).
+fn zoned_position(c: &Creature, block: &Block, zones: &[Zone], time_slot: u64) -> Point {
+    if zones.is_empty() {
+        let s = ha(c.creature_seed ^ c.creature_idx as u32 ^ time_slot as u32 ^ 0x9f3a);
+        return point_in_polygon_seeded(&block.polygon, s);
+    }
+    let zi = creature_zone_assignment(
+        c.creature_seed,
+        block.idx as u32,
+        c.creature_idx as u32,
+        time_slot,
+        zones.len() as u32,
+    ) as usize;
+    let zone = &zones[zi.min(zones.len() - 1)];
+    creature_position(c.creature_seed, c.creature_idx as u32, time_slot, &zone.polygon)
+}
+
+/// A deterministic point at fractional arc-length along a polygon's perimeter.
+fn perimeter_point(poly: &Polygon, seed: u32) -> Point {
+    let n = poly.vertices.len();
+    if n < 2 {
+        return poly.centroid();
+    }
+    let perim: f64 = (0..n)
+        .map(|i| poly.vertices[i].distance_to(poly.vertices[(i + 1) % n]))
+        .sum();
+    let mut target = hash_to_f64(seed) * perim;
+    for i in 0..n {
+        let a = poly.vertices[i];
+        let b = poly.vertices[(i + 1) % n];
+        let len = a.distance_to(b);
+        if target <= len || i == n - 1 {
+            let t = if len > 1e-9 { target / len } else { 0.0 };
+            return Point::new(a.x + t * (b.x - a.x), a.y + t * (b.y - a.y));
+        }
+        target -= len;
+    }
+    poly.centroid()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::gen::blocks::BlockType;
     use crate::types::Polygon;
+
+    #[test]
+    fn placement_gating_and_habitat() {
+        let cell = Cell::from_ip_str("93.184.216.0").unwrap();
+        let block = test_block(BlockType::Building);
+        let zones = crate::gen::zones::generate_zones(cell.key, &block);
+
+        let day = place_creatures(&cell, &block, &zones, 0, false);
+        let night = place_creatures(&cell, &block, &zones, 0, true);
+
+        // Nocturnal/diurnal gating: by day no nocturnal creature is present; by
+        // night no diurnal creature is present.
+        assert!(day
+            .iter()
+            .all(|p| p.creature.activity_pattern != ActivityPattern::Nocturnal));
+        assert!(night
+            .iter()
+            .all(|p| p.creature.activity_pattern != ActivityPattern::Diurnal));
+
+        // Subterranean creatures surface at ground level on the block boundary.
+        for p in night
+            .iter()
+            .filter(|p| p.creature.ecological_role == EcologicalRole::Subterranean)
+        {
+            assert_eq!(p.height, 0.0);
+            let on_boundary = (0..block.polygon.vertices.len()).any(|i| {
+                let a = block.polygon.vertices[i];
+                let b = block.polygon.vertices[(i + 1) % block.polygon.vertices.len()];
+                let len = a.distance_to(b);
+                if len < 1e-9 {
+                    return false;
+                }
+                let t = (((p.position.x - a.x) * (b.x - a.x) + (p.position.y - a.y) * (b.y - a.y))
+                    / (len * len))
+                    .clamp(0.0, 1.0);
+                let px = a.x + t * (b.x - a.x);
+                let py = a.y + t * (b.y - a.y);
+                (p.position.x - px).hypot(p.position.y - py) < 0.5
+            });
+            assert!(on_boundary, "subterranean creature not on the block perimeter");
+        }
+
+        // Aerial creatures are elevated.
+        for p in night
+            .iter()
+            .filter(|p| p.creature.ecological_role == EcologicalRole::Aerial)
+        {
+            assert!(p.height > 1.0);
+        }
+
+        // Deterministic.
+        assert_eq!(night.len(), place_creatures(&cell, &block, &zones, 0, true).len());
+    }
 
     fn test_block(bt: BlockType) -> Block {
         Block {

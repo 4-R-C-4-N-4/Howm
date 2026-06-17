@@ -454,6 +454,7 @@ pub fn compile_creature(
     c: &Creature,
     palette: &AestheticPalette,
     base_pos: crate::types::Point,
+    height: f64,
 ) -> Vec<Entity> {
     let graph = mapping::map_creature(c, palette);
     let (geo, scale) = geometry::resolve_geometry(&graph);
@@ -473,7 +474,7 @@ pub fn compile_creature(
                 id: suffix,
                 transform: Transform::at(
                     base_pos.x + offset.x,
-                    1.0 + offset.y,
+                    height + offset.y,
                     base_pos.y + offset.z,
                 )
                     .with_scale(scale.x, scale.y, scale.z),
@@ -619,10 +620,11 @@ fn compile_ground(palette: &AestheticPalette, centroid: &crate::types::Point) ->
 pub fn compile_district_scene(
     cell: &Cell,
     palette: &AestheticPalette,
-    blocks: &[Block],
     atmo: &AtmosphereState,
+    now_ms: u64,
 ) -> Scene {
-    use crate::gen::{buildings, conveyances, creatures, fixtures, flora, roads, rivers, district};
+    use crate::gen::{buildings, conveyances, creatures, fixtures, flora, roads, rivers, district, zones};
+    let is_night = crate::gen::atmosphere::is_night(atmo.time_of_day);
 
     let dist = district::generate_district(cell);
     let road_network = roads::generate_roads(&dist);
@@ -671,15 +673,12 @@ pub fn compile_district_scene(
             entities.push(compile_flora(f, palette));
         }
 
-        // Creatures — positioned within the block using zone-seeded point_in_polygon
-        let block_creatures = creatures::generate_creatures(cell, block);
-        for (ci, c) in block_creatures.creatures.iter().enumerate() {
-            // Derive initial position within the block
-            let pos_seed = crate::gen::hash::ha(
-                c.creature_seed ^ block.idx as u32 ^ ci as u32 ^ 0x9f3a,
-            );
-            let pos = crate::gen::zones::point_in_polygon_seeded(&block.polygon, pos_seed);
-            entities.extend(compile_creature(c, palette, pos));
+        // Creatures — habitat-aware placement (§15.2/§15.5): zone-confined with
+        // time-slot migration, nocturnal gating, elevated for aerial/perching,
+        // and surfacing at perimeter emergence points for subterranean.
+        let block_zones = zones::generate_zones(cell.key, block);
+        for pc in creatures::place_creatures(cell, block, &block_zones, now_ms, is_night) {
+            entities.extend(compile_creature(&pc.creature, palette, pc.position, pc.height));
         }
     }
 
@@ -743,7 +742,7 @@ mod tests {
         let now_ms = 1711728000000; // fixed timestamp
         let atmo = atmosphere::compute_atmosphere(&cell, now_ms);
 
-        let scene = compile_district_scene(&cell, &palette, &[], &atmo);
+        let scene = compile_district_scene(&cell, &palette, &atmo, 0);
 
         // Should have ground + at least some entities
         assert!(!scene.entities.is_empty(), "scene should have entities");
@@ -757,7 +756,7 @@ mod tests {
         let cell = Cell::from_octets(1, 0, 0);
         let palette = AestheticPalette::from_cell(&cell);
         let atmo = atmosphere::compute_atmosphere(&cell, 1711728000000);
-        let scene = compile_district_scene(&cell, &palette, &[], &atmo);
+        let scene = compile_district_scene(&cell, &palette, &atmo, 0);
 
         let mut ids: Vec<&str> = scene.entities.iter().map(|e| e.id.as_str()).collect();
         let count_before = ids.len();
@@ -774,7 +773,7 @@ mod tests {
         let cell = Cell::from_octets(10, 0, 0);
         let palette = AestheticPalette::from_cell(&cell);
         let atmo = atmosphere::compute_atmosphere(&cell, 1711728000000);
-        let scene = compile_district_scene(&cell, &palette, &[], &atmo);
+        let scene = compile_district_scene(&cell, &palette, &atmo, 0);
 
         let json = serde_json::to_string(&scene).unwrap();
         assert!(json.contains("\"camera\""));
