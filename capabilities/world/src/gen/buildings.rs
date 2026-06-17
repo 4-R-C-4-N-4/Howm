@@ -464,7 +464,10 @@ pub fn generate_buildings(cell: &Cell, block: &Block) -> BlockBuildings {
         AlleyMode::None => vec![block.polygon.clone()],
     };
 
-    let mut all_plots = Vec::new();
+    // Pass 1 — derive every plot's lot polygon (+ index, seed). Entry-point
+    // adjacency (§12.7) needs to know all the other lots in the block, so we
+    // collect them first and build the plots in a second pass.
+    let mut specs: Vec<(Polygon, usize, u32)> = Vec::new();
     for (sub_idx, sub_poly) in sub_polygons.iter().enumerate() {
         let sub_area = sub_poly.area();
         let base_plots = (sub_area / cfg.plot_area_base).floor() as u32;
@@ -473,12 +476,10 @@ pub fn generate_buildings(cell: &Cell, block: &Block) -> BlockBuildings {
             .max(1)
             .min(cfg.max_plots_per_block) as usize;
 
-        // Generate plot seed points via Voronoi subdivision
         if plot_count < 3 {
-            // Too few for Voronoi — use the whole sub-polygon as one plot
-            let plot_seed = ha(cell.key ^ block.idx as u32 ^ sub_idx as u32 ^ 0 ^ 0x106754ed);
-            let plot = build_plot(cell, block, &sub_poly, 0, plot_seed);
-            all_plots.push(plot);
+            // Too few for Voronoi — use the whole sub-polygon as one plot.
+            let plot_seed = ha(cell.key ^ block.idx as u32 ^ sub_idx as u32 ^ 0x106754ed);
+            specs.push((sub_poly.clone(), 0, plot_seed));
             continue;
         }
 
@@ -495,9 +496,8 @@ pub fn generate_buildings(cell: &Cell, block: &Block) -> BlockBuildings {
             }
         }
         if seed_pts.len() < 2 {
-            // Not enough distinct seeds for a subdivision — one plot for the sub.
             let plot_seed = ha(cell.key ^ block.idx as u32 ^ sub_idx as u32 ^ 0x106754ed);
-            all_plots.push(build_plot(cell, block, &sub_poly, 0, plot_seed));
+            specs.push((sub_poly.clone(), 0, plot_seed));
             continue;
         }
 
@@ -510,27 +510,38 @@ pub fn generate_buildings(cell: &Cell, block: &Block) -> BlockBuildings {
             if vcell.len() < 3 {
                 continue;
             }
-
             // Plot = sub-polygon ∩ Voronoi cell. The cell is convex, so it is the
             // valid Sutherland-Hodgman *clip* region; the (possibly non-convex)
-            // sub-polygon is the subject. Doing it the other way round (clipping
-            // the cell by the non-convex sub-polygon) is incorrect for S-H and
-            // was producing overlapping plots.
+            // sub-polygon is the subject.
             let clipped = clip_polygon_to_polygon(&sub_poly.vertices, &vcell);
             if clipped.len() < 3 {
                 continue;
             }
-
             let plot_poly = Polygon::new(clipped);
             if plot_poly.area() < cfg.plot_area_base * 0.25 {
                 continue;
             }
-
             let plot_seed = ha(cell.key ^ block.idx as u32 ^ sub_idx as u32 ^ p_idx as u32 ^ 0x106754ed);
-            let plot = build_plot(cell, block, &plot_poly, p_idx, plot_seed);
-            all_plots.push(plot);
+            specs.push((plot_poly, p_idx, plot_seed));
         }
     }
+
+    // Pass 2 — build each plot, passing the OTHER lots so entry points land on
+    // open (non-shared) walls.
+    let lots: Vec<Polygon> = specs.iter().map(|(p, _, _)| p.clone()).collect();
+    let all_plots: Vec<BuildingPlot> = specs
+        .iter()
+        .enumerate()
+        .map(|(i, (poly, p_idx, plot_seed))| {
+            let siblings: Vec<Polygon> = lots
+                .iter()
+                .enumerate()
+                .filter(|(j, _)| *j != i)
+                .map(|(_, p)| p.clone())
+                .collect();
+            build_plot(cell, block, poly, *p_idx, *plot_seed, &siblings)
+        })
+        .collect();
 
     BlockBuildings {
         block_idx: block.idx,
@@ -606,9 +617,14 @@ fn build_plot(
     polygon: &Polygon,
     plot_idx: usize,
     plot_seed: u32,
+    siblings: &[Polygon],
 ) -> BuildingPlot {
     let cfg = config();
     let seeds = ObjectSeeds::from_seed(ha(plot_seed));
+
+    // The lot (pre-inset plot polygon) — entry-wall adjacency is decided at the
+    // lot level, where plots tile and share walls (footprints have setback gaps).
+    let lot = polygon;
 
     // Inset the footprint from the lot boundary (building setback). Besides being
     // realistic, this guarantees adjacent buildings — including across a shared
@@ -680,8 +696,9 @@ fn build_plot(
     };
     let height = (raw_height * multiplier).min(cfg.max_height * cfg.height_multiplier_cap);
 
-    // Entry point
-    let entry = find_entry_point(polygon, plot_seed);
+    // Entry point — placed on the footprint, on a wall that's open at the lot
+    // level (not shared with a neighbour).
+    let entry = find_entry_point(polygon, lot, plot_seed, siblings);
 
     // Form ID
     let form_id = compute_form_id(
@@ -717,19 +734,50 @@ fn build_plot(
 }
 
 /// Find the entry point for a building plot.
-fn find_entry_point(polygon: &Polygon, plot_seed: u32) -> EntryPoint {
+/// `polygon` is the building footprint (where the door is placed); `lot` is the
+/// pre-inset plot polygon (where wall-adjacency is decided — lots tile and share
+/// walls, footprints have setback gaps). They have matching wall indices.
+fn find_entry_point(
+    polygon: &Polygon,
+    lot: &Polygon,
+    plot_seed: u32,
+    siblings: &[Polygon],
+) -> EntryPoint {
     let cfg = config();
     let n = polygon.vertices.len();
-    let centroid = polygon.centroid();
+    let centroid = lot.centroid();
+    let lot_aligned = lot.vertices.len() == n;
 
-    // Find candidate walls (edges not adjacent to other plots and long enough)
+    // Candidate walls (§12.7): long enough for a door AND open — i.e. not shared
+    // with a neighbouring plot. We test "shared" by probing just outside the LOT
+    // wall midpoint (by wall_adjacency_tol): if that point sits inside another
+    // lot, the wall abuts that building and a door there would be blocked.
     let mut candidates: Vec<usize> = Vec::new();
     for i in 0..n {
         let (a, b) = polygon.edge(i);
-        let len = a.distance_to(b);
-        if len > cfg.min_door_wall_length {
-            candidates.push(i);
+        if a.distance_to(b) <= cfg.min_door_wall_length {
+            continue;
         }
+        if lot_aligned && !siblings.is_empty() {
+            let (la, lb) = lot.edge(i);
+            let mid = Point::new((la.x + lb.x) * 0.5, (la.y + lb.y) * 0.5);
+            let dx = lb.x - la.x;
+            let dy = lb.y - la.y;
+            let l = (dx * dx + dy * dy).sqrt().max(1e-9);
+            let (mut nx, mut ny) = (-dy / l, dx / l);
+            if nx * (mid.x - centroid.x) + ny * (mid.y - centroid.y) < 0.0 {
+                nx = -nx;
+                ny = -ny;
+            }
+            let probe = Point::new(
+                mid.x + nx * cfg.wall_adjacency_tol,
+                mid.y + ny * cfg.wall_adjacency_tol,
+            );
+            if siblings.iter().any(|s| s.contains(probe)) {
+                continue; // wall shared with a neighbouring plot
+            }
+        }
+        candidates.push(i);
     }
 
     if candidates.is_empty() {
