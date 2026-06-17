@@ -206,8 +206,11 @@ pub fn generate_flora(
     // Road-edge flora (street trees/hedges)
     let mut road_flora = Vec::new();
     if let Some(network) = road_network {
-        let spacing = cfg.min_flora_spacing
-            + hash_to_f64(ha(cell.key ^ 0xf10ea)) * (cfg.max_flora_spacing - cfg.min_flora_spacing);
+        // §14.1: spacing = MAX − popcount_ratio×(MAX−MIN). Denser districts get
+        // closer-spaced (denser) road flora; sparse districts get sparse flora.
+        // (Previously a per-cell random spacing that ignored density.)
+        let spacing = cfg.max_flora_spacing
+            - cell.popcount_ratio * (cfg.max_flora_spacing - cfg.min_flora_spacing);
 
         for (road_idx, segment) in network.segments.iter().enumerate() {
             let seg_len = segment.a.distance_to(segment.b);

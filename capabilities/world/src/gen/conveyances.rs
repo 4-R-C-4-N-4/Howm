@@ -86,18 +86,35 @@ fn generate_parked(cell: &Cell, road_network: &RoadNetwork) -> Vec<Conveyance> {
     result
 }
 
-/// Select a road loop (simple: pick 2-4 connected segments forming a path).
+/// Select a road route — a CONNECTED chain of segments forming a path (§16.2).
 fn select_road_loop(road_network: &RoadNetwork, route_seed: u32) -> Vec<usize> {
-    if road_network.segments.is_empty() {
+    let segs = &road_network.segments;
+    if segs.is_empty() {
         return Vec::new();
     }
-    let count = 2 + (route_seed & 0x3) as usize; // 2–5 segments
-    let mut route = Vec::with_capacity(count);
-    let start = route_seed as usize % road_network.segments.len();
-    for i in 0..count {
-        route.push((start + i) % road_network.segments.len());
+    // Each next segment shares a terminal with the previous, so position
+    // interpolation flows along the road instead of teleporting between disjoint
+    // segments (the old version picked arbitrary consecutive indices).
+    let max_len = 2 + (route_seed & 0x3) as usize; // up to 2–5 segments
+    let mut route = vec![route_seed as usize % segs.len()];
+    while route.len() < max_len {
+        let last_terms = segs[*route.last().unwrap()].terminal_indices;
+        let next = (0..segs.len())
+            .find(|j| !route.contains(j) && shares_terminal(last_terms, segs[*j].terminal_indices));
+        match next {
+            Some(j) => route.push(j),
+            None => break, // no connected continuation
+        }
     }
     route
+}
+
+/// Two road segments are connected if they share a terminal endpoint.
+fn shares_terminal(a: Option<(usize, usize)>, b: Option<(usize, usize)>) -> bool {
+    match (a, b) {
+        (Some((a1, a2)), Some((b1, b2))) => a1 == b1 || a1 == b2 || a2 == b1 || a2 == b2,
+        _ => false,
+    }
 }
 
 /// Generate route-following conveyances.

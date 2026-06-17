@@ -823,3 +823,35 @@ renderer wiring to send the camera pose, fetch peer poses/avatars, and draw the
 avatars (Phase M part 3).
 
 ---
+
+## Placement Conformance Pass — 2026-06-17
+
+A doc↔code audit of how every entity is *located* surfaced a lot of baked-in
+placement intent that the code had simplified or dropped. Captured it:
+
+1. **Creatures (§15.2/§15.5)** — biggest gap. `place_creatures` now drives
+   positioning: nocturnal/diurnal gating by time of day (is_night was computed
+   but unused), zone assignment + time-slot migration (creatures drift between
+   zones; the migration functions were dead code), and habitat-aware placement
+   (subterranean surface at perimeter emergence points / salt 0xe3e3, aerial &
+   perching elevated, aquatic/ground in their zone). Wired into the scene
+   compiler and the map. (Perch-on-specific-ledge and water_structure-in-non-
+   water-block remain approximations.)
+2. **Entry points (§12.7)** — doors now land only on *open* walls (probe outside
+   the lot wall must not fall in a neighbour lot); `wall_adjacency_tol` is now
+   used. Two-pass build so each plot knows its sibling lots.
+3. **Zone affinity (§6.4/§13.6)** — fixtures now spawn only their zone's 1–3
+   affinity roles, so zones specialise (was: every zone iterated all roles).
+4. **Density-driven formulas** — road-flora spacing is now MAX−popcount×range
+   (§14.1); zone-count entropy bonus is floor(popcount_ratio×bonus) (§11.9);
+   conveyance routes are connected segment chains via shared terminals (§16.2,
+   was arbitrary consecutive indices → teleporting).
+
+168 tests pass; audit clean across 108 districts.
+
+Remaining lower-priority placement items (tracked, not yet done): no-alley grid
+subdivision + gap-fill (§12.2), surface-growth attached to building walls vs
+ground-scatter (§14.1), navigation-aid fixtures at intersections (§13.1), tunnel
+doors + portal entities in the gen layer (spaces §2.6/§5.1).
+
+---

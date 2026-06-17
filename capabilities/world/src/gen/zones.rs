@@ -105,10 +105,13 @@ pub fn generate_zones(cell_key: u32, block: &Block) -> Vec<Zone> {
     let cfg = config();
 
     let zone_count = {
+        // §11.9: count = floor(area/base) + floor(popcount_ratio × entropy_bonus).
+        // The entropy bonus is popcount-driven (denser districts subdivide
+        // finer), not area-scaled as before.
+        let popcount_ratio = cell_key.count_ones() as f64 / 24.0;
         let base = (block.area / cfg.zone_area_base).floor() as u32;
-        let bonus = (block.area / cfg.zone_area_base * cfg.zone_entropy_bonus as f64 / 4.0).floor() as u32;
-        let raw = base + bonus;
-        raw.max(2).min(12) as usize
+        let bonus = (popcount_ratio * cfg.zone_entropy_bonus as f64).floor() as u32;
+        (base + bonus).clamp(2, 12) as usize
     };
 
     let base_reseed: u64 = match block.block_type {
