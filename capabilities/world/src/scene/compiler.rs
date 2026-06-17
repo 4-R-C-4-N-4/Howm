@@ -666,14 +666,32 @@ pub fn compile_district_scene(
     let mut entities = Vec::new();
     let mut light_positions: Vec<(f64, f64, f64, bool)> = Vec::new(); // (x, y, z, emissive)
 
+    // River channel — used to keep structures out of the water (the river bezier
+    // cuts across building blocks, which the block classifier doesn't carve out).
+    let river_lines: Vec<Vec<crate::types::Point>> =
+        river_data.iter().map(|r| r.to_polyline(48)).collect();
+    let river_dist_sq = |p: crate::types::Point| -> f64 {
+        river_lines
+            .iter()
+            .flat_map(|l| l.windows(2))
+            .map(|w| crate::scene::groundpaint::point_segment_dist_sq(p, w[0], w[1]))
+            .fold(f64::MAX, f64::min)
+    };
+    // Clearances (squared): buildings need more room than small props.
+    let build_clear_sq = 10.0_f64 * 10.0;
+    let prop_clear_sq = 6.0_f64 * 6.0;
+
     // Ground — centred on district
     entities.push(compile_ground(palette, &dist.seed_position));
 
     // Per-block entities
     for block in &blocks {
-        // Buildings
+        // Buildings — skip any that would stand in the river.
         let block_buildings = buildings::generate_buildings(cell, block);
         for plot in &block_buildings.plots {
+            if river_dist_sq(plot.polygon.centroid()) < build_clear_sq {
+                continue;
+            }
             entities.push(compile_building(plot, palette));
         }
 
@@ -684,6 +702,9 @@ pub fn compile_district_scene(
             .iter()
             .chain(block_fixtures.road_fixtures.iter())
         {
+            if river_dist_sq(f.position) < prop_clear_sq {
+                continue;
+            }
             entities.push(compile_fixture(f, palette));
             if f.role == crate::gen::fixtures::FixtureRole::Illumination {
                 light_positions.push((
@@ -702,6 +723,9 @@ pub fn compile_district_scene(
             .iter()
             .chain(block_flora.road_flora.iter())
         {
+            if river_dist_sq(f.position) < prop_clear_sq {
+                continue;
+            }
             entities.push(compile_flora(f, palette));
         }
 
@@ -721,6 +745,9 @@ pub fn compile_district_scene(
         .iter()
         .chain(district_conveyances.route_following.iter())
     {
+        if river_dist_sq(c.position) < prop_clear_sq {
+            continue;
+        }
         entities.push(compile_conveyance(c, palette));
     }
 

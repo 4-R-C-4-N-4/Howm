@@ -44,7 +44,7 @@ pub struct GroundPaint {
 }
 
 /// Squared distance from point `p` to segment `a`–`b`.
-fn point_segment_dist_sq(p: Point, a: Point, b: Point) -> f64 {
+pub(crate) fn point_segment_dist_sq(p: Point, a: Point, b: Point) -> f64 {
     let dx = b.x - a.x;
     let dy = b.y - a.y;
     let len_sq = dx * dx + dy * dy;
