@@ -200,7 +200,12 @@
     /** Rebuild the merged entity/light arrays from the loaded district window. */
     rebuildMerged() {
       const entities = [];
-      for (const d of this.districts.values()) entities.push(...d.entities);
+      for (const [ip, d] of this.districts) {
+        for (const e of d.entities) {
+          if (e.id.endsWith("#ground") && ip !== this.centerIp) continue;
+          entities.push(e);
+        }
+      }
       const sorted = [...this.districts.entries()].sort(
         (a, b) => gridDist(a[0], this.centerIp) - gridDist(b[0], this.centerIp)
       );
@@ -1191,6 +1196,11 @@
         const maxCX = Math.floor(aabb.max.x / cs);
         const maxCY = Math.floor(aabb.max.y / cs);
         const maxCZ = Math.floor(aabb.max.z / cs);
+        const cellSpan = (maxCX - minCX + 1) * (maxCY - minCY + 1) * (maxCZ - minCZ + 1);
+        if (cellSpan > 4096) {
+          this.globalIndices.push(i);
+          continue;
+        }
         for (let cx = minCX; cx <= maxCX; cx++) {
           for (let cy = minCY; cy <= maxCY; cy++) {
             for (let cz = minCZ; cz <= maxCZ; cz++) {

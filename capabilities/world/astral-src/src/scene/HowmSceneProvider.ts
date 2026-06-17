@@ -205,8 +205,17 @@ export class HowmSceneProvider implements SceneProvider {
 
   /** Rebuild the merged entity/light arrays from the loaded district window. */
   private rebuildMerged(): void {
+    // The ground box is 1200 wu and fully covers the loaded window, so a single
+    // ground (the centre district's) suffices; including every district's ground
+    // would multiply the always-evaluated global-candidate cost for no visual
+    // gain.
     const entities: Entity[] = []
-    for (const d of this.districts.values()) entities.push(...d.entities)
+    for (const [ip, d] of this.districts) {
+      for (const e of d.entities) {
+        if (e.id.endsWith('#ground') && ip !== this.centerIp) continue
+        entities.push(e)
+      }
+    }
 
     // Cap lights, preferring those nearest the centre (best perceptual budget).
     const sorted = [...this.districts.entries()].sort(

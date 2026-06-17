@@ -264,6 +264,10 @@ impl ViewState {
         let mut events = Vec::new();
         let mut should_be_visible: HashSet<String> = HashSet::new();
         let range_sq = self.view_range * self.view_range;
+        // The ground box is large and overlapping, so only the district the
+        // player stands in contributes one — keeps the always-evaluated global
+        // candidate count to one box.
+        let center_key = self.current_cell().key;
 
         // Iterate ALL loaded districts' entities. Ids are namespaced per district
         // so grounds (and any same-named entities) from different districts don't
@@ -272,6 +276,9 @@ impl ViewState {
             let key = district.cell.key;
             for (i, entity) in district.entities.iter().enumerate() {
                 let is_ground = entity.id == "ground";
+                if is_ground && key != center_key {
+                    continue;
+                }
                 let (wx, wz) = district.world_pos[i];
                 let ddx = wx - self.player_x;
                 let ddz = wz - self.player_z;

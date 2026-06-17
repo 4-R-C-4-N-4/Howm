@@ -76,6 +76,18 @@ export class SpatialGrid {
       const maxCY = Math.floor(aabb.max.y / cs)
       const maxCZ = Math.floor(aabb.max.z / cs)
 
+      // Oversized entities (e.g. the wide, thin ground box) are treated as
+      // global candidates. Bucketing them would touch tens of thousands of
+      // cells, and — worse — a ray sampling from far above/beside such an entity
+      // lands in an empty cell, gets distance = Infinity, and overshoots it
+      // entirely (this is why looking down from altitude showed only sky).
+      // Always-evaluating them makes sphere-tracing see them from any position.
+      const cellSpan = (maxCX - minCX + 1) * (maxCY - minCY + 1) * (maxCZ - minCZ + 1)
+      if (cellSpan > 4096) {
+        this.globalIndices.push(i)
+        continue
+      }
+
       for (let cx = minCX; cx <= maxCX; cx++) {
         for (let cy = minCY; cy <= maxCY; cy++) {
           for (let cz = minCZ; cz <= maxCZ; cz++) {
