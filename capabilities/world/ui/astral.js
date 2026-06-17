@@ -155,7 +155,9 @@
           }
         }));
         const lights = scene.lights.map((l) => l.position ? { ...l, position: { x: l.position.x - ox, y: l.position.y, z: l.position.z - oz } } : { ...l });
-        this.districts.set(key, { entities, lights, seed: { x: gx - ox, z: gz - oz } });
+        let paint = scene.groundPaint;
+        if (paint) paint = { ...paint, ox: paint.ox - ox, oz: paint.oz - oz };
+        this.districts.set(key, { entities, lights, seed: { x: gx - ox, z: gz - oz }, paint });
         this.dirty = true;
         this.merged = null;
       } catch (err) {
@@ -235,7 +237,8 @@
         camera: this.base.camera,
         environment: this.base.environment,
         lights: m.lights,
-        entities: this.peers.length ? [...m.entities, ...this.peers] : m.entities
+        entities: this.peers.length ? [...m.entities, ...this.peers] : m.entities,
+        groundPaint: this.districts.get(this.centerIp)?.paint
       };
     }
     update(dt) {
@@ -450,6 +453,13 @@
             this.entities.set("ground", msg.ground);
             this.rebuildEntityList();
           }
+          if (msg.ground_paint) this.groundPaint = msg.ground_paint;
+          break;
+        case "groundpaint":
+          if (msg.paint) {
+            this.groundPaint = msg.paint;
+            this.dirty = true;
+          }
           break;
         case "enter":
           if (msg.entity?.id) {
@@ -509,7 +519,8 @@
         camera: this.camera,
         environment: this.environment,
         lights: this.lights,
-        entities: this.entityList
+        entities: this.entityList,
+        groundPaint: this.groundPaint
       };
     }
     update(dt) {
@@ -690,6 +701,66 @@
           ctx.fillText(String.fromCodePoint(cp), x * cellWidth, y * cellHeight);
         }
       }
+    }
+  };
+
+  // src/scene/GroundPaint.ts
+  var CODE_ROAD = 5;
+  var GROUND_COLOR = {
+    0: { r: 78, g: 120, b: 58 },
+    // grass — green
+    1: { r: 66, g: 142, b: 52 },
+    // park — vivid green
+    2: { r: 48, g: 104, b: 172 },
+    // water — blue
+    3: { r: 150, g: 122, b: 78 },
+    // riverbank — tan
+    4: { r: 142, g: 138, b: 128 },
+    // plaza — light grey
+    5: { r: 64, g: 64, b: 72 }
+    // road — dark asphalt
+  };
+  function clamp2(v) {
+    return v < 0 ? 0 : v > 255 ? 255 : v;
+  }
+  function hash2(a, b) {
+    let h = a * 73856093 ^ b * 19349663;
+    h = (h ^ h >>> 13) >>> 0;
+    return h % 1e3 / 1e3;
+  }
+  function base64ToBytes(b64) {
+    const bin = atob(b64);
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  }
+  var GroundPaintSampler = class {
+    constructor(paint) {
+      this.paint = paint;
+      this.bytes = base64ToBytes(paint.codes);
+    }
+    /** Zone code at world (x, z), or -1 if outside the painted region. */
+    codeAt(x, z) {
+      const { ox, oz, size, res } = this.paint;
+      const u = (x - ox) / size;
+      const v = (z - oz) / size;
+      if (u < 0 || u >= 1 || v < 0 || v >= 1) return -1;
+      const i = Math.min(res - 1, u * res | 0);
+      const j = Math.min(res - 1, v * res | 0);
+      return this.bytes[j * res + i];
+    }
+    /**
+     * Ground colour at world (x, z): the zone/road colour, with a subtle per-tile
+     * variation so the ground is not a dead flat fill. Outside the painted region
+     * (-1) falls back to grass. `base` is unused now but kept for callers.
+     */
+    colorAt(x, z, _base) {
+      let code = this.codeAt(x, z);
+      if (code < 0) code = 0;
+      const c = GROUND_COLOR[code] ?? GROUND_COLOR[0];
+      const amp = code === CODE_ROAD ? 5 : 13;
+      const n = (hash2(Math.floor(x * 0.5), Math.floor(z * 0.5)) - 0.5) * amp;
+      return { r: clamp2(c.r + n), g: clamp2(c.g + n), b: clamp2(c.b + n) };
     }
   };
 
@@ -1359,7 +1430,7 @@
   }
 
   // src/renderer/Lighting.ts
-  function clamp2(v, lo, hi) {
+  function clamp3(v, lo, hi) {
     return Math.max(lo, Math.min(hi, v));
   }
   var MAX_LIGHTS_PER_PIXEL = 8;
@@ -1427,10 +1498,10 @@
     totalR += scene.environment.ambientLight;
     totalG += scene.environment.ambientLight;
     totalB += scene.environment.ambientLight;
-    const finalR = clamp2(Math.floor(totalR * material.baseColor.r), 0, 255);
-    const finalG = clamp2(Math.floor(totalG * material.baseColor.g), 0, 255);
-    const finalB = clamp2(Math.floor(totalB * material.baseColor.b), 0, 255);
-    const brightness = clamp2((totalR + totalG + totalB) / 3, 0, 1);
+    const finalR = clamp3(Math.floor(totalR * material.baseColor.r), 0, 255);
+    const finalG = clamp3(Math.floor(totalG * material.baseColor.g), 0, 255);
+    const finalB = clamp3(Math.floor(totalB * material.baseColor.b), 0, 255);
+    const brightness = clamp3((totalR + totalG + totalB) / 3, 0, 1);
     return { brightness, r: finalR, g: finalG, b: finalB };
   }
 
@@ -2024,7 +2095,7 @@
 
   // src/renderer/RenderLoop.ts
   var RAMP = " .,:;=+*#%@";
-  function clamp3(v, lo, hi) {
+  function clamp4(v, lo, hi) {
     return Math.max(lo, Math.min(hi, v));
   }
   var RenderLoop = class {
@@ -2038,6 +2109,9 @@
       this.frameTimes = [];
       this.lastFPSReport = 0;
       this.lastCameraChanged = false;
+      // Ground zone/road paint — rebuilt when the scene's paint changes (district).
+      this.gpPaint = null;
+      this.gpSampler = null;
       // Stats overlay element (used when no HUD is provided)
       this.statsEl = null;
       this.provider = provider;
@@ -2123,6 +2197,25 @@
       this.camera.far = Math.max(50, Math.min(2e3, far));
       return this.camera.far;
     }
+    /**
+     * For a ground hit, replace the lit colour with the zone/road colour modulated
+     * by the lit BRIGHTNESS (a scalar). Applied on BOTH the full-raymarch and
+     * temporal-reuse paths so still frames keep the paint. Applying brightness as a
+     * scalar — rather
+     * than multiplying the base colour and clamping per channel — preserves the
+     * zone hue even under strong light (where per-channel clamping would wash the
+     * ground to white). Mutates and returns `lit`.
+     */
+    tintGround(id, x, z, lit) {
+      if (this.gpSampler && id.endsWith("ground")) {
+        const zone = this.gpSampler.colorAt(x, z, lit);
+        const bf = clamp4(lit.brightness * 1.25 + 0.18, 0.35, 1.12);
+        lit.r = Math.min(255, zone.r * bf);
+        lit.g = Math.min(255, zone.g * bf);
+        lit.b = Math.min(255, zone.b * bf);
+      }
+      return lit;
+    }
     updateTime() {
       const now = performance.now();
       const deltaMs = now - this.lastTime;
@@ -2152,6 +2245,11 @@
       const anyFlicker = this.hasAnyFlicker();
       const anyAnimated = this.hasAnyAnimatedEntities();
       const farDist = this.camera.far && this.camera.far > 0 ? Math.min(this.camera.far, 2e3) : DEFAULT_MAX_DISTANCE;
+      if (scene.groundPaint !== this.gpPaint) {
+        this.gpPaint = scene.groundPaint ?? null;
+        this.gpSampler = this.gpPaint ? new GroundPaintSampler(this.gpPaint) : null;
+        this.temporal.invalidateAll();
+      }
       const frameStart = performance.now();
       for (let y = 0; y < height; y++) {
         for (let x = 0; x < width; x++) {
@@ -2172,6 +2270,7 @@
                   const normal = temporal.getNormal(x, y);
                   const material = entity.material;
                   const lit = computeLighting(hitPos, normal, material, scene);
+                  this.tintGround(entity.id, hitPos.x, hitPos.z, lit);
                   const params = {
                     targetCoverage: lit.brightness,
                     targetRoundness: Math.abs(normal.z),
@@ -2179,7 +2278,7 @@
                     glyphStyle: material.glyphStyle
                   };
                   const glyph = this.glyphCache ? this.glyphCache.select(params) : null;
-                  const char = glyph ? glyph.char : RAMP[clamp3(Math.floor((lit.brightness || 0) * (RAMP.length - 1)), 0, RAMP.length - 1)] || " ";
+                  const char = glyph ? glyph.char : RAMP[clamp4(Math.floor((lit.brightness || 0) * (RAMP.length - 1)), 0, RAMP.length - 1)] || " ";
                   frameBuffer.set(x, y, char.codePointAt(0) ?? 32, lit.r || 0, lit.g || 0, lit.b || 0, lit.brightness || 0);
                 }
                 continue;
@@ -2192,12 +2291,15 @@
           const maxSteps = cameraChanged ? Math.floor(baseSteps * 0.6) : baseSteps;
           const result = raymarch(ray, world, maxSteps, farDist);
           if (result.hit) {
-            const lit = computeLighting(result.position, result.normal, result.material, scene);
+            const material = result.material;
+            const lit = computeLighting(result.position, result.normal, material, scene);
+            const hitId = result.entityIndex >= 0 ? this.describedEntities[result.entityIndex]?.entity.id ?? "" : "";
+            this.tintGround(hitId, result.position.x, result.position.z, lit);
             const params = {
               targetCoverage: lit.brightness,
               targetRoundness: Math.abs(result.normal.z),
-              targetComplexity: result.material.roughness,
-              glyphStyle: result.material.glyphStyle
+              targetComplexity: material.roughness,
+              glyphStyle: material.glyphStyle
             };
             const de = result.entityIndex >= 0 && result.entityIndex < this.describedEntities.length ? this.describedEntities[result.entityIndex] : void 0;
             if (de?.description) {
@@ -2233,9 +2335,9 @@
               const pixelOffset = Math.sin(result.position.x * 1.7 + result.position.y * 2.3 + result.position.z * 1.1);
               glyph = animateGlyph(glyph, result.material, scene.time + pixelOffset * 0.5, params, this.glyphCache);
             }
-            const char = glyph ? glyph.char : RAMP[clamp3(Math.floor((lit.brightness || 0) * (RAMP.length - 1)), 0, RAMP.length - 1)] || " ";
+            const char = glyph ? glyph.char : RAMP[clamp4(Math.floor((lit.brightness || 0) * (RAMP.length - 1)), 0, RAMP.length - 1)] || " ";
             frameBuffer.set(x, y, char.codePointAt(0) ?? 32, lit.r || 0, lit.g || 0, lit.b || 0, lit.brightness || 0);
-            const depthRatio = clamp3(result.distance / 100, 0, 1);
+            const depthRatio = clamp4(result.distance / 100, 0, 1);
             const atmos = depthRatio * depthRatio;
             const abgR = Math.floor(bg.r * atmos);
             const abgG = Math.floor(bg.g * atmos);

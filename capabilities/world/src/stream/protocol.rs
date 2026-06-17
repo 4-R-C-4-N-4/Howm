@@ -32,6 +32,13 @@ pub enum ServerMessage {
         environment: serde_json::Value,
         camera: serde_json::Value,
         ground: serde_json::Value,
+        ground_paint: serde_json::Value,
+    },
+
+    /// Ground zone/road raster for the district the player is now in.
+    #[serde(rename = "groundpaint")]
+    GroundPaint {
+        paint: serde_json::Value,
     },
 
     /// Entity enters the visible set.

@@ -1,4 +1,4 @@
-import { Scene, Entity, Light, Camera, Environment } from '../core/types'
+import { Scene, Entity, Light, Camera, Environment, GroundPaint } from '../core/types'
 import { SceneProvider } from './SceneProvider'
 import { updateLightFlicker } from '../renderer/Animator'
 
@@ -27,6 +27,7 @@ export class HowmStreamProvider implements SceneProvider {
   private time: number = 0
   private dirty = true
   private connected = false
+  private groundPaint: GroundPaint | undefined
 
   // Camera state to send to server
   private camX = 0
@@ -94,6 +95,14 @@ export class HowmStreamProvider implements SceneProvider {
         if (msg.ground) {
           this.entities.set('ground', msg.ground)
           this.rebuildEntityList()
+        }
+        if (msg.ground_paint) this.groundPaint = msg.ground_paint as GroundPaint
+        break
+
+      case 'groundpaint':
+        if (msg.paint) {
+          this.groundPaint = msg.paint as GroundPaint
+          this.dirty = true
         }
         break
 
@@ -164,6 +173,7 @@ export class HowmStreamProvider implements SceneProvider {
       environment: this.environment,
       lights: this.lights,
       entities: this.entityList,
+      groundPaint: this.groundPaint,
     }
   }
 

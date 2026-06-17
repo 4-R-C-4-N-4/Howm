@@ -99,12 +99,22 @@ export interface Entity {
   angularVelocity?: Vec3
 }
 
+/** Per-district ground zone/road raster (base64 zone codes over a square region). */
+export interface GroundPaint {
+  ox: number
+  oz: number
+  size: number
+  res: number
+  codes: string
+}
+
 export interface Scene {
   time: number
   camera: Camera
   environment: Environment
   lights: Light[]
   entities: Entity[]
+  groundPaint?: GroundPaint
 }
 
 // Renderer internal types

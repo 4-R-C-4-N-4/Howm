@@ -5,6 +5,7 @@
 
 pub mod ascii;
 pub mod geometry;
+pub mod groundpaint;
 pub mod material;
 pub mod compiler;
 pub mod map;

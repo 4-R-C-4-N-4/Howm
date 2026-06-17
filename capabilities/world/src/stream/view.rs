@@ -39,6 +39,7 @@ struct LoadedDistrict {
     entities: Vec<Entity>,
     world_pos: Vec<(f64, f64)>, // world-space X/Z per entity
     lights: Vec<Light>,
+    paint: Option<crate::scene::groundpaint::GroundPaint>,
 }
 
 impl LoadedDistrict {
@@ -63,6 +64,7 @@ impl LoadedDistrict {
             entities: scene.entities,
             world_pos,
             lights,
+            paint: scene.ground_paint,
         }
     }
 }
@@ -77,6 +79,7 @@ pub enum ViewEvent {
     Enter(Entity),
     Leave(String),
     Lights(Vec<Light>),
+    GroundPaint(serde_json::Value),
 }
 
 /// Per-client view state — supports multiple loaded districts.
@@ -103,6 +106,9 @@ pub struct ViewState {
 
     view_range: f64,
     max_lights: usize,
+
+    /// Cell key whose ground paint was last sent to the client.
+    paint_sent_key: u32,
 
     /// Keys of districts currently loaded (kept in sync with `districts`).
     loaded_keys: HashSet<u32>,
@@ -147,6 +153,7 @@ impl ViewState {
             primary_cell: cell,
             view_range,
             max_lights: 24,
+            paint_sent_key: key,
             loaded_keys,
         }
     }
@@ -174,6 +181,25 @@ impl ViewState {
         });
 
         (serde_json::to_value(&env).unwrap_or_default(), cam, ground)
+    }
+
+    /// Ground paint for a district, shifted into shared-origin client space.
+    fn paint_for(&self, cell_key: u32) -> serde_json::Value {
+        self.districts
+            .get(&cell_key)
+            .and_then(|d| d.paint.as_ref())
+            .map(|p| {
+                let mut p = p.clone();
+                p.ox -= self.origin_x;
+                p.oz -= self.origin_z;
+                serde_json::to_value(&p).unwrap_or(serde_json::Value::Null)
+            })
+            .unwrap_or(serde_json::Value::Null)
+    }
+
+    /// Ground paint for the district the player currently stands in.
+    pub fn center_paint_json(&self) -> serde_json::Value {
+        self.paint_for(self.current_cell().key)
     }
 
     /// The district the player currently stands in (nearest seed — Voronoi cell).
@@ -268,6 +294,15 @@ impl ViewState {
         // player stands in contributes one — keeps the always-evaluated global
         // candidate count to one box.
         let center_key = self.current_cell().key;
+
+        // When the player crosses into a different district, repaint the ground.
+        if center_key != self.paint_sent_key {
+            let pj = self.paint_for(center_key);
+            if !pj.is_null() {
+                events.push(ViewEvent::GroundPaint(pj));
+                self.paint_sent_key = center_key;
+            }
+        }
 
         // Iterate ALL loaded districts' entities. Ids are namespaced per district
         // so grounds (and any same-named entities) from different districts don't

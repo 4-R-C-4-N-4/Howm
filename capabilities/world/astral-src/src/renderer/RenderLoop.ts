@@ -1,5 +1,6 @@
-import { Scene, Entity, Camera } from '../core/types'
+import { Scene, Entity, Camera, GroundPaint } from '../core/types'
 import { SceneProvider } from '../scene/SceneProvider'
+import { GroundPaintSampler } from '../scene/GroundPaint'
 import { FrameBuffer } from './FrameBuffer'
 import { Presenter } from './Presenter'
 import { World } from './World'
@@ -61,6 +62,10 @@ export class RenderLoop {
   private cameraController: CameraController | null
   private hud: HUD | null
   private lastCameraChanged = false
+
+  // Ground zone/road paint — rebuilt when the scene's paint changes (district).
+  private gpPaint: GroundPaint | null = null
+  private gpSampler: GroundPaintSampler | null = null
 
   // Stats overlay element (used when no HUD is provided)
   private statsEl: HTMLDivElement | null = null
@@ -163,6 +168,26 @@ export class RenderLoop {
     return this.camera.far
   }
 
+  /**
+   * For a ground hit, replace the lit colour with the zone/road colour modulated
+   * by the lit BRIGHTNESS (a scalar). Applied on BOTH the full-raymarch and
+   * temporal-reuse paths so still frames keep the paint. Applying brightness as a
+   * scalar — rather
+   * than multiplying the base colour and clamping per channel — preserves the
+   * zone hue even under strong light (where per-channel clamping would wash the
+   * ground to white). Mutates and returns `lit`.
+   */
+  private tintGround(id: string, x: number, z: number, lit: { r: number; g: number; b: number; brightness: number }): typeof lit {
+    if (this.gpSampler && id.endsWith('ground')) {
+      const zone = this.gpSampler.colorAt(x, z, lit)
+      const bf = clamp(lit.brightness * 1.25 + 0.18, 0.35, 1.12)
+      lit.r = Math.min(255, zone.r * bf)
+      lit.g = Math.min(255, zone.g * bf)
+      lit.b = Math.min(255, zone.b * bf)
+    }
+    return lit
+  }
+
   private updateTime(): number {
     const now = performance.now()
     const deltaMs = now - this.lastTime
@@ -199,6 +224,15 @@ export class RenderLoop {
     const farDist = this.camera.far && this.camera.far > 0
       ? Math.min(this.camera.far, 2000)
       : DEFAULT_MAX_DISTANCE
+    // Rebuild the ground-paint sampler when the district's paint changes, and
+    // invalidate the temporal cache so the ground re-renders with the new paint
+    // even while the camera is standing still (otherwise stale pre-paint frames
+    // — flat white ground — persist until the next camera move).
+    if (scene.groundPaint !== this.gpPaint) {
+      this.gpPaint = scene.groundPaint ?? null
+      this.gpSampler = this.gpPaint ? new GroundPaintSampler(this.gpPaint) : null
+      this.temporal.invalidateAll()
+    }
     const frameStart = performance.now()
 
     for (let y = 0; y < height; y++) {
@@ -231,6 +265,7 @@ export class RenderLoop {
                 const normal = temporal.getNormal(x, y)
                 const material = entity.material
                 const lit = computeLighting(hitPos, normal, material, scene)
+                this.tintGround(entity.id, hitPos.x, hitPos.z, lit)
                 const params: GlyphQueryParams = {
                   targetCoverage: lit.brightness,
                   targetRoundness: Math.abs(normal.z),
@@ -259,13 +294,20 @@ export class RenderLoop {
         const result = raymarch(ray, world, maxSteps, farDist)
 
         if (result.hit) {
-          const lit = computeLighting(result.position, result.normal, result.material, scene)
+          const material = result.material
+          const lit = computeLighting(result.position, result.normal, material, scene)
+          // Ground hits get their colour from the zone/road paint (streets,
+          // parks, water), brightness-modulated so the hue survives lighting.
+          const hitId = result.entityIndex >= 0
+            ? this.describedEntities[result.entityIndex]?.entity.id ?? ''
+            : ''
+          this.tintGround(hitId, result.position.x, result.position.z, lit)
 
           const params: GlyphQueryParams = {
             targetCoverage: lit.brightness,
             targetRoundness: Math.abs(result.normal.z),
-            targetComplexity: result.material.roughness,
-            glyphStyle: result.material.glyphStyle,
+            targetComplexity: material.roughness,
+            glyphStyle: material.glyphStyle,
           }
 
           // Enrich query from HDL description if available

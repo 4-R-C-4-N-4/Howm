@@ -38,6 +38,7 @@ async fn handle_socket(socket: WebSocket, ip: String) {
         environment: env,
         camera: cam,
         ground,
+        ground_paint: view.center_paint_json(),
     };
     if let Ok(json) = serde_json::to_string(&init) {
         let _ = sender.send(Message::Text(json.into())).await;
@@ -60,6 +61,7 @@ async fn handle_socket(socket: WebSocket, ip: String) {
                     .filter_map(|l| serde_json::to_value(l).ok())
                     .collect(),
             },
+            ViewEvent::GroundPaint(paint) => ServerMessage::GroundPaint { paint },
         };
         if let Ok(json) = serde_json::to_string(&msg) {
             let _ = sender.send(Message::Text(json.into())).await;
@@ -95,6 +97,9 @@ async fn handle_socket(socket: WebSocket, ip: String) {
                                                 .filter_map(|l| serde_json::to_value(l).ok())
                                                 .collect(),
                                         }
+                                    }
+                                    ViewEvent::GroundPaint(paint) => {
+                                        ServerMessage::GroundPaint { paint }
                                     }
                                 };
 

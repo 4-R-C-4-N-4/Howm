@@ -1,4 +1,4 @@
-import { Entity, Scene, Light } from '../core/types'
+import { Entity, Scene, Light, GroundPaint } from '../core/types'
 import { SceneProvider } from './SceneProvider'
 import { updateLightFlicker } from '../renderer/Animator'
 
@@ -23,6 +23,8 @@ interface DistrictData {
   lights: Light[]
   /** District seed position in shared-origin space (the ground centre). */
   seed: { x: number; z: number }
+  /** Ground zone/road paint, shifted into shared-origin space. */
+  paint?: GroundPaint
 }
 
 interface Cell { gx: number; gy: number }
@@ -160,7 +162,11 @@ export class HowmSceneProvider implements SceneProvider {
         ? { ...l, position: { x: l.position.x - ox, y: l.position.y, z: l.position.z - oz } }
         : { ...l })
 
-      this.districts.set(key, { entities, lights, seed: { x: gx - ox, z: gz - oz } })
+      // Ground paint, shifted into the same shared-origin space as entities.
+      let paint = scene.groundPaint
+      if (paint) paint = { ...paint, ox: paint.ox - ox, oz: paint.oz - oz }
+
+      this.districts.set(key, { entities, lights, seed: { x: gx - ox, z: gz - oz }, paint })
       this.dirty = true
       this.merged = null
     } catch (err) {
@@ -248,6 +254,7 @@ export class HowmSceneProvider implements SceneProvider {
       environment: this.base.environment,
       lights: m.lights,
       entities: this.peers.length ? [...m.entities, ...this.peers] : m.entities,
+      groundPaint: this.districts.get(this.centerIp)?.paint,
     }
   }
 

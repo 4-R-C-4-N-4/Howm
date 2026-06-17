@@ -1,0 +1,114 @@
+//! Ground paint — a compact per-district raster of "zone codes" that the
+//! renderer samples when a ray hits the ground, so streets and zones (parks,
+//! water, riverbank, plazas) tint the ground itself.
+//!
+//! This sidesteps a limitation of the SDF sphere-tracer: thin flat overlay
+//! geometry (a road ribbon, a zone patch) only occupies one grid layer and gets
+//! skipped by rays sampling from altitude. Painting the ground material instead
+//! costs nothing per ray step and reads correctly from any height or angle.
+
+use base64::Engine;
+use serde::{Deserialize, Serialize};
+
+use crate::gen::blocks::{Block, BlockType};
+use crate::gen::roads::RoadNetwork;
+use crate::types::Point;
+
+/// Zone codes written into the raster. 0 = default ground (no override).
+pub const CODE_GRASS: u8 = 0;
+pub const CODE_PARK: u8 = 1;
+pub const CODE_WATER: u8 = 2;
+pub const CODE_RIVERBANK: u8 = 3;
+pub const CODE_PLAZA: u8 = 4;
+pub const CODE_ROAD: u8 = 5;
+
+/// Half-width of a painted road (wu).
+const ROAD_HALF: f64 = 3.5;
+
+/// A square raster of zone codes covering one district, in world coordinates.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GroundPaint {
+    /// World-space min corner of the painted region.
+    pub ox: f64,
+    pub oz: f64,
+    /// Side length of the (square) region in world units.
+    pub size: f64,
+    /// Grid resolution (cells per side).
+    pub res: usize,
+    /// base64 of `res*res` zone-code bytes, row-major (z-major, then x).
+    pub codes: String,
+}
+
+/// Squared distance from point `p` to segment `a`–`b`.
+fn point_segment_dist_sq(p: Point, a: Point, b: Point) -> f64 {
+    let dx = b.x - a.x;
+    let dy = b.y - a.y;
+    let len_sq = dx * dx + dy * dy;
+    if len_sq < 1e-9 {
+        return p.distance_sq(a);
+    }
+    let t = (((p.x - a.x) * dx + (p.y - a.y) * dy) / len_sq).clamp(0.0, 1.0);
+    let proj = Point::new(a.x + t * dx, a.y + t * dy);
+    p.distance_sq(proj)
+}
+
+fn block_code(bt: BlockType) -> u8 {
+    match bt {
+        BlockType::Park => CODE_PARK,
+        BlockType::Water => CODE_WATER,
+        BlockType::Riverbank => CODE_RIVERBANK,
+        BlockType::Plaza => CODE_PLAZA,
+        BlockType::Building => CODE_GRASS,
+    }
+}
+
+/// Rasterise the district's zones and roads into a [`GroundPaint`].
+pub fn paint_ground(blocks: &[Block], roads: &RoadNetwork, district: &crate::types::Polygon) -> GroundPaint {
+    let (min_x, min_y, max_x, max_y) = district.bbox();
+    let cx = (min_x + max_x) * 0.5;
+    let cz = (min_y + max_y) * 0.5;
+    let size = ((max_x - min_x).max(max_y - min_y) * 1.05).max(1.0);
+    let ox = cx - size * 0.5;
+    let oz = cz - size * 0.5;
+    let res = ((size / 2.5) as usize).clamp(64, 140);
+
+    let road_half_sq = ROAD_HALF * ROAD_HALF;
+    let mut codes = vec![CODE_GRASS; res * res];
+
+    for j in 0..res {
+        for i in 0..res {
+            let p = Point::new(
+                ox + (i as f64 + 0.5) / res as f64 * size,
+                oz + (j as f64 + 0.5) / res as f64 * size,
+            );
+
+            // Zone code from the block this cell falls in.
+            let mut code = CODE_GRASS;
+            for block in blocks {
+                if block.polygon.contains(p) {
+                    code = block_code(block.block_type);
+                    break;
+                }
+            }
+
+            // Roads paint over zones.
+            let on_road = roads
+                .segments
+                .iter()
+                .any(|s| point_segment_dist_sq(p, s.a, s.b) < road_half_sq);
+            if on_road {
+                code = CODE_ROAD;
+            }
+
+            codes[j * res + i] = code;
+        }
+    }
+
+    GroundPaint {
+        ox,
+        oz,
+        size,
+        res,
+        codes: base64::engine::general_purpose::STANDARD.encode(&codes),
+    }
+}

@@ -86,6 +86,10 @@ pub struct Scene {
     pub environment: Environment,
     pub lights: Vec<Light>,
     pub entities: Vec<Entity>,
+    /// Per-district ground zone/road raster (streets, parks, water). `None` for
+    /// interior/tunnel scenes that have no district ground.
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "groundPaint")]
+    pub ground_paint: Option<crate::scene::groundpaint::GroundPaint>,
 }
 
 /// Compile a building plot into an Astral Entity.
@@ -292,6 +296,7 @@ pub fn compile_inside_scene(inside: &Inside, palette: &AestheticPalette) -> Scen
         environment,
         lights,
         entities,
+        ground_paint: None,
     }
 }
 
@@ -409,6 +414,7 @@ pub fn compile_tunnel_scene(tunnel: &Tunnel) -> Scene {
         environment,
         lights,
         entities,
+        ground_paint: None,
     }
 }
 
@@ -745,12 +751,20 @@ pub fn compile_district_scene(
         far: 500.0,
     };
 
+    // Ground zone/road raster — sampled by the renderer on ground hits.
+    let ground_paint = Some(crate::scene::groundpaint::paint_ground(
+        &blocks,
+        &road_network,
+        &dist.polygon,
+    ));
+
     Scene {
         time: 0.0,
         camera,
         environment,
         lights,
         entities,
+        ground_paint,
     }
 }
 
