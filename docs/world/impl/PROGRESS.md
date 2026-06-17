@@ -855,3 +855,22 @@ ground-scatter (§14.1), navigation-aid fixtures at intersections (§13.1), tunn
 doors + portal entities in the gen layer (spaces §2.6/§5.1).
 
 ---
+
+## Placement-Conformance Audit Checks — 2026-06-17
+
+Locked the placement intent into the regression net so it can't silently go
+inert again. Three new single-district audit checks (now 13 total):
+
+- `fixtures_match_affinity`: every zone fixture's role is in its zone's affinity
+  (§6.4/§13.6).
+- `creatures_placed`: nocturnal/diurnal gating holds (no nocturnal by day, no
+  diurnal by night), non-subterranean creatures sit in a zone, subterranean ones
+  on the block perimeter (§15.2/§15.5).
+- `entries_on_wall`: every building door sits on a footprint wall (§12.7). (The
+  open-wall/non-shared selection is enforced + unit-tested in find_entry_point;
+  the lot isn't retained on the plot, so the audit verifies the reliable on-wall
+  invariant rather than re-deriving lot adjacency from gap-separated footprints.)
+
+The 117-district fuzz test exercises all three. 168 tests pass; sweep clean.
+
+---

@@ -11,7 +11,7 @@ use crate::gen::buildings::{generate_buildings, BuildingPlot};
 use crate::gen::cell::Cell;
 use crate::gen::config::config;
 use crate::gen::conveyances::generate_conveyances;
-use crate::gen::creatures::generate_creatures;
+use crate::gen::creatures::{generate_creatures, place_creatures, ActivityPattern, EcologicalRole};
 use crate::gen::district::{generate_district, DistrictGeometry};
 use crate::gen::fixtures::generate_fixtures;
 use crate::gen::flora::generate_flora;
@@ -20,6 +20,7 @@ use crate::gen::inside::generate_inside;
 use crate::hdl::mapping::map_avatar;
 use crate::gen::rivers::{generate_rivers, is_river, RiverSegment};
 use crate::gen::roads::{generate_roads, RoadNetwork};
+use crate::gen::zones::generate_zones;
 use crate::gen::tunnel::{generate_tunnel, TunnelMetrics};
 use crate::types::{Point, Polygon, Segment};
 
@@ -546,6 +547,123 @@ fn point_on_segment(p: Point, s: &Segment, tol: f64) -> bool {
     (p.x - proj.x).abs() <= tol && (p.y - proj.y).abs() <= tol
 }
 
+/// Minimum distance from `p` to the polygon's boundary (edges).
+fn dist_to_boundary(p: Point, poly: &Polygon) -> f64 {
+    let n = poly.vertices.len();
+    let mut best = f64::MAX;
+    for i in 0..n {
+        let a = poly.vertices[i];
+        let b = poly.vertices[(i + 1) % n];
+        let dx = b.x - a.x;
+        let dy = b.y - a.y;
+        let l = dx * dx + dy * dy;
+        let proj = if l < 1e-12 {
+            a
+        } else {
+            let t = (((p.x - a.x) * dx + (p.y - a.y) * dy) / l).clamp(0.0, 1.0);
+            Point::new(a.x + t * dx, a.y + t * dy)
+        };
+        best = best.min(p.distance_sq(proj));
+    }
+    best.sqrt()
+}
+
+// ── Placement-conformance checks (the intent that had gone inert) ───────────
+
+/// Zone fixtures only spawn roles in their zone's affinity (§6.4/§13.6) — zones
+/// specialise rather than carrying every role.
+fn check_fixtures_match_affinity(d: &DistrictData) -> Check {
+    let mut bad = 0usize;
+    let mut total = 0usize;
+    for block in &d.blocks {
+        let zones = generate_zones(d.cell.key, block);
+        if zones.is_empty() {
+            continue;
+        }
+        for f in generate_fixtures(&d.cell, block, Some(&d.roads)).zone_fixtures {
+            total += 1;
+            if let Some(z) = zones.iter().find(|z| z.polygon.contains(f.position)) {
+                if !z.affinity.is_empty() && !z.affinity.contains(&f.role.id()) {
+                    bad += 1;
+                }
+            }
+        }
+    }
+    Check::new(
+        "fixtures_match_affinity",
+        bad == 0,
+        format!("{}/{} zone fixtures whose role isn't in their zone's affinity", bad, total),
+    )
+}
+
+/// Creatures are placed per intent (§15.2/§15.5): nocturnal/diurnal gated by
+/// time of day, non-subterranean confined to their (assigned) zone, subterranean
+/// surfacing on the block perimeter.
+fn check_creatures_placed(d: &DistrictData) -> Check {
+    let mut issues: Vec<String> = Vec::new();
+    for block in &d.blocks {
+        let zones = generate_zones(d.cell.key, block);
+        if place_creatures(&d.cell, block, &zones, 0, false)
+            .iter()
+            .any(|p| p.creature.activity_pattern == ActivityPattern::Nocturnal)
+        {
+            issues.push(format!("block {}: nocturnal present by day", block.idx));
+        }
+        let night = place_creatures(&d.cell, block, &zones, 0, true);
+        if night
+            .iter()
+            .any(|p| p.creature.activity_pattern == ActivityPattern::Diurnal)
+        {
+            issues.push(format!("block {}: diurnal present at night", block.idx));
+        }
+        for pc in &night {
+            let ok = match pc.creature.ecological_role {
+                EcologicalRole::Subterranean => dist_to_boundary(pc.position, &block.polygon) < 1.0,
+                _ => {
+                    zones.is_empty()
+                        || zones.iter().any(|z| point_within(pc.position, &z.polygon, 1.0))
+                }
+            };
+            if !ok {
+                issues.push(format!("block {}: {:?} mis-placed", block.idx, pc.creature.ecological_role));
+                break;
+            }
+        }
+    }
+    Check::new(
+        "creatures_placed",
+        issues.is_empty(),
+        if issues.is_empty() {
+            "gating + zone confinement + perimeter emergence ok".to_string()
+        } else {
+            issues.join("; ")
+        },
+    )
+}
+
+/// Every building door sits on one of its footprint walls (§12.7). The
+/// open-wall (non-shared) selection is enforced and unit-tested in
+/// `find_entry_point`; the lot polygon isn't retained on the plot, so the audit
+/// verifies the reliable on-wall invariant across the whole sweep rather than
+/// re-deriving lot adjacency from the (gap-separated) footprints.
+fn check_entries_on_wall(d: &DistrictData) -> Check {
+    let mut bad = 0usize;
+    let mut total = 0usize;
+    for (_, plot) in &d.buildings {
+        if let Some(e) = &plot.entry {
+            total += 1;
+            if dist_to_boundary(e.position, &plot.polygon) > 2.0 {
+                bad += 1;
+            }
+        }
+    }
+    Check::new(
+        "entries_on_wall",
+        bad == 0,
+        format!("{}/{} building doors not on a footprint wall", bad, total),
+    )
+}
+
 /// Run all single-district checks.
 pub fn audit_district(cell: &Cell) -> AuditReport {
     let d = DistrictData::build(cell.clone());
@@ -560,6 +678,9 @@ pub fn audit_district(cell: &Cell) -> AuditReport {
         check_rivers(&d),
         check_objects_in_district(&d),
         check_conveyances_on_roads(&d),
+        check_fixtures_match_affinity(&d),
+        check_creatures_placed(&d),
+        check_entries_on_wall(&d),
     ];
     let pass = checks.iter().all(|c| c.pass);
     let metrics = serde_json::json!({
@@ -904,7 +1025,7 @@ mod tests {
     fn harness_produces_report() {
         let cell = Cell::from_ip_str("93.184.216.0").unwrap();
         let r = audit_district(&cell);
-        assert_eq!(r.checks.len(), 10);
+        assert_eq!(r.checks.len(), 13);
         assert!(r.checks.iter().any(|c| c.name == "rivers_valid"));
         assert!(r.checks.iter().any(|c| c.name == "objects_in_district"));
         assert!(r.checks.iter().any(|c| c.name == "buildings_no_overlap"));
