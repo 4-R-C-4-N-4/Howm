@@ -483,18 +483,27 @@ pub fn generate_buildings(cell: &Cell, block: &Block) -> BlockBuildings {
             continue;
         }
 
-        // Seed points, enforcing a minimum spacing. Two coincident seeds produce
-        // a degenerate (skipped) bisector and hence two identical Voronoi cells —
-        // i.e. 100%-overlapping plots (buildings_no_overlap failure). Dropping
-        // near-duplicates keeps every plot distinct.
-        let mut seed_pts: Vec<Point> = Vec::with_capacity(plot_count);
-        for p in 0..plot_count {
-            let pt_seed = ha(cell.key ^ block.idx as u32 ^ sub_idx as u32 ^ p as u32 ^ 0x106754ed);
-            let pt = point_in_polygon_seeded(&sub_poly, pt_seed);
-            if seed_pts.iter().all(|q| q.distance_sq(pt) > 1.0) {
-                seed_pts.push(pt);
+        // Seed points. No-alley (dense) blocks subdivide on a rotated regular
+        // grid → orthogonal plots (§12.2, salt 0x9a1d); other modes use seeded
+        // random points → organic Voronoi plots. Either way the Voronoi of the
+        // seeds (below) gives the actual plots. A minimum spacing is enforced:
+        // coincident seeds make a degenerate (skipped) bisector → identical,
+        // 100%-overlapping cells.
+        let seed_pts: Vec<Point> = if mode == AlleyMode::None {
+            let spacing = cfg.plot_area_base.sqrt().max(8.0);
+            grid_seed_points(&sub_poly, spacing, ha(cell.key ^ block.idx as u32 ^ 0x9a1d))
+        } else {
+            let mut pts: Vec<Point> = Vec::with_capacity(plot_count);
+            for p in 0..plot_count {
+                let pt_seed =
+                    ha(cell.key ^ block.idx as u32 ^ sub_idx as u32 ^ p as u32 ^ 0x106754ed);
+                let pt = point_in_polygon_seeded(&sub_poly, pt_seed);
+                if pts.iter().all(|q| q.distance_sq(pt) > 1.0) {
+                    pts.push(pt);
+                }
             }
-        }
+            pts
+        };
         if seed_pts.len() < 2 {
             let plot_seed = ha(cell.key ^ block.idx as u32 ^ sub_idx as u32 ^ 0x106754ed);
             specs.push((sub_poly.clone(), 0, plot_seed));
@@ -586,6 +595,33 @@ fn snap_into(poly: &Polygon, container: &Polygon) -> Polygon {
         })
         .collect();
     Polygon::new(verts)
+}
+
+/// Seed points on a regular grid (rotated by a seed-derived angle) that fall
+/// inside `poly`. Feeding these to the Voronoi subdivision yields orthogonal,
+/// grid-aligned plots — the no-alley dense-block subdivision of §12.2.
+fn grid_seed_points(poly: &Polygon, spacing: f64, seed: u32) -> Vec<Point> {
+    let (x0, y0, x1, y1) = poly.bbox();
+    let cx = (x0 + x1) * 0.5;
+    let cy = (y0 + y1) * 0.5;
+    let angle = hash_to_f64(seed) * std::f64::consts::FRAC_PI_2; // 0–90°
+    let (cos, sin) = (angle.cos(), angle.sin());
+    let half = (x1 - x0).max(y1 - y0) * 0.5 + spacing;
+    let mut pts = Vec::new();
+    let mut gx = -half;
+    while gx <= half {
+        let mut gy = -half;
+        while gy <= half {
+            // Rotate the grid point about the bbox centre.
+            let p = Point::new(cx + gx * cos - gy * sin, cy + gx * sin + gy * cos);
+            if poly.contains(p) {
+                pts.push(p);
+            }
+            gy += spacing;
+        }
+        gx += spacing;
+    }
+    pts
 }
 
 /// Inset a polygon toward its area centroid by `frac` (0.18 = 18% setback).

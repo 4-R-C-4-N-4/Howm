@@ -874,3 +874,33 @@ inert again. Three new single-district audit checks (now 13 total):
 The 117-district fuzz test exercises all three. 168 tests pass; sweep clean.
 
 ---
+
+## Remaining Placement Items — 2026-06-17
+
+Continued the placement-conformance work:
+
+- **Navigation-aid fixtures at intersections (§13.1)** — `generate_fixtures` now
+  places a `NavigationAid` fixture at each road intersection (district-level, so
+  guarded to the first block to avoid per-block duplicates). Verified: one nav-aid
+  per intersection.
+- **No-alley grid subdivision (§12.2)** — dense (popcount ≥ none-threshold) blocks
+  now subdivide on a rotated regular grid (`grid_seed_points`, salt 0x9a1d) →
+  orthogonal plots, instead of organic Voronoi. Reuses the bounded-Voronoi + clip
+  pipeline by seeding on a grid. Verified: 255.255.255.0 (popcount 24) renders 50
+  grid plots, audit clean.
+
+Deferred with rationale:
+- **Surface-growth on building walls (§14.1)** — currently placed as ground
+  scatter on ancient blocks; attaching to specific building wall surfaces needs
+  render-model support for surface attachment. The ground-scatter is an
+  acceptable approximation; flagged for a future render-model pass.
+- **Tunnel doors in the entry hall (spaces §2.6)** — data-dependent (needs the
+  live peer-tunnel list, which only exists with active connections); portal
+  entities ARE already placed in the scene layer (compile_inside_scene /
+  tunnel scene / home injection).
+
+Surfaced (pre-existing, out of scope): a few districts with popcount > 0 generate
+0 road segments (`roads_present` fails for e.g. 200.0.255.0, 255.255.0.0) — a
+road-generation gap unrelated to placement, worth a follow-up.
+
+---

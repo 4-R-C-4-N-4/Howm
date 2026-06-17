@@ -325,6 +325,22 @@ pub fn generate_fixtures(
                 road_fixtures.push(fixture);
             }
         }
+
+        // Navigation-aid fixtures at road intersections (§13.1). Intersections
+        // are district-level, so place them once (guarded to the first block) to
+        // avoid one duplicate per block.
+        if block.idx == 0 {
+            for (ix_idx, ix) in network.intersections.iter().enumerate() {
+                let pos_seed = ha(cell.key ^ ix_idx as u32 ^ 0x4a1d);
+                road_fixtures.push(build_fixture(
+                    cell,
+                    FixtureRole::NavigationAid,
+                    pos_seed,
+                    ix.position,
+                    false,
+                ));
+            }
+        }
     }
 
     BlockFixtures {
