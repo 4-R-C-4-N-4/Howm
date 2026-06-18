@@ -173,7 +173,14 @@ pub fn compile_avatar(
 ) -> Entity {
     let graph = mapping::map_avatar(peer_id, palette);
     let (geo, scale) = geometry::resolve_geometry(&graph);
-    let mat = material::resolve_material(&graph, palette.hue);
+    let mut mat = material::resolve_material(&graph, palette.hue);
+    // Players should be findable in a crowd — give every avatar a soft self-glow
+    // (and an emission colour from its own hue) so it reads as "a person" against
+    // the busy world rather than blending into the ground.
+    mat.emissive = Some(mat.emissive.unwrap_or(0.0).max(0.5));
+    if mat.emission_color.is_none() {
+        mat.emission_color = Some(Color::from_hsl(palette.hue, 0.6, 0.7));
+    }
     Entity {
         id: format!("avatar:{:08x}", peer_id_u32(peer_id)),
         transform: Transform::at(x, y, z).with_scale(scale.x, scale.y, scale.z),

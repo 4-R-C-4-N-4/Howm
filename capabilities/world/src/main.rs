@@ -76,6 +76,9 @@ struct AppState {
     home_cell: gen::cell::Cell,
     /// Latest known pose of each peer (by base64 peer id), for rendering them.
     presence: PresenceMap,
+    /// The space the local UI most recently reported — lets the optional test
+    /// peer (`--test-peer`) follow the player into whatever district they enter.
+    last_space: std::sync::Arc<tokio::sync::RwLock<String>>,
 }
 
 /// Inbound P2P-CD capability messages (`POST /p2pcd/inbound`). Handles the
@@ -145,6 +148,12 @@ struct Config {
     /// district (ideally the node's own public IP).
     #[arg(long, default_value = "1.0.0.0", env = "HOWM_WORLD_HOME_IP")]
     home_ip: String,
+
+    /// Inject a synthetic orbiting peer into the presence map for spot-checking
+    /// multiplayer rendering on a single node (no daemon mesh needed). It follows
+    /// whichever space the local UI reports, so it appears in your current view.
+    #[arg(long)]
+    test_peer: bool,
 }
 
 fn current_time_ms() -> u64 {
@@ -551,6 +560,10 @@ fn peer_id_bytes32(b64: &str) -> Option<[u8; 32]> {
 }
 
 async fn presence_post(State(state): State<AppState>, Json(mut pose): Json<Pose>) -> Response {
+    // Remember which space the local player is in (drives the --test-peer follow).
+    if !pose.space.is_empty() {
+        *state.last_space.write().await = pose.space.clone();
+    }
     // Stamp our home district so peers can fetch our avatar's aesthetic.
     let o = state.home_cell.octets;
     pose.home = format!("{}.{}.{}.0", o[0], o[1], o[2]);
@@ -623,6 +636,43 @@ async fn presence_get(
         axum::Json(serde_json::json!({ "peers": peers })),
     )
         .into_response()
+}
+
+/// Inject a synthetic peer that orbits slowly in whatever space the local UI
+/// reports, refreshing its pose so it stays "live". Purely for single-node
+/// spot-checks of multiplayer rendering (`--test-peer`).
+fn spawn_test_peer(
+    presence: PresenceMap,
+    last_space: std::sync::Arc<tokio::sync::RwLock<String>>,
+) {
+    tokio::spawn(async move {
+        const PEER_ID: &str = "7e57beef"; // hex-decodable, so /avatar/.../entity resolves
+        const HOME: &str = "120.90.200.0"; // a distinct district → recognisable avatar hue
+        let mut ticker = tokio::time::interval(std::time::Duration::from_millis(400));
+        loop {
+            ticker.tick().await;
+            let space = last_space.read().await.clone();
+            if space.is_empty() {
+                continue; // wait until the UI reports a space to stand in
+            }
+            let now = current_time_ms();
+            // Slow orbit around a point in front of the spawn camera, which sits
+            // at the district seed looking toward -z.
+            let angle = (now as f64 / 1000.0 * 0.6).rem_euclid(std::f64::consts::TAU);
+            let (r, cz) = (4.0_f64, -10.0_f64);
+            let pose = Pose {
+                position: [r * angle.cos(), 1.5, cz + r * angle.sin()],
+                orientation: [0.0, angle + std::f64::consts::FRAC_PI_2, 0.0],
+                velocity: [0.0; 3],
+                space,
+                home: HOME.to_string(),
+            };
+            presence
+                .write()
+                .await
+                .insert(PEER_ID.to_string(), PeerPose { pose, updated_ms: now });
+        }
+    });
 }
 
 // ─── Peer avatar (spaces §8.2) ──────────────────────────────────────────────
@@ -1145,7 +1195,13 @@ async fn main() -> anyhow::Result<()> {
         local_id,
         home_cell,
         presence: PresenceMap::default(),
+        last_space: std::sync::Arc::new(tokio::sync::RwLock::new(String::new())),
     };
+
+    if config.test_peer {
+        tracing::info!("--test-peer: injecting a synthetic orbiting peer");
+        spawn_test_peer(state.presence.clone(), state.last_space.clone());
+    }
 
     CapabilityApp::new(CAP_NAME, config.port, state)
         .with_ui(&UI_DIR)
