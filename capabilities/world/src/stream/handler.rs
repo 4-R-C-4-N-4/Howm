@@ -115,6 +115,7 @@ async fn handle_socket(socket: WebSocket, ip: String) {
                                 ip: view.current_district_ip(),
                                 loaded_count: view.loaded_count(),
                                 visible_count: view.visible_count(),
+                                anchor: view.current_anchor(),
                             };
                             if let Ok(json) = serde_json::to_string(&district_msg) {
                                 let _ = sender.send(Message::Text(json.into())).await;

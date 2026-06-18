@@ -1,4 +1,4 @@
-import { Color, Entity } from '../core/types'
+import { Color, Entity, Vec3 } from '../core/types'
 
 /** A peer's pose as returned by the world cap's GET /presence. */
 export interface PeerPose {
@@ -14,6 +14,32 @@ export interface LocalPose {
   position: [number, number, number]
   orientation: [number, number, number]
   space: string
+}
+
+/** The local camera pose the render loop exposes (origin-relative render frame). */
+export interface CameraPose {
+  position: [number, number, number]
+  rotation: [number, number, number]
+}
+
+/**
+ * A scene provider that can host peer avatars. Presence is space-scoped and
+ * coordinate-aligned through these: poses are exchanged relative to the space's
+ * anchor (the current district's seed), so any two clients in the same space
+ * share a frame regardless of where each one's render origin sits.
+ */
+export interface PeerHost {
+  /** Canonical id of the space the local player is in, e.g. "156.130.88". */
+  presenceSpace(): string
+  /** The current space's anchor (district seed) in the local render frame. */
+  presenceAnchor(): Vec3 | null
+  /** Inject peer avatar entities into the rendered scene. */
+  setPeerEntities(entities: Entity[]): void
+}
+
+/** Reduce any district IP form ("a.b.c.0", "a.b.c.0/24") to the space id "a.b.c". */
+export function canonSpace(ip: string): string {
+  return ip.split('.').slice(0, 3).join('.')
 }
 
 /**
@@ -43,13 +69,14 @@ export class PresenceClient {
     }
   }
 
-  async fetchPeers(): Promise<void> {
+  /** Fetch peers in `space` and place them relative to the local `anchor`. */
+  async fetchPeers(space: string, anchor: Vec3): Promise<void> {
     try {
-      const resp = await fetch(`${this.baseUrl}/presence`)
+      const resp = await fetch(`${this.baseUrl}/presence?space=${encodeURIComponent(space)}`)
       if (!resp.ok) return
       const data = await resp.json()
       const poses: PeerPose[] = data.peers ?? []
-      this.peers = poses.map(peerAvatarEntity)
+      this.peers = poses.map(p => peerAvatarEntity(p, anchor))
     } catch {
       /* keep last known peers on failure */
     }
@@ -61,14 +88,24 @@ export class PresenceClient {
   }
 
   /**
-   * Drive POST-pose + GET-peers on an interval (default ~4 Hz). `onPeers` is
-   * called after each fetch with the current peer avatar entities.
+   * Drive presence on an interval (~4 Hz): post the local pose relative to the
+   * current space anchor and fetch peers in that same space, placing them back
+   * relative to the local anchor so everyone in a district shares one frame.
    */
-  start(getPose: () => LocalPose, onPeers: (entities: Entity[]) => void, intervalMs = 250): void {
+  start(host: PeerHost, getCamera: () => CameraPose, intervalMs = 250): void {
     const tick = async () => {
-      await this.postPose(getPose())
-      await this.fetchPeers()
-      onPeers(this.peers)
+      const anchor = host.presenceAnchor()
+      if (!anchor) return // space not loaded yet — nothing to anchor against
+      const space = host.presenceSpace()
+      const cam = getCamera()
+      // Exchange poses relative to the space anchor (frame-independent).
+      await this.postPose({
+        position: [cam.position[0] - anchor.x, cam.position[1] - anchor.y, cam.position[2] - anchor.z],
+        orientation: cam.rotation,
+        space,
+      })
+      await this.fetchPeers(space, anchor)
+      host.setPeerEntities(this.peers)
     }
     void tick()
     this.timer = setInterval(() => void tick(), intervalMs)
@@ -82,8 +119,11 @@ export class PresenceClient {
   }
 }
 
-/** Build a glowing avatar marker entity for a peer, coloured by peer id. */
-function peerAvatarEntity(p: PeerPose): Entity {
+/**
+ * Build a glowing avatar marker for a peer, coloured by peer id. The peer's pose
+ * is space-anchor-relative; we add the local anchor to place it in our frame.
+ */
+function peerAvatarEntity(p: PeerPose, anchor: Vec3): Entity {
   let h = 2166136261
   for (let i = 0; i < p.peer_id.length; i++) {
     h = (h ^ p.peer_id.charCodeAt(i)) >>> 0
@@ -95,7 +135,7 @@ function peerAvatarEntity(p: PeerPose): Entity {
   return {
     id: `peer:${p.peer_id.slice(0, 10)}`,
     transform: {
-      position: { x: p.position[0], y: p.position[1], z: p.position[2] },
+      position: { x: p.position[0] + anchor.x, y: p.position[1] + anchor.y, z: p.position[2] + anchor.z },
       rotation: { x: 0, y: p.orientation[1] ?? 0, z: 0 },
       scale: { x: 1, y: 1, z: 1 },
     },

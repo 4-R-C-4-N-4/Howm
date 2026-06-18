@@ -420,4 +420,11 @@ impl ViewState {
             .map(|d| d.cell.ip_prefix())
             .unwrap_or_else(|| self.primary_cell.ip_prefix())
     }
+
+    /// The current district's seed in shared-origin space — the presence anchor
+    /// for this space. Peer poses are sent relative to it so they align.
+    pub fn current_anchor(&self) -> [f64; 2] {
+        let s = crate::gen::district::seed_position(&self.current_cell());
+        [s.x - self.origin_x, s.y - self.origin_z]
+    }
 }

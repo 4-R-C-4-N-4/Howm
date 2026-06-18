@@ -75,5 +75,8 @@ pub enum ServerMessage {
         ip: String,
         loaded_count: usize,
         visible_count: usize,
+        /// Current district seed in shared-origin space — the presence anchor
+        /// for this space, so peer poses (sent relative to it) line up.
+        anchor: [f64; 2],
     },
 }

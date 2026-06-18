@@ -1,4 +1,4 @@
-import { Entity, Scene, Light, GroundPaint } from '../core/types'
+import { Entity, Scene, Light, GroundPaint, Vec3 } from '../core/types'
 import { SceneProvider } from './SceneProvider'
 import { updateLightFlicker } from '../renderer/Animator'
 
@@ -104,6 +104,18 @@ export class HowmSceneProvider implements SceneProvider {
    */
   setPeerEntities(entities: Entity[]): void {
     this.peers = entities
+  }
+
+  // ── PeerHost (presence) ──────────────────────────────────────────────────
+  /** Canonical id of the district the camera is currently over. */
+  presenceSpace(): string {
+    return this.centerIp.split('.').slice(0, 3).join('.')
+  }
+
+  /** Current district seed in the shared-origin render frame (presence anchor). */
+  presenceAnchor(): Vec3 | null {
+    const d = this.districts.get(this.centerIp)
+    return d ? { x: d.seed.x, y: 0, z: d.seed.z } : null
   }
 
   /** Load the initial district and its neighbour ring. */

@@ -1,4 +1,4 @@
-import { Scene, Entity, Light, Camera, Environment, GroundPaint } from '../core/types'
+import { Scene, Entity, Light, Camera, Environment, GroundPaint, Vec3 } from '../core/types'
 import { SceneProvider } from './SceneProvider'
 import { updateLightFlicker } from '../renderer/Animator'
 
@@ -28,6 +28,9 @@ export class HowmStreamProvider implements SceneProvider {
   private dirty = true
   private connected = false
   private groundPaint: GroundPaint | undefined
+  /** Presence: anchor (current district seed) and peer avatar entities. */
+  private spaceAnchor: Vec3 | null = null
+  private peers: Entity[] = []
 
   // Camera state to send to server
   private camX = 0
@@ -145,6 +148,9 @@ export class HowmStreamProvider implements SceneProvider {
         if (msg.ip) this.currentDistrictIp = msg.ip
         if (msg.loaded_count !== undefined) this.loadedDistrictCount = msg.loaded_count
         if (msg.visible_count !== undefined) this.visibleEntityCount = msg.visible_count
+        if (Array.isArray(msg.anchor)) {
+          this.spaceAnchor = { x: msg.anchor[0], y: 0, z: msg.anchor[1] }
+        }
         break
     }
   }
@@ -166,13 +172,30 @@ export class HowmStreamProvider implements SceneProvider {
 
   // ── SceneProvider interface ──
 
+  // ── PeerHost (presence) ──────────────────────────────────────────────────
+  /** Canonical id of the district the player is currently in. */
+  presenceSpace(): string {
+    return this.currentDistrictIp.split('.').slice(0, 3).join('.')
+  }
+
+  /** Current district seed in render-frame (presence anchor, from the server). */
+  presenceAnchor(): Vec3 | null {
+    return this.spaceAnchor
+  }
+
+  /** Live peer avatars merged into the streamed scene. */
+  setPeerEntities(entities: Entity[]): void {
+    this.peers = entities
+    this.dirty = true
+  }
+
   getScene(): Scene {
     return {
       time: this.time,
       camera: this.camera,
       environment: this.environment,
       lights: this.lights,
-      entities: this.entityList,
+      entities: this.peers.length ? [...this.entityList, ...this.peers] : this.entityList,
       groundPaint: this.groundPaint,
     }
   }

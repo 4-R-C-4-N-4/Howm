@@ -108,6 +108,16 @@
     setPeerEntities(entities) {
       this.peers = entities;
     }
+    // ── PeerHost (presence) ──────────────────────────────────────────────────
+    /** Canonical id of the district the camera is currently over. */
+    presenceSpace() {
+      return this.centerIp.split(".").slice(0, 3).join(".");
+    }
+    /** Current district seed in the shared-origin render frame (presence anchor). */
+    presenceAnchor() {
+      const d = this.districts.get(this.centerIp);
+      return d ? { x: d.seed.x, y: 0, z: d.seed.z } : null;
+    }
     /** Load the initial district and its neighbour ring. */
     async loadDistrict(ip) {
       await this.fetchInto(ip);
@@ -290,13 +300,14 @@
       } catch {
       }
     }
-    async fetchPeers() {
+    /** Fetch peers in `space` and place them relative to the local `anchor`. */
+    async fetchPeers(space, anchor) {
       try {
-        const resp = await fetch(`${this.baseUrl}/presence`);
+        const resp = await fetch(`${this.baseUrl}/presence?space=${encodeURIComponent(space)}`);
         if (!resp.ok) return;
         const data = await resp.json();
         const poses = data.peers ?? [];
-        this.peers = poses.map(peerAvatarEntity);
+        this.peers = poses.map((p) => peerAvatarEntity(p, anchor));
       } catch {
       }
     }
@@ -305,14 +316,23 @@
       return this.peers;
     }
     /**
-     * Drive POST-pose + GET-peers on an interval (default ~4 Hz). `onPeers` is
-     * called after each fetch with the current peer avatar entities.
+     * Drive presence on an interval (~4 Hz): post the local pose relative to the
+     * current space anchor and fetch peers in that same space, placing them back
+     * relative to the local anchor so everyone in a district shares one frame.
      */
-    start(getPose, onPeers, intervalMs = 250) {
+    start(host, getCamera, intervalMs = 250) {
       const tick = async () => {
-        await this.postPose(getPose());
-        await this.fetchPeers();
-        onPeers(this.peers);
+        const anchor = host.presenceAnchor();
+        if (!anchor) return;
+        const space = host.presenceSpace();
+        const cam = getCamera();
+        await this.postPose({
+          position: [cam.position[0] - anchor.x, cam.position[1] - anchor.y, cam.position[2] - anchor.z],
+          orientation: cam.rotation,
+          space
+        });
+        await this.fetchPeers(space, anchor);
+        host.setPeerEntities(this.peers);
       };
       void tick();
       this.timer = setInterval(() => void tick(), intervalMs);
@@ -324,7 +344,7 @@
       }
     }
   };
-  function peerAvatarEntity(p) {
+  function peerAvatarEntity(p, anchor) {
     let h = 2166136261;
     for (let i = 0; i < p.peer_id.length; i++) {
       h = (h ^ p.peer_id.charCodeAt(i)) >>> 0;
@@ -336,7 +356,7 @@
     return {
       id: `peer:${p.peer_id.slice(0, 10)}`,
       transform: {
-        position: { x: p.position[0], y: p.position[1], z: p.position[2] },
+        position: { x: p.position[0] + anchor.x, y: p.position[1] + anchor.y, z: p.position[2] + anchor.z },
         rotation: { x: 0, y: p.orientation[1] ?? 0, z: 0 },
         scale: { x: 1, y: 1, z: 1 }
       },
@@ -395,6 +415,9 @@
       this.time = 0;
       this.dirty = true;
       this.connected = false;
+      /** Presence: anchor (current district seed) and peer avatar entities. */
+      this.spaceAnchor = null;
+      this.peers = [];
       // Camera state to send to server
       this.camX = 0;
       this.camY = 8;
@@ -496,6 +519,9 @@
           if (msg.ip) this.currentDistrictIp = msg.ip;
           if (msg.loaded_count !== void 0) this.loadedDistrictCount = msg.loaded_count;
           if (msg.visible_count !== void 0) this.visibleEntityCount = msg.visible_count;
+          if (Array.isArray(msg.anchor)) {
+            this.spaceAnchor = { x: msg.anchor[0], y: 0, z: msg.anchor[1] };
+          }
           break;
       }
     }
@@ -513,13 +539,27 @@
       this.camDZ = dz;
     }
     // ── SceneProvider interface ──
+    // ── PeerHost (presence) ──────────────────────────────────────────────────
+    /** Canonical id of the district the player is currently in. */
+    presenceSpace() {
+      return this.currentDistrictIp.split(".").slice(0, 3).join(".");
+    }
+    /** Current district seed in render-frame (presence anchor, from the server). */
+    presenceAnchor() {
+      return this.spaceAnchor;
+    }
+    /** Live peer avatars merged into the streamed scene. */
+    setPeerEntities(entities) {
+      this.peers = entities;
+      this.dirty = true;
+    }
     getScene() {
       return {
         time: this.time,
         camera: this.camera,
         environment: this.environment,
         lights: this.lights,
-        entities: this.entityList,
+        entities: this.peers.length ? [...this.entityList, ...this.peers] : this.entityList,
         groundPaint: this.groundPaint
       };
     }
@@ -3262,16 +3302,10 @@
         return loop.cameraPosition();
       }
     };
-    if (provider instanceof HowmSceneProvider) {
-      const staticProvider = provider;
+    const peerHost = provider;
+    if (typeof peerHost.presenceSpace === "function") {
       const presence = new PresenceClient(baseUrl);
-      presence.start(
-        () => {
-          const pose = loop.cameraPose();
-          return { position: pose.position, orientation: pose.rotation, space: ip };
-        },
-        (peers) => staticProvider.setPeerEntities(peers)
-      );
+      presence.start(peerHost, () => loop.cameraPose());
     }
   }
   window.addEventListener("DOMContentLoaded", main);

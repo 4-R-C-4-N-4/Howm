@@ -568,12 +568,26 @@ async fn presence_post(State(state): State<AppState>, Json(pose): Json<Pose>) ->
         .into_response()
 }
 
-async fn presence_get(State(state): State<AppState>) -> Response {
+/// Query for `GET /presence`. `space` scopes the result to peers in the same
+/// space (district / inside / tunnel); omit it to see every live peer.
+#[derive(serde::Deserialize, Default)]
+struct PresenceQuery {
+    #[serde(default)]
+    space: Option<String>,
+}
+
+async fn presence_get(
+    State(state): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<PresenceQuery>,
+) -> Response {
     let now = current_time_ms();
     let map = state.presence.read().await;
     let peers: Vec<_> = map
         .iter()
         .filter(|(_, pp)| now.saturating_sub(pp.updated_ms) < PRESENCE_TTL_MS)
+        // Scope to the requested space when given, so a client only sees (and
+        // aligns with) peers standing in the same district/inside/tunnel.
+        .filter(|(_, pp)| q.space.as_ref().map_or(true, |s| &pp.pose.space == s))
         .map(|(id, pp)| {
             serde_json::json!({
                 "peer_id": id,
