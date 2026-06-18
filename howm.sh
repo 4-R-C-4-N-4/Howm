@@ -263,6 +263,26 @@ if [[ -d "$CAP_DIR" ]] && [[ -n "$API_TOKEN" ]]; then
             fi
         fi
 
+        # Bundle the capability's TypeScript UI (if any) before the Cargo build.
+        # Caps like 'world' ship an esbuild-bundled renderer at ui/<name>.js
+        # generated from a TS source tree (e.g. astral-src/). The bundle is
+        # embedded into the binary via include_dir!, so it must be regenerated
+        # before cargo compiles. Non-fatal: a committed bundle is the fallback.
+        if [[ -f "$cap_root/astral-src/package.json" ]]; then
+            if command -v npx &>/dev/null; then
+                info "Bundling UI for capability '$cap_name'..."
+                if (cd "$cap_root/astral-src" && npx --yes esbuild src/entry.ts \
+                        --bundle --outfile=../ui/astral.js --format=iife \
+                        --platform=browser --target=es2020 >/dev/null 2>&1); then
+                    success "Capability '$cap_name' UI bundled"
+                else
+                    warn "UI bundle for '$cap_name' failed — using committed ui/astral.js"
+                fi
+            else
+                warn "npx not found — using committed UI bundle for '$cap_name'"
+            fi
+        fi
+
         # Build the capability (Cargo project).
         # Always run cargo build — it's incremental and a no-op when unchanged.
         # This ensures source changes (including embedded UI assets) are picked up.

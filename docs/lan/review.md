@@ -281,6 +281,7 @@ node/p2pcd/src/transport.rs          — TCP connect (10s timeout)
 node/daemon/src/api/mod.rs           — route registration + auth layers
 ```
 
+
 ### PROGRESS
 Updated todo list ✓                                                                                                                                                                                           
    **Bug #1**: Add the race condition tiebreaking block after the expiry check and before the "already peered" check.                                                                                              
@@ -623,4 +624,4 @@ Now I have a clear picture. Let me look at the full flow in the last session (st
           Bob connects inbound, both reach Active. This is the exact scenario                           
           that was failing in production ("inbound from unknown addr, dropping").                       
                                                                                                         
-   Full test suite: 80+ unit tests + 13 integration + 18 punch tests — all pass.  
+   Full test suite: 80+ unit tests + 13 integration + 18 punch tests — all pass.

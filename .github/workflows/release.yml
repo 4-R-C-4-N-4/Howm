@@ -10,7 +10,7 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  CAPABILITIES: "feed files messaging presence voice"
+  CAPABILITIES: "feed files messaging presence voice world"
 
 jobs:
   # ─────────────────────────────────────────────

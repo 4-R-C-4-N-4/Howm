@@ -1,0 +1,3360 @@
+"use strict";
+(() => {
+  // src/scene/PresenceClient.ts
+  function canonSpace(ip) {
+    return ip.split(".").slice(0, 3).join(".");
+  }
+  var PresenceClient = class {
+    constructor(baseUrl) {
+      this.baseUrl = baseUrl;
+      this.peers = [];
+      this.timer = null;
+      /** Cached avatar templates (resolved geometry/material at origin) by home|peer. */
+      this.avatars = /* @__PURE__ */ new Map();
+      this.fetchingAvatars = /* @__PURE__ */ new Set();
+    }
+    /** Fetch and cache a peer's avatar entity (deterministic from home + peer id). */
+    async fetchAvatar(home, peerId) {
+      if (!home) return;
+      const key = `${home}|${peerId}`;
+      if (this.avatars.has(key) || this.fetchingAvatars.has(key)) return;
+      this.fetchingAvatars.add(key);
+      try {
+        const resp = await fetch(`${this.baseUrl}/avatar/${home}/${encodeURIComponent(peerId)}/entity`);
+        if (resp.ok) this.avatars.set(key, await resp.json());
+      } catch {
+      } finally {
+        this.fetchingAvatars.delete(key);
+      }
+    }
+    /** A peer's renderable entity: its real avatar if cached, else a marker (and
+     * kick off the avatar fetch so the next tick upgrades it). */
+    buildPeer(p, anchor) {
+      const position = { x: p.position[0] + anchor.x, y: p.position[1] + anchor.y, z: p.position[2] + anchor.z };
+      const rotation = { x: 0, y: p.orientation[1] ?? 0, z: 0 };
+      const id = `peer:${p.peer_id.slice(0, 10)}`;
+      const tmpl = this.avatars.get(`${p.home}|${p.peer_id}`);
+      if (tmpl) {
+        return { ...tmpl, id, transform: { position, rotation, scale: tmpl.transform.scale } };
+      }
+      void this.fetchAvatar(p.home, p.peer_id);
+      return markerEntity(p, position, rotation);
+    }
+    async postPose(pose) {
+      try {
+        await fetch(`${this.baseUrl}/presence`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...pose, velocity: [0, 0, 0] })
+        });
+      } catch {
+      }
+    }
+    /** Fetch peers across `host`'s loaded spaces, each placed relative to its own
+     * space anchor (so peers in adjacent stitched districts line up too). */
+    async fetchPeers(host) {
+      try {
+        const spaces = host.presenceSpaces();
+        const resp = await fetch(`${this.baseUrl}/presence?spaces=${encodeURIComponent(spaces.join(","))}`);
+        if (!resp.ok) return;
+        const data = await resp.json();
+        const poses = data.peers ?? [];
+        this.peers = poses.map((p) => {
+          const a = host.anchorForSpace(p.space);
+          return a ? this.buildPeer(p, a) : null;
+        }).filter((e) => e !== null);
+      } catch {
+      }
+    }
+    /** The current peer avatar entities (one per live peer). */
+    peerEntities() {
+      return this.peers;
+    }
+    /**
+     * Drive presence on an interval (~4 Hz): post the local pose relative to the
+     * current space anchor and fetch peers in that same space, placing them back
+     * relative to the local anchor so everyone in a district shares one frame.
+     */
+    start(host, getCamera, intervalMs = 250) {
+      const tick = async () => {
+        const space = host.presenceSpace();
+        const anchor = host.anchorForSpace(space);
+        if (!anchor) return;
+        const cam = getCamera();
+        await this.postPose({
+          position: [cam.position[0] - anchor.x, cam.position[1] - anchor.y, cam.position[2] - anchor.z],
+          orientation: cam.rotation,
+          space
+        });
+        await this.fetchPeers(host);
+        host.setPeerEntities(this.peers);
+      };
+      void tick();
+      this.timer = setInterval(() => void tick(), intervalMs);
+    }
+    stop() {
+      if (this.timer !== null) {
+        clearInterval(this.timer);
+        this.timer = null;
+      }
+    }
+  };
+  function markerEntity(p, position, rotation) {
+    let h = 2166136261;
+    for (let i = 0; i < p.peer_id.length; i++) {
+      h = (h ^ p.peer_id.charCodeAt(i)) >>> 0;
+      h = h * 16777619 >>> 0;
+    }
+    const hue = h % 360;
+    const base = hslToColor(hue, 0.55, 0.6);
+    const glow = hslToColor(hue, 0.6, 0.72);
+    return {
+      id: `peer:${p.peer_id.slice(0, 10)}`,
+      transform: {
+        position,
+        rotation,
+        scale: { x: 1, y: 1, z: 1 }
+      },
+      geometry: { type: "cylinder", radius: 0.5, height: 1.8 },
+      material: {
+        baseColor: base,
+        brightness: 0.7,
+        emissive: 0.45,
+        emissionColor: glow,
+        roughness: 0.5,
+        reflectivity: 0.1,
+        glyphStyle: "round"
+      }
+    };
+  }
+  function hslToColor(h, s, l) {
+    const c = (1 - Math.abs(2 * l - 1)) * s;
+    const hp = h / 60;
+    const x = c * (1 - Math.abs(hp % 2 - 1));
+    let r = 0;
+    let g = 0;
+    let b = 0;
+    if (hp < 1) [r, g, b] = [c, x, 0];
+    else if (hp < 2) [r, g, b] = [x, c, 0];
+    else if (hp < 3) [r, g, b] = [0, c, x];
+    else if (hp < 4) [r, g, b] = [0, x, c];
+    else if (hp < 5) [r, g, b] = [x, 0, c];
+    else [r, g, b] = [c, 0, x];
+    const m = l - c / 2;
+    return {
+      r: Math.round((r + m) * 255),
+      g: Math.round((g + m) * 255),
+      b: Math.round((b + m) * 255)
+    };
+  }
+
+  // src/renderer/Animator.ts
+  var baseIntensities = /* @__PURE__ */ new Map();
+  function updateLightFlicker(lights, time) {
+    for (const light of lights) {
+      if (!light.flicker) continue;
+      const { speed, amplitude, noise } = light.flicker;
+      if (!baseIntensities.has(light)) {
+        baseIntensities.set(light, light.intensity);
+      }
+      const base = baseIntensities.get(light);
+      let flickerValue = 0;
+      switch (noise) {
+        case "wave":
+          flickerValue = Math.sin(time * speed) * amplitude;
+          break;
+        case "random":
+          flickerValue = Math.sin(time * speed * 13.37) * Math.sin(time * speed * 7.13) * amplitude;
+          break;
+        case "perlin":
+          flickerValue = (Math.sin(time * speed) * 0.5 + Math.sin(time * speed * 2.3 + 1.7) * 0.3 + Math.sin(time * speed * 4.7 + 3.1) * 0.2) * amplitude;
+          break;
+      }
+      light.intensity = base * (1 + flickerValue);
+    }
+  }
+  function clamp(v, lo, hi) {
+    return Math.max(lo, Math.min(hi, v));
+  }
+  function animateGlyph(glyph, material, time, originalParams, glyphCache) {
+    if (!material.motionBehavior) return glyph;
+    const { type, speed } = material.motionBehavior;
+    switch (type) {
+      case "static":
+        return glyph;
+      case "pulse": {
+        const pulseFactor = 1 + Math.sin(time * speed) * 0.3;
+        const newCoverage = clamp(glyph.normalizedCoverage * pulseFactor, 0, 1);
+        return glyphCache.select({ ...originalParams, targetCoverage: newCoverage });
+      }
+      case "flicker": {
+        const offset = Math.sin(time * speed * 17.3) * Math.sin(time * speed * 11.1) * 0.15;
+        const flickerCoverage = clamp(glyph.normalizedCoverage + offset, 0, 1);
+        return glyphCache.select({ ...originalParams, targetCoverage: flickerCoverage });
+      }
+      case "flow": {
+        const flowComplexity = (Math.sin(time * speed) + 1) / 2;
+        return glyphCache.select({ ...originalParams, targetComplexity: flowComplexity });
+      }
+      default:
+        return glyph;
+    }
+  }
+
+  // src/scene/HowmSceneProvider.ts
+  var LOAD_RADIUS = 2;
+  var PRUNE_RADIUS = 2;
+  var MAX_LIGHTS = 28;
+  function parseCell(ip) {
+    const [o1, o2, o3] = ip.split(".").map(Number);
+    return { gx: o3 & 255, gy: (o1 & 255) << 8 | o2 & 255 };
+  }
+  function cellIp(gx, gy) {
+    const ngx = (gx % 256 + 256) % 256;
+    const ngy = (gy % 65536 + 65536) % 65536;
+    return `${ngy >> 8 & 255}.${ngy & 255}.${ngx}.0`;
+  }
+  function canon(ip) {
+    const c = parseCell(ip);
+    return cellIp(c.gx, c.gy);
+  }
+  function ringIps(ip, r) {
+    const { gx, gy } = parseCell(ip);
+    const out = [cellIp(gx, gy)];
+    for (let d = 1; d <= r; d++) {
+      for (let dx = -d; dx <= d; dx++) {
+        for (let dz = -d; dz <= d; dz++) {
+          if (Math.max(Math.abs(dx), Math.abs(dz)) === d) out.push(cellIp(gx + dx, gy + dz));
+        }
+      }
+    }
+    return out;
+  }
+  function gridDist(a, b) {
+    const ca = parseCell(a), cb = parseCell(b);
+    const dx = Math.abs(ca.gx - cb.gx), dz = Math.abs(ca.gy - cb.gy);
+    return Math.max(Math.min(dx, 256 - dx), Math.min(dz, 65536 - dz));
+  }
+  var HowmSceneProvider = class {
+    constructor(baseUrl) {
+      this.baseUrl = baseUrl;
+      this.districts = /* @__PURE__ */ new Map();
+      this.pending = /* @__PURE__ */ new Set();
+      this.origin = null;
+      this.centerIp = "";
+      this.base = null;
+      this.dirty = true;
+      /** Merged scene cache, rebuilt only when the district set changes. */
+      this.merged = null;
+      /** Live peer-avatar entities (multiplayer presence), merged into the scene. */
+      this.peers = [];
+    }
+    /**
+     * Set the current peer-avatar entities (from presence). They share our shared
+     * origin (same-space peers), so their positions line up with ours.
+     */
+    setPeerEntities(entities) {
+      this.peers = entities;
+    }
+    // ── PeerHost (presence) ──────────────────────────────────────────────────
+    /** Canonical id of the district the camera is currently over. */
+    presenceSpace() {
+      return canonSpace(this.centerIp);
+    }
+    /** Every loaded district — peers in any of them render in the stitched view. */
+    presenceSpaces() {
+      return [...this.districts.keys()].map(canonSpace);
+    }
+    /** Seed (render-frame anchor) of whichever loaded district matches `space`. */
+    anchorForSpace(space) {
+      for (const [ip, d] of this.districts) {
+        if (canonSpace(ip) === space) return { x: d.seed.x, y: 0, z: d.seed.z };
+      }
+      return null;
+    }
+    /** Load the initial district and its neighbour ring. */
+    async loadDistrict(ip) {
+      await this.fetchInto(ip);
+      if (!this.base) throw new Error(`Failed to load district ${ip}`);
+      this.centerIp = canon(ip);
+      await Promise.all(ringIps(this.centerIp, 1).map((n) => this.fetchInto(n)));
+      for (const n of ringIps(this.centerIp, LOAD_RADIUS)) void this.fetchInto(n);
+    }
+    /** Fetch one district, shift it into shared-origin space, and store it. */
+    async fetchInto(ip) {
+      const key = canon(ip);
+      if (this.districts.has(key) || this.pending.has(key)) return;
+      this.pending.add(key);
+      try {
+        const resp = await fetch(`${this.baseUrl}/district/${ip}/scene`);
+        if (!resp.ok) throw new Error(`${resp.status} ${resp.statusText}`);
+        const scene = await resp.json();
+        const ground = scene.entities.find((e) => e.id === "ground");
+        const gx = ground ? ground.transform.position.x : 0;
+        const gz = ground ? ground.transform.position.z : 0;
+        if (!this.origin) {
+          this.origin = { x: gx, z: gz };
+          this.base = {
+            time: scene.time,
+            environment: scene.environment,
+            camera: {
+              ...scene.camera,
+              position: {
+                x: scene.camera.position.x - gx,
+                y: scene.camera.position.y,
+                z: scene.camera.position.z - gz
+              },
+              rotation: { ...scene.camera.rotation }
+            }
+          };
+        }
+        const ox = this.origin.x, oz = this.origin.z;
+        const entities = scene.entities.map((e) => ({
+          ...e,
+          id: `${key}#${e.id}`,
+          // namespace ids so districts don't collide
+          transform: {
+            ...e.transform,
+            position: { x: e.transform.position.x - ox, y: e.transform.position.y, z: e.transform.position.z - oz }
+          }
+        }));
+        const lights = scene.lights.map((l) => l.position ? { ...l, position: { x: l.position.x - ox, y: l.position.y, z: l.position.z - oz } } : { ...l });
+        let paint = scene.groundPaint;
+        if (paint) paint = { ...paint, ox: paint.ox - ox, oz: paint.oz - oz };
+        this.districts.set(key, { entities, lights, seed: { x: gx - ox, z: gz - oz }, paint });
+        this.dirty = true;
+        this.merged = null;
+      } catch (err) {
+        console.warn(`district ${ip} load failed:`, err);
+      } finally {
+        this.pending.delete(key);
+      }
+    }
+    /**
+     * Camera feedback (called each frame by the render loop). Finds the loaded
+     * district whose seed is nearest the camera; if the camera has crossed into a
+     * different cell, recentre the loaded window on it.
+     */
+    setViewerPosition(x, z) {
+      if (this.districts.size === 0) return;
+      let bestIp = this.centerIp;
+      let bestD2 = Infinity;
+      for (const [ip, d] of this.districts) {
+        const dx = d.seed.x - x, dz = d.seed.z - z;
+        const d2 = dx * dx + dz * dz;
+        if (d2 < bestD2) {
+          bestD2 = d2;
+          bestIp = ip;
+        }
+      }
+      if (bestIp !== this.centerIp) {
+        this.centerIp = bestIp;
+        for (const n of ringIps(bestIp, LOAD_RADIUS)) void this.fetchInto(n);
+        this.prune();
+      }
+    }
+    /** Drop districts outside the prune radius of the current centre. */
+    prune() {
+      for (const ip of [...this.districts.keys()]) {
+        if (gridDist(ip, this.centerIp) > PRUNE_RADIUS) {
+          this.districts.delete(ip);
+          this.dirty = true;
+          this.merged = null;
+        }
+      }
+    }
+    /** Rebuild the merged entity/light arrays from the loaded district window. */
+    rebuildMerged() {
+      const entities = [];
+      for (const [ip, d] of this.districts) {
+        for (const e of d.entities) {
+          if (e.id.endsWith("#ground") && ip !== this.centerIp) continue;
+          entities.push(e);
+        }
+      }
+      const sorted = [...this.districts.entries()].sort(
+        (a, b) => gridDist(a[0], this.centerIp) - gridDist(b[0], this.centerIp)
+      );
+      const lights = [];
+      for (const [, d] of sorted) {
+        for (const l of d.lights) {
+          if (lights.length >= MAX_LIGHTS) break;
+          lights.push(l);
+        }
+      }
+      this.merged = { entities, lights };
+    }
+    getScene() {
+      if (!this.base) {
+        return {
+          time: 0,
+          camera: { position: { x: 0, y: 5, z: 10 }, rotation: { x: 0, y: 0, z: 0 }, fov: 60, near: 0.1, far: 500 },
+          environment: { ambientLight: 0.3, backgroundColor: { r: 20, g: 20, b: 40 } },
+          lights: [],
+          entities: []
+        };
+      }
+      if (!this.merged) this.rebuildMerged();
+      const m = this.merged;
+      return {
+        time: this.base.time,
+        camera: this.base.camera,
+        environment: this.base.environment,
+        lights: m.lights,
+        entities: this.peers.length ? [...m.entities, ...this.peers] : m.entities,
+        groundPaint: this.districts.get(this.centerIp)?.paint
+      };
+    }
+    update(dt) {
+      if (!this.base) return;
+      this.base.time += dt;
+      if (!this.merged) this.rebuildMerged();
+      const m = this.merged;
+      updateLightFlicker(m.lights, this.base.time);
+      for (const entity of m.entities) {
+        if (entity.velocity) {
+          entity.transform.position.x += entity.velocity.x * dt;
+          entity.transform.position.y += entity.velocity.y * dt;
+          entity.transform.position.z += entity.velocity.z * dt;
+        }
+      }
+    }
+    /** Diagnostics for the debug hook / headless harness. */
+    debugStats() {
+      if (!this.merged) this.rebuildMerged();
+      return {
+        districts: this.districts.size,
+        centerIp: this.centerIp,
+        entities: this.merged.entities.length,
+        lights: this.merged.lights.length
+      };
+    }
+    structurallyDirty() {
+      return this.dirty;
+    }
+    acknowledgeStructuralChange() {
+      this.dirty = false;
+    }
+  };
+
+  // src/scene/HowmStreamProvider.ts
+  var HowmStreamProvider = class {
+    constructor(baseUrl) {
+      this.baseUrl = baseUrl;
+      this.ws = null;
+      this.entities = /* @__PURE__ */ new Map();
+      this.entityList = [];
+      this.lights = [];
+      this.environment = {
+        ambientLight: 0.3,
+        backgroundColor: { r: 20, g: 20, b: 40 }
+      };
+      this.camera = {
+        position: { x: 0, y: 8, z: 20 },
+        rotation: { x: -0.3, y: 0, z: 0 },
+        fov: 60,
+        near: 0.1,
+        far: 200
+      };
+      this.time = 0;
+      this.dirty = true;
+      this.connected = false;
+      /** Presence: anchor (current district seed) and peer avatar entities. */
+      this.spaceAnchor = null;
+      this.peers = [];
+      // Camera state to send to server
+      this.camX = 0;
+      this.camY = 8;
+      this.camZ = 0;
+      this.camDX = 0;
+      this.camDY = -0.3;
+      this.camDZ = -1;
+      this.sendTimer = 0;
+      this.sendInterval = 0.25;
+      // send camera 4 Hz
+      // Current district info from server
+      this.currentDistrictIp = "";
+      this.loadedDistrictCount = 0;
+      this.visibleEntityCount = 0;
+    }
+    async connect(ip) {
+      const wsUrl = this.baseUrl.replace("http", "ws") + `/district/${ip}/live`;
+      console.log("Connecting to", wsUrl);
+      return new Promise((resolve, reject) => {
+        this.ws = new WebSocket(wsUrl);
+        this.ws.onopen = () => {
+          console.log("WebSocket connected");
+          this.connected = true;
+          resolve();
+        };
+        this.ws.onmessage = (ev) => {
+          this.handleMessage(ev.data);
+        };
+        this.ws.onerror = (ev) => {
+          console.error("WebSocket error:", ev);
+          reject(new Error("WebSocket connection failed"));
+        };
+        this.ws.onclose = () => {
+          console.log("WebSocket closed");
+          this.connected = false;
+        };
+      });
+    }
+    handleMessage(data) {
+      let msg;
+      try {
+        msg = JSON.parse(data);
+      } catch {
+        return;
+      }
+      switch (msg.type) {
+        case "init":
+          if (msg.environment) this.environment = msg.environment;
+          if (msg.camera) {
+            this.camera = msg.camera;
+            this.camX = this.camera.position.x;
+            this.camY = this.camera.position.y;
+            this.camZ = this.camera.position.z;
+          }
+          if (msg.ground) {
+            this.entities.set("ground", msg.ground);
+            this.rebuildEntityList();
+          }
+          if (msg.ground_paint) this.groundPaint = msg.ground_paint;
+          break;
+        case "groundpaint":
+          if (msg.paint) {
+            this.groundPaint = msg.paint;
+            this.dirty = true;
+          }
+          break;
+        case "enter":
+          if (msg.entity?.id) {
+            this.entities.set(msg.entity.id, msg.entity);
+            this.rebuildEntityList();
+          }
+          break;
+        case "leave":
+          if (msg.id && this.entities.delete(msg.id)) {
+            this.rebuildEntityList();
+          }
+          break;
+        case "update":
+          if (msg.id) {
+            const e = this.entities.get(msg.id);
+            if (e) {
+              if (msg.position) {
+                e.transform.position.x = msg.position[0];
+                e.transform.position.y = msg.position[1];
+                e.transform.position.z = msg.position[2];
+              }
+              if (msg.emissive !== void 0) {
+                e.material.emissive = msg.emissive;
+              }
+            }
+          }
+          break;
+        case "lights":
+          if (msg.lights) {
+            this.lights = msg.lights;
+          }
+          break;
+        case "district":
+          if (msg.ip) this.currentDistrictIp = msg.ip;
+          if (msg.loaded_count !== void 0) this.loadedDistrictCount = msg.loaded_count;
+          if (msg.visible_count !== void 0) this.visibleEntityCount = msg.visible_count;
+          if (Array.isArray(msg.anchor)) {
+            this.spaceAnchor = { x: msg.anchor[0], y: 0, z: msg.anchor[1] };
+          }
+          break;
+      }
+    }
+    rebuildEntityList() {
+      this.entityList = Array.from(this.entities.values());
+      this.dirty = true;
+    }
+    /** Update camera position — called by CameraController. */
+    updateCamera(x, y, z, dx, dy, dz) {
+      this.camX = x;
+      this.camY = y;
+      this.camZ = z;
+      this.camDX = dx;
+      this.camDY = dy;
+      this.camDZ = dz;
+    }
+    // ── SceneProvider interface ──
+    // ── PeerHost (presence) ──────────────────────────────────────────────────
+    /** Canonical id of the district the player is currently in. */
+    presenceSpace() {
+      return canonSpace(this.currentDistrictIp);
+    }
+    /** The live path streams one district at a time, so only that space. */
+    presenceSpaces() {
+      return [this.presenceSpace()];
+    }
+    /** The server-provided anchor, for the current space only. */
+    anchorForSpace(space) {
+      return space === this.presenceSpace() ? this.spaceAnchor : null;
+    }
+    /** Live peer avatars merged into the streamed scene. */
+    setPeerEntities(entities) {
+      this.peers = entities;
+      this.dirty = true;
+    }
+    getScene() {
+      return {
+        time: this.time,
+        camera: this.camera,
+        environment: this.environment,
+        lights: this.lights,
+        entities: this.peers.length ? [...this.entityList, ...this.peers] : this.entityList,
+        groundPaint: this.groundPaint
+      };
+    }
+    update(dt) {
+      this.time += dt;
+      updateLightFlicker(this.lights, this.time);
+      this.sendTimer += dt;
+      if (this.sendTimer >= this.sendInterval && this.connected && this.ws) {
+        this.sendTimer = 0;
+        const msg = JSON.stringify({
+          type: "camera",
+          position: [this.camX, this.camY, this.camZ],
+          direction: [this.camDX, this.camDY, this.camDZ],
+          fov: this.camera.fov
+        });
+        this.ws.send(msg);
+      }
+    }
+    structurallyDirty() {
+      return this.dirty;
+    }
+    acknowledgeStructuralChange() {
+      this.dirty = false;
+    }
+    disconnect() {
+      this.ws?.close();
+      this.ws = null;
+      this.connected = false;
+    }
+  };
+
+  // src/renderer/FrameBuffer.ts
+  var FrameBuffer = class {
+    constructor(width, height) {
+      this.width = width;
+      this.height = height;
+      const size = width * height;
+      this.chars = new Uint32Array(size);
+      this.colorR = new Uint8Array(size);
+      this.colorG = new Uint8Array(size);
+      this.colorB = new Uint8Array(size);
+      this.bgR = new Uint8Array(size);
+      this.bgG = new Uint8Array(size);
+      this.bgB = new Uint8Array(size);
+      this.brightness = new Float32Array(size);
+      this.depth = new Float32Array(size);
+      this.entityIndex = new Int16Array(size);
+      this.dirty = new Uint8Array(size);
+      this.clear();
+    }
+    clear() {
+      this.chars.fill(32);
+      this.colorR.fill(0);
+      this.colorG.fill(0);
+      this.colorB.fill(0);
+      this.bgR.fill(0);
+      this.bgG.fill(0);
+      this.bgB.fill(0);
+      this.brightness.fill(0);
+      this.depth.fill(0);
+      this.entityIndex.fill(-1);
+      this.dirty.fill(1);
+    }
+    set(x, y, char, r, g, b, brightness) {
+      const idx = y * this.width + x;
+      let changed = false;
+      if (this.chars[idx] !== char) {
+        this.chars[idx] = char;
+        changed = true;
+      }
+      if (this.colorR[idx] !== r) {
+        this.colorR[idx] = r;
+        changed = true;
+      }
+      if (this.colorG[idx] !== g) {
+        this.colorG[idx] = g;
+        changed = true;
+      }
+      if (this.colorB[idx] !== b) {
+        this.colorB[idx] = b;
+        changed = true;
+      }
+      if (this.brightness[idx] !== brightness) {
+        this.brightness[idx] = brightness;
+        changed = true;
+      }
+      if (changed) this.dirty[idx] = 1;
+    }
+    /** Set background colour for a cell (atmosphere, emission bleed). */
+    setBg(x, y, r, g, b) {
+      const idx = y * this.width + x;
+      this.bgR[idx] = r;
+      this.bgG[idx] = g;
+      this.bgB[idx] = b;
+      this.dirty[idx] = 1;
+    }
+    /** Set depth and entity index for a cell (used by post-processing). */
+    setMeta(x, y, dist, entIdx) {
+      const idx = y * this.width + x;
+      this.depth[idx] = dist;
+      this.entityIndex[idx] = entIdx;
+    }
+    get(x, y) {
+      const idx = y * this.width + x;
+      return {
+        char: String.fromCodePoint(this.chars[idx]),
+        r: this.colorR[idx],
+        g: this.colorG[idx],
+        b: this.colorB[idx],
+        brightness: this.brightness[idx]
+      };
+    }
+    isDirty(x, y) {
+      return this.dirty[y * this.width + x] === 1;
+    }
+    clearDirtyFlags() {
+      this.dirty.fill(0);
+    }
+    resize(newWidth, newHeight) {
+      this.width = newWidth;
+      this.height = newHeight;
+      const size = newWidth * newHeight;
+      this.chars = new Uint32Array(size);
+      this.colorR = new Uint8Array(size);
+      this.colorG = new Uint8Array(size);
+      this.colorB = new Uint8Array(size);
+      this.bgR = new Uint8Array(size);
+      this.bgG = new Uint8Array(size);
+      this.bgB = new Uint8Array(size);
+      this.brightness = new Float32Array(size);
+      this.depth = new Float32Array(size);
+      this.entityIndex = new Int16Array(size);
+      this.dirty = new Uint8Array(size);
+      this.clear();
+    }
+  };
+
+  // src/renderer/Presenter.ts
+  var FONT_SIZE = 14;
+  var FONT = `${FONT_SIZE}px "Courier New", Consolas, monospace`;
+  var Presenter = class {
+    constructor(canvas) {
+      this.canvas = canvas;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) throw new Error("Could not get 2D canvas context");
+      this.ctx = ctx;
+      ctx.font = FONT;
+      this.cellWidth = Math.ceil(ctx.measureText("M").width);
+      this.cellHeight = FONT_SIZE + 4;
+      this.cols = Math.floor(canvas.width / this.cellWidth);
+      this.rows = Math.floor(canvas.height / this.cellHeight);
+      ctx.font = FONT;
+      ctx.textBaseline = "top";
+    }
+    present(frameBuffer) {
+      const { ctx, cellWidth, cellHeight } = this;
+      const { width, height } = frameBuffer;
+      ctx.fillStyle = "#000000";
+      ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+      ctx.font = FONT;
+      ctx.textBaseline = "top";
+      for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+          const idx = y * width + x;
+          const cp = frameBuffer.chars[idx];
+          const bgr = frameBuffer.bgR[idx];
+          const bgg = frameBuffer.bgG[idx];
+          const bgb = frameBuffer.bgB[idx];
+          if (bgr > 0 || bgg > 0 || bgb > 0) {
+            ctx.fillStyle = `rgb(${bgr},${bgg},${bgb})`;
+            ctx.fillRect(x * cellWidth, y * cellHeight, cellWidth, cellHeight);
+          }
+          if (cp === 32) continue;
+          const r = frameBuffer.colorR[idx];
+          const g = frameBuffer.colorG[idx];
+          const b = frameBuffer.colorB[idx];
+          if (r === 0 && g === 0 && b === 0) continue;
+          ctx.fillStyle = `rgb(${r},${g},${b})`;
+          ctx.fillText(String.fromCodePoint(cp), x * cellWidth, y * cellHeight);
+        }
+      }
+    }
+  };
+
+  // src/scene/GroundPaint.ts
+  var CODE_ROAD = 5;
+  var GROUND_COLOR = {
+    0: { r: 78, g: 120, b: 58 },
+    // grass — green
+    1: { r: 66, g: 142, b: 52 },
+    // park — vivid green
+    2: { r: 48, g: 104, b: 172 },
+    // water — blue
+    3: { r: 150, g: 122, b: 78 },
+    // riverbank — tan
+    4: { r: 142, g: 138, b: 128 },
+    // plaza — light grey
+    5: { r: 64, g: 64, b: 72 }
+    // road — dark asphalt
+  };
+  function clamp2(v) {
+    return v < 0 ? 0 : v > 255 ? 255 : v;
+  }
+  function hash2(a, b) {
+    let h = a * 73856093 ^ b * 19349663;
+    h = (h ^ h >>> 13) >>> 0;
+    return h % 1e3 / 1e3;
+  }
+  function base64ToBytes(b64) {
+    const bin = atob(b64);
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  }
+  var GroundPaintSampler = class {
+    constructor(paint) {
+      this.paint = paint;
+      this.bytes = base64ToBytes(paint.codes);
+    }
+    /** Zone code at world (x, z), or -1 if outside the painted region. */
+    codeAt(x, z) {
+      const { ox, oz, size, res } = this.paint;
+      const u = (x - ox) / size;
+      const v = (z - oz) / size;
+      if (u < 0 || u >= 1 || v < 0 || v >= 1) return -1;
+      const i = Math.min(res - 1, u * res | 0);
+      const j = Math.min(res - 1, v * res | 0);
+      return this.bytes[j * res + i];
+    }
+    /**
+     * Ground colour at world (x, z): the zone/road colour, with a subtle per-tile
+     * variation so the ground is not a dead flat fill. Outside the painted region
+     * (-1) falls back to grass. `base` is unused now but kept for callers.
+     */
+    colorAt(x, z, _base) {
+      let code = this.codeAt(x, z);
+      if (code < 0) code = 0;
+      const c = GROUND_COLOR[code] ?? GROUND_COLOR[0];
+      const amp = code === CODE_ROAD ? 5 : 13;
+      const n = (hash2(Math.floor(x * 0.5), Math.floor(z * 0.5)) - 0.5) * amp;
+      return { r: clamp2(c.r + n), g: clamp2(c.g + n), b: clamp2(c.b + n) };
+    }
+  };
+
+  // src/core/vec3.ts
+  function add(a, b) {
+    return { x: a.x + b.x, y: a.y + b.y, z: a.z + b.z };
+  }
+  function sub(a, b) {
+    return { x: a.x - b.x, y: a.y - b.y, z: a.z - b.z };
+  }
+  function mul(v, scalar) {
+    return { x: v.x * scalar, y: v.y * scalar, z: v.z * scalar };
+  }
+  function dot(a, b) {
+    return a.x * b.x + a.y * b.y + a.z * b.z;
+  }
+  function length(v) {
+    return Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+  }
+  function normalize(v) {
+    const len = length(v);
+    if (len === 0) return { x: 0, y: 0, z: 0 };
+    return { x: v.x / len, y: v.y / len, z: v.z / len };
+  }
+
+  // src/renderer/sdf.ts
+  function sdSphere(p, radius) {
+    return length(p) - radius;
+  }
+  function sdBox(p, size) {
+    const d = {
+      x: Math.abs(p.x) - size.x / 2,
+      y: Math.abs(p.y) - size.y / 2,
+      z: Math.abs(p.z) - size.z / 2
+    };
+    const outside = length({
+      x: Math.max(d.x, 0),
+      y: Math.max(d.y, 0),
+      z: Math.max(d.z, 0)
+    });
+    const inside = Math.min(Math.max(d.x, Math.max(d.y, d.z)), 0);
+    return outside + inside;
+  }
+  function sdPlane(p, normal) {
+    return dot(p, normalize(normal));
+  }
+  function sdCylinder(p, radius, height) {
+    const d2 = Math.sqrt(p.x * p.x + p.z * p.z) - radius;
+    const d1 = Math.abs(p.y) - height / 2;
+    const outside = length({ x: Math.max(d2, 0), y: Math.max(d1, 0), z: 0 });
+    const inside = Math.min(Math.max(d2, d1), 0);
+    return outside + inside;
+  }
+  function evaluateSDF(p, geometry) {
+    switch (geometry.type) {
+      case "sphere":
+        return sdSphere(p, geometry.radius);
+      case "box":
+        return sdBox(p, geometry.size);
+      case "plane":
+        return sdPlane(p, geometry.normal);
+      case "cylinder":
+        return sdCylinder(p, geometry.radius, geometry.height);
+      default:
+        return Infinity;
+    }
+  }
+  function applyDisplacement(p, baseDist, disp) {
+    if (disp.octaves <= 0 || disp.amplitude <= 0) return baseDist;
+    if (baseDist > disp.amplitude * 2) return baseDist;
+    let noiseVal = 0;
+    let freq = disp.frequency;
+    let amp = disp.amplitude;
+    for (let o = 0; o < disp.octaves; o++) {
+      noiseVal += simplex3(
+        p.x * freq + disp.seed * 1e-3,
+        p.y * freq + disp.seed * 13e-4,
+        p.z * freq + disp.seed * 17e-4
+      ) * amp;
+      freq *= 2;
+      amp *= 0.5;
+    }
+    return baseDist + noiseVal;
+  }
+  var perm = new Uint8Array(512);
+  var p0 = [
+    151,
+    160,
+    137,
+    91,
+    90,
+    15,
+    131,
+    13,
+    201,
+    95,
+    96,
+    53,
+    194,
+    233,
+    7,
+    225,
+    140,
+    36,
+    103,
+    30,
+    69,
+    142,
+    8,
+    99,
+    37,
+    240,
+    21,
+    10,
+    23,
+    190,
+    6,
+    148,
+    247,
+    120,
+    234,
+    75,
+    0,
+    26,
+    197,
+    62,
+    94,
+    252,
+    219,
+    203,
+    117,
+    35,
+    11,
+    32,
+    57,
+    177,
+    33,
+    88,
+    237,
+    149,
+    56,
+    87,
+    174,
+    20,
+    125,
+    136,
+    171,
+    168,
+    68,
+    175,
+    74,
+    165,
+    71,
+    134,
+    139,
+    48,
+    27,
+    166,
+    77,
+    146,
+    158,
+    231,
+    83,
+    111,
+    229,
+    122,
+    60,
+    211,
+    133,
+    230,
+    220,
+    105,
+    92,
+    41,
+    55,
+    46,
+    245,
+    40,
+    244,
+    102,
+    143,
+    54,
+    65,
+    25,
+    63,
+    161,
+    1,
+    216,
+    80,
+    73,
+    209,
+    76,
+    132,
+    187,
+    208,
+    89,
+    18,
+    169,
+    200,
+    196,
+    135,
+    130,
+    116,
+    188,
+    159,
+    86,
+    164,
+    100,
+    109,
+    198,
+    173,
+    186,
+    3,
+    64,
+    52,
+    217,
+    226,
+    250,
+    124,
+    123,
+    5,
+    202,
+    38,
+    147,
+    118,
+    126,
+    255,
+    82,
+    85,
+    212,
+    207,
+    206,
+    59,
+    227,
+    47,
+    16,
+    58,
+    17,
+    182,
+    189,
+    28,
+    42,
+    223,
+    183,
+    170,
+    213,
+    119,
+    248,
+    152,
+    2,
+    44,
+    154,
+    163,
+    70,
+    221,
+    153,
+    101,
+    155,
+    167,
+    43,
+    172,
+    9,
+    129,
+    22,
+    39,
+    253,
+    19,
+    98,
+    108,
+    110,
+    79,
+    113,
+    224,
+    232,
+    178,
+    185,
+    112,
+    104,
+    218,
+    246,
+    97,
+    228,
+    251,
+    34,
+    242,
+    193,
+    238,
+    210,
+    144,
+    12,
+    191,
+    179,
+    162,
+    241,
+    81,
+    51,
+    145,
+    235,
+    249,
+    14,
+    239,
+    107,
+    49,
+    192,
+    214,
+    31,
+    181,
+    199,
+    106,
+    157,
+    184,
+    84,
+    204,
+    176,
+    115,
+    121,
+    50,
+    45,
+    127,
+    4,
+    150,
+    254,
+    138,
+    236,
+    205,
+    93,
+    222,
+    114,
+    67,
+    29,
+    24,
+    72,
+    243,
+    141,
+    128,
+    195,
+    78,
+    66,
+    215,
+    61,
+    156,
+    180
+  ];
+  for (let i = 0; i < 256; i++) {
+    perm[i] = p0[i];
+    perm[i + 256] = p0[i];
+  }
+  var grad3 = [
+    [1, 1, 0],
+    [-1, 1, 0],
+    [1, -1, 0],
+    [-1, -1, 0],
+    [1, 0, 1],
+    [-1, 0, 1],
+    [1, 0, -1],
+    [-1, 0, -1],
+    [0, 1, 1],
+    [0, -1, 1],
+    [0, 1, -1],
+    [0, -1, -1]
+  ];
+  var F3 = 1 / 3;
+  var G3 = 1 / 6;
+  function simplex3(x, y, z) {
+    const s = (x + y + z) * F3;
+    const i = Math.floor(x + s);
+    const j = Math.floor(y + s);
+    const k = Math.floor(z + s);
+    const t = (i + j + k) * G3;
+    const X0 = i - t, Y0 = j - t, Z0 = k - t;
+    const x0 = x - X0, y0 = y - Y0, z0 = z - Z0;
+    let i1, j1, k1;
+    let i2, j2, k2;
+    if (x0 >= y0) {
+      if (y0 >= z0) {
+        i1 = 1;
+        j1 = 0;
+        k1 = 0;
+        i2 = 1;
+        j2 = 1;
+        k2 = 0;
+      } else if (x0 >= z0) {
+        i1 = 1;
+        j1 = 0;
+        k1 = 0;
+        i2 = 1;
+        j2 = 0;
+        k2 = 1;
+      } else {
+        i1 = 0;
+        j1 = 0;
+        k1 = 1;
+        i2 = 1;
+        j2 = 0;
+        k2 = 1;
+      }
+    } else {
+      if (y0 < z0) {
+        i1 = 0;
+        j1 = 0;
+        k1 = 1;
+        i2 = 0;
+        j2 = 1;
+        k2 = 1;
+      } else if (x0 < z0) {
+        i1 = 0;
+        j1 = 1;
+        k1 = 0;
+        i2 = 0;
+        j2 = 1;
+        k2 = 1;
+      } else {
+        i1 = 0;
+        j1 = 1;
+        k1 = 0;
+        i2 = 1;
+        j2 = 1;
+        k2 = 0;
+      }
+    }
+    const x1 = x0 - i1 + G3, y1 = y0 - j1 + G3, z1 = z0 - k1 + G3;
+    const x2 = x0 - i2 + 2 * G3, y2 = y0 - j2 + 2 * G3, z2 = z0 - k2 + 2 * G3;
+    const x3 = x0 - 1 + 3 * G3, y3 = y0 - 1 + 3 * G3, z3 = z0 - 1 + 3 * G3;
+    const ii = i & 255, jj = j & 255, kk = k & 255;
+    let n = 0;
+    let t0 = 0.6 - x0 * x0 - y0 * y0 - z0 * z0;
+    if (t0 > 0) {
+      t0 *= t0;
+      const gi = perm[ii + perm[jj + perm[kk]]] % 12;
+      n += t0 * t0 * (grad3[gi][0] * x0 + grad3[gi][1] * y0 + grad3[gi][2] * z0);
+    }
+    let t1 = 0.6 - x1 * x1 - y1 * y1 - z1 * z1;
+    if (t1 > 0) {
+      t1 *= t1;
+      const gi = perm[ii + i1 + perm[jj + j1 + perm[kk + k1]]] % 12;
+      n += t1 * t1 * (grad3[gi][0] * x1 + grad3[gi][1] * y1 + grad3[gi][2] * z1);
+    }
+    let t2 = 0.6 - x2 * x2 - y2 * y2 - z2 * z2;
+    if (t2 > 0) {
+      t2 *= t2;
+      const gi = perm[ii + i2 + perm[jj + j2 + perm[kk + k2]]] % 12;
+      n += t2 * t2 * (grad3[gi][0] * x2 + grad3[gi][1] * y2 + grad3[gi][2] * z2);
+    }
+    let t3 = 0.6 - x3 * x3 - y3 * y3 - z3 * z3;
+    if (t3 > 0) {
+      t3 *= t3;
+      const gi = perm[ii + 1 + perm[jj + 1 + perm[kk + 1]]] % 12;
+      n += t3 * t3 * (grad3[gi][0] * x3 + grad3[gi][1] * y3 + grad3[gi][2] * z3);
+    }
+    return 32 * n;
+  }
+
+  // src/renderer/SpatialGrid.ts
+  function computeAABB(entity) {
+    const pos = entity.transform.position;
+    const scale = entity.transform.scale;
+    const geo = entity.geometry;
+    switch (geo.type) {
+      case "sphere": {
+        const r = geo.radius * Math.max(scale.x, scale.y, scale.z);
+        return { min: sub(pos, { x: r, y: r, z: r }), max: add(pos, { x: r, y: r, z: r }) };
+      }
+      case "box": {
+        const half = { x: geo.size.x / 2 * scale.x, y: geo.size.y / 2 * scale.y, z: geo.size.z / 2 * scale.z };
+        return { min: sub(pos, half), max: add(pos, half) };
+      }
+      case "cylinder": {
+        const r = geo.radius * Math.max(scale.x, scale.z);
+        const h = geo.height / 2 * scale.y;
+        return { min: sub(pos, { x: r, y: h, z: r }), max: add(pos, { x: r, y: h, z: r }) };
+      }
+      case "plane":
+      case "sdf":
+      default:
+        return { min: { x: -1e9, y: -1e9, z: -1e9 }, max: { x: 1e9, y: 1e9, z: 1e9 } };
+    }
+  }
+  function hashCell(cx, cy, cz) {
+    return (cx * 73856093 ^ cy * 19349663 ^ cz * 83492791) >>> 0;
+  }
+  var INFINITE_TYPES = /* @__PURE__ */ new Set(["plane", "sdf"]);
+  var SpatialGrid = class {
+    constructor(entities, cellSize = 10) {
+      this.cellSize = cellSize;
+      this.cells = /* @__PURE__ */ new Map();
+      this.globalIndices = [];
+      this.entities = entities;
+      this.rebuild();
+    }
+    rebuild() {
+      this.cells.clear();
+      this.globalIndices = [];
+      for (let i = 0; i < this.entities.length; i++) {
+        const entity = this.entities[i];
+        if (INFINITE_TYPES.has(entity.geometry.type)) {
+          this.globalIndices.push(i);
+          continue;
+        }
+        const aabb = computeAABB(entity);
+        const cs = this.cellSize;
+        const minCX = Math.floor(aabb.min.x / cs);
+        const minCY = Math.floor(aabb.min.y / cs);
+        const minCZ = Math.floor(aabb.min.z / cs);
+        const maxCX = Math.floor(aabb.max.x / cs);
+        const maxCY = Math.floor(aabb.max.y / cs);
+        const maxCZ = Math.floor(aabb.max.z / cs);
+        const cellSpan = (maxCX - minCX + 1) * (maxCY - minCY + 1) * (maxCZ - minCZ + 1);
+        if (cellSpan > 4096) {
+          this.globalIndices.push(i);
+          continue;
+        }
+        for (let cx = minCX; cx <= maxCX; cx++) {
+          for (let cy = minCY; cy <= maxCY; cy++) {
+            for (let cz = minCZ; cz <= maxCZ; cz++) {
+              const h = hashCell(cx, cy, cz);
+              let arr = this.cells.get(h);
+              if (!arr) {
+                arr = [];
+                this.cells.set(h, arr);
+              }
+              if (!arr.includes(i)) arr.push(i);
+            }
+          }
+        }
+      }
+    }
+    updateEntities(entities) {
+      this.entities = entities;
+      this.rebuild();
+    }
+    /** Returns candidate entity indices for a given world-space point. */
+    getCandidates(point) {
+      const cs = this.cellSize;
+      const cx = Math.floor(point.x / cs);
+      const cy = Math.floor(point.y / cs);
+      const cz = Math.floor(point.z / cs);
+      const h = hashCell(cx, cy, cz);
+      const cell = this.cells.get(h) ?? [];
+      return [...this.globalIndices, ...cell];
+    }
+    get entityList() {
+      return this.entities;
+    }
+  };
+
+  // src/renderer/World.ts
+  function worldToLocal(point, transform) {
+    const translated = sub(point, transform.position);
+    const rotZ = {
+      x: translated.x * Math.cos(-transform.rotation.z) - translated.y * Math.sin(-transform.rotation.z),
+      y: translated.x * Math.sin(-transform.rotation.z) + translated.y * Math.cos(-transform.rotation.z),
+      z: translated.z
+    };
+    const rotX = {
+      x: rotZ.x,
+      y: rotZ.y * Math.cos(-transform.rotation.x) - rotZ.z * Math.sin(-transform.rotation.x),
+      z: rotZ.y * Math.sin(-transform.rotation.x) + rotZ.z * Math.cos(-transform.rotation.x)
+    };
+    const rotY = {
+      x: rotX.x * Math.cos(-transform.rotation.y) + rotX.z * Math.sin(-transform.rotation.y),
+      y: rotX.y,
+      z: -rotX.x * Math.sin(-transform.rotation.y) + rotX.z * Math.cos(-transform.rotation.y)
+    };
+    return {
+      x: rotY.x / transform.scale.x,
+      y: rotY.y / transform.scale.y,
+      z: rotY.z / transform.scale.z
+    };
+  }
+  var EMPTY_MATERIAL = { baseColor: { r: 0, g: 0, b: 0 }, brightness: 0, roughness: 0, reflectivity: 0 };
+  var World = class {
+    constructor(entities) {
+      this.entities = entities;
+      this.grid = new SpatialGrid(entities);
+    }
+    /** Call after entities have moved/been added. Rebuilds the spatial grid. */
+    updateEntities(entities) {
+      this.entities = entities;
+      this.grid.updateEntities(entities);
+    }
+    sample(point) {
+      let closestDist = Infinity;
+      let closestMaterial = EMPTY_MATERIAL;
+      let closestId = "";
+      let closestIndex = -1;
+      const candidates = this.grid.getCandidates(point);
+      for (const i of candidates) {
+        const entity = this.entities[i];
+        const localPoint = worldToLocal(point, entity.transform);
+        let dist = evaluateSDF(localPoint, entity.geometry);
+        if (entity.material.displacement) {
+          dist = applyDisplacement(localPoint, dist, entity.material.displacement);
+        }
+        const scaleFactor = Math.min(
+          entity.transform.scale.x,
+          entity.transform.scale.y,
+          entity.transform.scale.z
+        );
+        dist *= scaleFactor;
+        if (dist < closestDist) {
+          closestDist = dist;
+          closestMaterial = entity.material;
+          closestId = entity.id;
+          closestIndex = i;
+        }
+      }
+      return { distance: closestDist, material: closestMaterial, entityId: closestId, entityIndex: closestIndex };
+    }
+  };
+
+  // src/renderer/Camera.ts
+  var CHAR_ASPECT_RATIO = 0.5;
+  function createRay(cam, x, y, screenWidth, screenHeight) {
+    const fovRad = cam.fov * Math.PI / 180;
+    const tanHalfFov = Math.tan(fovRad / 2);
+    const aspectRatio = screenWidth / screenHeight * CHAR_ASPECT_RATIO;
+    const ndcX = (2 * (x + 0.5) / screenWidth - 1) * aspectRatio * tanHalfFov;
+    const ndcY = (1 - 2 * (y + 0.5) / screenHeight) * tanHalfFov;
+    const pitch = cam.rotation.x;
+    const yaw = cam.rotation.y;
+    const cp = Math.cos(pitch), sp = Math.sin(pitch);
+    const cy = Math.cos(yaw), sy = Math.sin(yaw);
+    const rightX = cy, rightY = 0, rightZ = -sy;
+    const upX = sy * sp, upY = cp, upZ = cy * sp;
+    const fwdX = -sy * cp, fwdY = sp, fwdZ = -cy * cp;
+    const dirWorld = normalize({
+      x: ndcX * rightX + ndcY * upX + fwdX,
+      y: ndcX * rightY + ndcY * upY + fwdY,
+      z: ndcX * rightZ + ndcY * upZ + fwdZ
+    });
+    return { origin: cam.position, direction: dirWorld };
+  }
+
+  // src/renderer/Raymarch.ts
+  var DEFAULT_MAX_STEPS = 80;
+  var HIT_THRESHOLD = 0.01;
+  var DEFAULT_MAX_DISTANCE = 200;
+  var NORMAL_EPSILON = 1e-3;
+  function computeNormal(pos, world) {
+    const eps = NORMAL_EPSILON;
+    const nx = world.sample({ x: pos.x + eps, y: pos.y, z: pos.z }).distance - world.sample({ x: pos.x - eps, y: pos.y, z: pos.z }).distance;
+    const ny = world.sample({ x: pos.x, y: pos.y + eps, z: pos.z }).distance - world.sample({ x: pos.x, y: pos.y - eps, z: pos.z }).distance;
+    const nz = world.sample({ x: pos.x, y: pos.y, z: pos.z + eps }).distance - world.sample({ x: pos.x, y: pos.y, z: pos.z - eps }).distance;
+    return normalize({ x: nx, y: ny, z: nz });
+  }
+  function raymarch(ray, world, maxSteps = DEFAULT_MAX_STEPS, maxDistance = DEFAULT_MAX_DISTANCE) {
+    let t = 0;
+    for (let i = 0; i < maxSteps; i++) {
+      const pos = add(ray.origin, mul(ray.direction, t));
+      const sample = world.sample(pos);
+      const minStep = 2e-3 + t * 1e-3;
+      if (sample.distance < HIT_THRESHOLD) {
+        const normal = computeNormal(pos, world);
+        return {
+          hit: true,
+          position: pos,
+          normal,
+          material: sample.material,
+          distance: t,
+          entityIndex: sample.entityIndex
+        };
+      }
+      t += Math.max(sample.distance, minStep);
+      if (t > maxDistance) break;
+    }
+    return { hit: false };
+  }
+
+  // src/renderer/Lighting.ts
+  function clamp3(v, lo, hi) {
+    return Math.max(lo, Math.min(hi, v));
+  }
+  var MAX_LIGHTS_PER_PIXEL = 8;
+  function computeLighting(hitPos, normal, material, scene) {
+    let totalR = 0;
+    let totalG = 0;
+    let totalB = 0;
+    let pointLightCount = 0;
+    for (const light of scene.lights) {
+      if (light.type !== "directional" && pointLightCount >= MAX_LIGHTS_PER_PIXEL) continue;
+      let contribution = 0;
+      if (light.type === "point") {
+        if (!light.position) continue;
+        const toLight = sub(light.position, hitPos);
+        const dist = length(toLight);
+        if (dist === 0) continue;
+        const dir = normalize(toLight);
+        const ndotl = Math.max(0, dot(normal, dir));
+        let attenuation;
+        if (light.falloff !== void 0) {
+          attenuation = light.intensity / Math.pow(dist, light.falloff);
+        } else {
+          attenuation = light.intensity / (dist * dist);
+          if (light.range !== void 0) {
+            if (dist > light.range) {
+              attenuation = 0;
+            } else {
+              const rangeFactor = 1 - (dist / light.range) ** 2;
+              attenuation *= Math.max(0, rangeFactor);
+            }
+          }
+        }
+        contribution = ndotl * attenuation;
+      } else if (light.type === "directional") {
+        if (!light.direction) continue;
+        const dir = normalize({ x: -light.direction.x, y: -light.direction.y, z: -light.direction.z });
+        const ndotl = Math.max(0, dot(normal, dir));
+        contribution = ndotl * light.intensity;
+      } else if (light.type === "spot") {
+        if (!light.position || !light.direction) continue;
+        const toLight = sub(light.position, hitPos);
+        const dist = length(toLight);
+        if (dist === 0) continue;
+        const dir = normalize(toLight);
+        const ndotl = Math.max(0, dot(normal, dir));
+        const spotDir = normalize(light.direction);
+        const spotAngle = dot({ x: -dir.x, y: -dir.y, z: -dir.z }, spotDir);
+        const cosCone = Math.cos(30 * Math.PI / 180);
+        if (spotAngle < cosCone) {
+          contribution = 0;
+        } else {
+          contribution = ndotl * light.intensity / (dist * dist);
+        }
+      }
+      if (light.type !== "directional") pointLightCount++;
+      totalR += contribution * (light.color.r / 255);
+      totalG += contribution * (light.color.g / 255);
+      totalB += contribution * (light.color.b / 255);
+    }
+    if (material.emissive && material.emissive > 0) {
+      totalR += material.emissive;
+      totalG += material.emissive;
+      totalB += material.emissive;
+    }
+    totalR += scene.environment.ambientLight;
+    totalG += scene.environment.ambientLight;
+    totalB += scene.environment.ambientLight;
+    const finalR = clamp3(Math.floor(totalR * material.baseColor.r), 0, 255);
+    const finalG = clamp3(Math.floor(totalG * material.baseColor.g), 0, 255);
+    const finalB = clamp3(Math.floor(totalB * material.baseColor.b), 0, 255);
+    const brightness = clamp3((totalR + totalG + totalB) / 3, 0, 1);
+    return { brightness, r: finalR, g: finalG, b: finalB };
+  }
+
+  // src/renderer/TemporalCache.ts
+  var TemporalCache = class {
+    constructor(width, height) {
+      this.width = width;
+      this.height = height;
+      const size = width * height;
+      this.depth = new Float32Array(size);
+      this.entityIndex = new Int16Array(size).fill(-1);
+      this.valid = new Uint8Array(size);
+      this.hitPosX = new Float32Array(size);
+      this.hitPosY = new Float32Array(size);
+      this.hitPosZ = new Float32Array(size);
+      this.normalX = new Float32Array(size);
+      this.normalY = new Float32Array(size);
+      this.normalZ = new Float32Array(size);
+      this.prevCameraPos = { x: 0, y: 0, z: 0 };
+      this.prevCameraRot = { x: 0, y: 0, z: 0 };
+    }
+    invalidateAll() {
+      this.valid.fill(0);
+    }
+    resize(newWidth, newHeight) {
+      this.width = newWidth;
+      this.height = newHeight;
+      const size = newWidth * newHeight;
+      this.depth = new Float32Array(size);
+      this.entityIndex = new Int16Array(size).fill(-1);
+      this.valid = new Uint8Array(size);
+      this.hitPosX = new Float32Array(size);
+      this.hitPosY = new Float32Array(size);
+      this.hitPosZ = new Float32Array(size);
+      this.normalX = new Float32Array(size);
+      this.normalY = new Float32Array(size);
+      this.normalZ = new Float32Array(size);
+    }
+    store(x, y, depth, entityIdx, hitPos, normal) {
+      const idx = y * this.width + x;
+      this.depth[idx] = depth;
+      this.entityIndex[idx] = entityIdx;
+      this.hitPosX[idx] = hitPos.x;
+      this.hitPosY[idx] = hitPos.y;
+      this.hitPosZ[idx] = hitPos.z;
+      this.normalX[idx] = normal.x;
+      this.normalY[idx] = normal.y;
+      this.normalZ[idx] = normal.z;
+      this.valid[idx] = 1;
+    }
+    storeMiss(x, y) {
+      const idx = y * this.width + x;
+      this.entityIndex[idx] = -1;
+      this.valid[idx] = 1;
+    }
+    isValid(x, y) {
+      return this.valid[y * this.width + x] === 1;
+    }
+    getHitPos(x, y) {
+      const idx = y * this.width + x;
+      return { x: this.hitPosX[idx], y: this.hitPosY[idx], z: this.hitPosZ[idx] };
+    }
+    getNormal(x, y) {
+      const idx = y * this.width + x;
+      return { x: this.normalX[idx], y: this.normalY[idx], z: this.normalZ[idx] };
+    }
+    getEntityIndex(x, y) {
+      return this.entityIndex[y * this.width + x];
+    }
+    cameraChanged(camPos, camRot) {
+      const threshold = 1e-3;
+      const p = this.prevCameraPos;
+      const r = this.prevCameraRot;
+      return Math.abs(camPos.x - p.x) > threshold || Math.abs(camPos.y - p.y) > threshold || Math.abs(camPos.z - p.z) > threshold || Math.abs(camRot.x - r.x) > threshold || Math.abs(camRot.y - r.y) > threshold || Math.abs(camRot.z - r.z) > threshold;
+    }
+    updateCamera(camPos, camRot) {
+      this.prevCameraPos = { ...camPos };
+      this.prevCameraRot = { ...camRot };
+    }
+  };
+
+  // src/renderer/AdaptiveQuality.ts
+  var FRAME_DEADLINE_MS = 12;
+  function getMaxSteps(x, y, screenW, screenH) {
+    const cx = (x / screenW - 0.5) * 2;
+    const cy = (y / screenH - 0.5) * 2;
+    const distFromCenter = Math.sqrt(cx * cx + cy * cy) / Math.SQRT2;
+    const minSteps = 24;
+    const maxSteps = 64;
+    return Math.floor(maxSteps - distFromCenter * (maxSteps - minSteps));
+  }
+  var AdaptiveQuality = class {
+    constructor(targetFPS = 30) {
+      this.minScale = 0.5;
+      this.maxScale = 1;
+      this.targetFrameTime = 1e3 / targetFPS;
+      this.currentScale = 1;
+    }
+    setTargetFPS(fps) {
+      this.targetFrameTime = 1e3 / fps;
+    }
+    adjust(lastFrameTime) {
+      if (lastFrameTime > this.targetFrameTime * 1.2) {
+        this.currentScale = Math.max(this.minScale, this.currentScale - 0.05);
+      } else if (lastFrameTime < this.targetFrameTime * 0.8) {
+        this.currentScale = Math.min(this.maxScale, this.currentScale + 0.02);
+      }
+      return this.currentScale;
+    }
+    get scale() {
+      return this.currentScale;
+    }
+    /**
+     * Upscale smallBuffer into fullBuffer using nearest-neighbor.
+     * Call after rendering into smallBuffer.
+     */
+    upscale(smallBuffer, fullBuffer) {
+      const scale = this.currentScale;
+      for (let y = 0; y < fullBuffer.height; y++) {
+        for (let x = 0; x < fullBuffer.width; x++) {
+          const srcX = Math.floor(x * scale);
+          const srcY = Math.floor(y * scale);
+          const cell = smallBuffer.get(srcX, srcY);
+          fullBuffer.set(x, y, cell.char.codePointAt(0), cell.r, cell.g, cell.b, cell.brightness);
+        }
+      }
+    }
+  };
+
+  // src/core/description.ts
+  function findTrait(desc, path) {
+    return desc.traits.find((t) => t.path === path);
+  }
+  function traitParam(desc, path, key) {
+    const t = findTrait(desc, path);
+    return t?.params ? t.params[key] : void 0;
+  }
+  function traitParamOr(desc, path, key, fallback) {
+    return traitParam(desc, path, key) ?? fallback;
+  }
+
+  // src/renderer/TraitController.ts
+  var EmissionController = class {
+    constructor(desc) {
+      this.path = "effect.emission";
+      this.burstIntensity = 0;
+      this.phase = 0;
+      this.type = findTrait(desc, "effect.emission.type")?.term ?? "none";
+      this.rhythm = findTrait(desc, "effect.emission.rhythm")?.term ?? "constant";
+      this.channel = findTrait(desc, "effect.emission.channel")?.term ?? "both";
+      const intensityTerm = findTrait(desc, "effect.emission.intensity")?.term ?? "faint";
+      this.baseIntensity = {
+        "overwhelming": 1,
+        "strong": 0.8,
+        "moderate": 0.5,
+        "subtle": 0.3,
+        "faint": 0.15
+      }[intensityTerm] ?? 0.2;
+      this.currentIntensity = this.baseIntensity;
+    }
+    tick(dt) {
+      this.phase += dt;
+      switch (this.rhythm) {
+        case "constant":
+          this.currentIntensity = this.baseIntensity;
+          break;
+        case "periodic":
+          this.currentIntensity = this.baseIntensity * (0.5 + 0.5 * Math.sin(this.phase * 2));
+          break;
+        case "sporadic":
+          this.currentIntensity = this.baseIntensity * Math.max(0, Math.sin(this.phase * 7.3) * Math.sin(this.phase * 3.1));
+          break;
+        case "reactive":
+          this.currentIntensity = this.burstIntensity;
+          break;
+      }
+      if (this.burstIntensity > 0) {
+        this.burstIntensity = Math.max(0, this.burstIntensity - dt * 3);
+      }
+    }
+    fireEvent(event) {
+      if (event === "burst" || event === "intensify") {
+        this.burstIntensity = 1;
+      }
+      if (event === "diminish") {
+        this.currentIntensity *= 0.3;
+      }
+    }
+    getValue(key) {
+      switch (key) {
+        case "intensity":
+          return this.currentIntensity + this.burstIntensity;
+        default:
+          return 0;
+      }
+    }
+    getState() {
+      return this.currentIntensity > 0.01 ? "active" : "idle";
+    }
+    getIntensity() {
+      return this.currentIntensity + this.burstIntensity;
+    }
+    getChannel() {
+      return this.channel;
+    }
+    getType() {
+      return this.type;
+    }
+  };
+  var CycleController = class {
+    constructor(desc) {
+      this.path = "behavior.cycle";
+      // withdraw, emerge, intensify, transform
+      this.active = true;
+      this.period = findTrait(desc, "behavior.cycle.period")?.term ?? "continuous";
+      this.response = findTrait(desc, "behavior.cycle.response")?.term ?? "none";
+    }
+    tick(dt) {
+      const now = Date.now();
+      const timeOfDay = now % 864e5 / 864e5;
+      const wasActive = this.active;
+      switch (this.period) {
+        case "diurnal":
+          this.active = timeOfDay > 0.25 && timeOfDay < 0.75;
+          break;
+        case "nocturnal":
+          this.active = timeOfDay < 0.25 || timeOfDay > 0.75;
+          break;
+        case "crepuscular":
+          this.active = timeOfDay > 0.22 && timeOfDay < 0.3 || timeOfDay > 0.72 && timeOfDay < 0.8;
+          break;
+        case "continuous":
+        default:
+          this.active = true;
+          break;
+      }
+      if (wasActive !== this.active) {
+        this.onStateChange?.(
+          wasActive ? "activate" : "deactivate",
+          this.active ? "activate" : "deactivate"
+        );
+      }
+    }
+    fireEvent(_event) {
+    }
+    getValue(key) {
+      if (key === "visibility") return this.active ? 1 : 0;
+      return 0;
+    }
+    getState() {
+      return this.active ? "active" : "idle";
+    }
+    isActive() {
+      return this.active;
+    }
+  };
+  var SurfaceController = class {
+    constructor(desc) {
+      this.path = "being.surface";
+      this.flashIntensity = 0;
+      this.phase = 0;
+      this.baseComplexity = traitParamOr(desc, "being.surface.texture", "complexity", 0.5);
+    }
+    tick(dt) {
+      this.phase += dt;
+      if (this.flashIntensity > 0) {
+        this.flashIntensity = Math.max(0, this.flashIntensity - dt * 4);
+      }
+    }
+    fireEvent(event) {
+      if (event === "flash") {
+        this.flashIntensity = 1;
+      }
+    }
+    getValue(key) {
+      switch (key) {
+        case "complexity":
+          return this.baseComplexity + Math.sin(this.phase * 0.5) * 0.05;
+        case "flash":
+          return this.flashIntensity;
+        default:
+          return 0;
+      }
+    }
+    getState() {
+      return this.flashIntensity > 0 ? "flash" : "normal";
+    }
+    getComplexity() {
+      return this.baseComplexity + Math.sin(this.phase * 0.5) * 0.05;
+    }
+  };
+  var MotionController = class {
+    constructor(desc) {
+      this.path = "behavior.motion";
+      this.state = "resting";
+      this.timer = 0;
+      // for oscillating
+      // Position tracking
+      this.baseX = 0;
+      this.baseY = 0;
+      this.baseZ = 0;
+      this.offsetX = 0;
+      this.offsetY = 0;
+      this.offsetZ = 0;
+      this.method = findTrait(desc, "behavior.motion.method")?.term ?? "anchored";
+      this.interval = traitParamOr(desc, "behavior.motion.method", "interval", 2);
+      this.variance = traitParamOr(desc, "behavior.motion.method", "variance", 0.2);
+      this.amplitude = traitParamOr(desc, "behavior.motion.method", "amplitude", 0.3);
+      this.nextInterval = this.interval;
+    }
+    /** Set the base position (from entity transform). */
+    setBasePosition(x, y, z) {
+      this.baseX = x;
+      this.baseY = y;
+      this.baseZ = z;
+    }
+    tick(dt) {
+      this.timer += dt;
+      switch (this.method) {
+        case "anchored":
+          break;
+        case "oscillating": {
+          const prevPhase = (this.timer - dt) / this.interval * Math.PI * 2 % (Math.PI * 2);
+          const curPhase = this.timer / this.interval * Math.PI * 2 % (Math.PI * 2);
+          this.offsetX = Math.sin(curPhase) * this.amplitude;
+          this.offsetZ = Math.cos(curPhase + 1.3) * this.amplitude * 0.5;
+          if (prevPhase < Math.PI / 2 && curPhase >= Math.PI / 2) {
+            this.onStateChange?.("moving", "peak");
+          }
+          break;
+        }
+        case "continuous":
+        case "drifting":
+          this.offsetX = Math.sin(this.timer / this.interval) * 2;
+          this.offsetZ = Math.cos(this.timer / this.interval * 0.7 + 0.5) * 2;
+          break;
+        case "discontinuous":
+          if (this.state === "resting" && this.timer > this.nextInterval) {
+            this.state = "departing";
+            this.onStateChange?.("resting", "departure");
+          }
+          if (this.state === "departing") {
+            const angle = Math.random() * Math.PI * 2;
+            const dist = 1 + Math.random() * 3;
+            this.offsetX = Math.cos(angle) * dist;
+            this.offsetZ = Math.sin(angle) * dist;
+            this.state = "arriving";
+            this.onStateChange?.("departing", "arrival");
+          }
+          if (this.state === "arriving" && this.timer > this.nextInterval + 0.1) {
+            this.state = "resting";
+            this.timer = 0;
+            this.nextInterval = this.interval + (Math.random() - 0.5) * 2 * this.variance * this.interval;
+          }
+          break;
+      }
+    }
+    fireEvent(event) {
+      if (event === "accelerate") {
+        this.interval *= 0.5;
+      }
+    }
+    getValue(key) {
+      switch (key) {
+        case "x":
+          return this.baseX + this.offsetX;
+        case "y":
+          return this.baseY + this.offsetY;
+        case "z":
+          return this.baseZ + this.offsetZ;
+        default:
+          return 0;
+      }
+    }
+    getState() {
+      return this.state;
+    }
+    getPosition() {
+      return {
+        x: this.baseX + this.offsetX,
+        y: this.baseY + this.offsetY,
+        z: this.baseZ + this.offsetZ
+      };
+    }
+    isAnchored() {
+      return this.method === "anchored";
+    }
+  };
+  var RestController = class {
+    constructor(desc) {
+      this.path = "behavior.rest";
+      this.resting = false;
+      this.timer = 0;
+      this.frequency = traitParamOr(desc, "behavior.rest.frequency", "value", 0.5);
+      this.posture = findTrait(desc, "behavior.rest.posture")?.term ?? "settled";
+      this.transition = findTrait(desc, "behavior.rest.transition")?.term ?? "gradual";
+    }
+    tick(dt) {
+      this.timer += dt;
+      const cyclePeriod = 10 / Math.max(0.1, this.frequency);
+      const phase = this.timer % cyclePeriod / cyclePeriod;
+      const wasResting = this.resting;
+      this.resting = phase < this.frequency;
+      if (wasResting !== this.resting) {
+        if (this.resting) {
+          this.onStateChange?.("active", "begin");
+        } else {
+          this.onStateChange?.("resting", "end");
+        }
+      }
+    }
+    fireEvent(event) {
+    }
+    getValue(key) {
+      if (key === "resting") return this.resting ? 1 : 0;
+      return 0;
+    }
+    getState() {
+      return this.resting ? "resting" : "active";
+    }
+    isResting() {
+      return this.resting;
+    }
+  };
+  var RegardController = class {
+    constructor(desc) {
+      this.path = "relation.regard";
+      this.activated = false;
+      this.timer = 0;
+      this.playerDistance = Infinity;
+      this.disposition = findTrait(desc, "relation.regard.disposition")?.term ?? "indifferent";
+      this.radius = traitParamOr(desc, "relation.regard.disposition", "radius", 8);
+      this.threshold = traitParamOr(desc, "relation.regard.disposition", "threshold", 2);
+    }
+    /** Call from the render loop with the camera position. */
+    updatePlayerDistance(dist) {
+      this.playerDistance = dist;
+    }
+    tick(dt) {
+      if (this.disposition === "indifferent") return;
+      const wasActivated = this.activated;
+      if (this.playerDistance < this.radius) {
+        this.timer += dt;
+        if (this.timer > this.threshold && !this.activated) {
+          this.activated = true;
+          this.onStateChange?.("idle", "activated");
+        }
+      } else {
+        if (this.activated) {
+          this.activated = false;
+          this.timer = 0;
+          this.onStateChange?.("activated", "deactivated");
+        }
+      }
+    }
+    fireEvent(_event) {
+    }
+    getValue(key) {
+      if (key === "activated") return this.activated ? 1 : 0;
+      if (key === "distance") return this.playerDistance;
+      return 0;
+    }
+    getState() {
+      return this.activated ? "activated" : "idle";
+    }
+    isActivated() {
+      return this.activated;
+    }
+  };
+  function createControllers(desc) {
+    const controllers = [];
+    const motionMethod = findTrait(desc, "behavior.motion.method");
+    if (motionMethod && motionMethod.term !== "anchored") {
+      controllers.push(new MotionController(desc));
+    }
+    if (findTrait(desc, "effect.emission.type")) {
+      controllers.push(new EmissionController(desc));
+    }
+    if (findTrait(desc, "behavior.cycle.period")) {
+      controllers.push(new CycleController(desc));
+    }
+    if (findTrait(desc, "behavior.rest.frequency")) {
+      controllers.push(new RestController(desc));
+    }
+    const regard = findTrait(desc, "relation.regard.disposition");
+    if (regard && regard.term !== "indifferent") {
+      controllers.push(new RegardController(desc));
+    }
+    controllers.push(new SurfaceController(desc));
+    return controllers;
+  }
+
+  // src/renderer/SequenceEngine.ts
+  var SequenceEngine = class {
+    constructor(sequences, controllers) {
+      this.pending = [];
+      this.controllers = new Map(controllers.map((c) => [c.path, c]));
+      this.rules = sequences.map((s) => ({
+        triggerPath: s.trigger.path,
+        triggerEvent: s.trigger.event,
+        effectPath: s.effect.path,
+        effectAction: s.effect.action,
+        delay: s.timing.delay,
+        duration: s.timing.duration
+      }));
+      for (const ctrl of controllers) {
+        const originalOnChange = ctrl.onStateChange;
+        ctrl.onStateChange = (from, to) => {
+          originalOnChange?.(from, to);
+          this.handleEvent(ctrl.path, to);
+        };
+      }
+    }
+    handleEvent(sourcePath, event) {
+      for (const rule of this.rules) {
+        if (sourcePath.startsWith(rule.triggerPath) && event === rule.triggerEvent) {
+          if (rule.delay > 0) {
+            this.pending.push({ rule, countdown: rule.delay, remaining: rule.duration });
+          } else {
+            this.fireEffect(rule);
+          }
+        }
+      }
+    }
+    fireEffect(rule) {
+      let target = this.controllers.get(rule.effectPath);
+      if (!target) {
+        for (const [path, ctrl] of this.controllers) {
+          if (path.startsWith(rule.effectPath) || rule.effectPath.startsWith(path)) {
+            target = ctrl;
+            break;
+          }
+        }
+      }
+      target?.fireEvent(rule.effectAction);
+    }
+    tick(dt) {
+      for (let i = this.pending.length - 1; i >= 0; i--) {
+        const pe = this.pending[i];
+        pe.countdown -= dt;
+        if (pe.countdown <= 0) {
+          this.fireEffect(pe.rule);
+          if (pe.remaining !== null) {
+            pe.remaining -= dt;
+            if (pe.remaining <= 0) this.pending.splice(i, 1);
+          } else {
+            this.pending.splice(i, 1);
+          }
+        }
+      }
+    }
+    /** Inject an external event (e.g. from player interaction). */
+    injectEvent(event) {
+      const lastDot = event.lastIndexOf(".");
+      if (lastDot === -1) return;
+      const path = event.substring(0, lastDot);
+      const eventName = event.substring(lastDot + 1);
+      this.handleEvent(path, eventName);
+    }
+  };
+
+  // src/renderer/DescribedEntity.ts
+  function buildDescribedEntity(entity) {
+    const desc = entity.description;
+    if (!desc || !desc.traits || desc.traits.length === 0) {
+      return {
+        entity,
+        description: null,
+        controllers: [],
+        sequenceEngine: null
+      };
+    }
+    const controllers = createControllers(desc);
+    const sequenceEngine = desc.sequences && desc.sequences.length > 0 ? new SequenceEngine(desc.sequences, controllers) : null;
+    return {
+      entity,
+      description: desc,
+      controllers,
+      sequenceEngine
+    };
+  }
+  function getEmissionController(de) {
+    return de.controllers.find((c) => c instanceof EmissionController);
+  }
+  function getMotionController(de) {
+    return de.controllers.find((c) => c instanceof MotionController);
+  }
+  function getRegardController(de) {
+    return de.controllers.find((c) => c instanceof RegardController);
+  }
+
+  // src/renderer/RenderLoop.ts
+  var RAMP = " .,:;=+*#%@";
+  function clamp4(v, lo, hi) {
+    return Math.max(lo, Math.min(hi, v));
+  }
+  var RenderLoop = class {
+    constructor(provider, frameBuffer, presenter, glyphCache = null, options = {}) {
+      this.smallBuffer = null;
+      this.describedEntities = [];
+      this.running = false;
+      this.lastTime = 0;
+      this.lastFrameTime = 0;
+      this.frameCount = 0;
+      this.frameTimes = [];
+      this.lastFPSReport = 0;
+      this.lastCameraChanged = false;
+      // Ground zone/road paint — rebuilt when the scene's paint changes (district).
+      this.gpPaint = null;
+      this.gpSampler = null;
+      // Stats overlay element (used when no HUD is provided)
+      this.statsEl = null;
+      this.provider = provider;
+      const initialScene = provider.getScene();
+      this.camera = {
+        ...initialScene.camera,
+        position: { ...initialScene.camera.position },
+        rotation: { ...initialScene.camera.rotation }
+      };
+      this.frameBuffer = frameBuffer;
+      this.presenter = presenter;
+      this.glyphCache = glyphCache;
+      this.world = new World(provider.getScene().entities);
+      this.temporal = new TemporalCache(frameBuffer.width, frameBuffer.height);
+      this.adaptive = new AdaptiveQuality(options.targetFPS ?? 30);
+      this.useTemporalReuse = options.useTemporalReuse ?? true;
+      this.useAdaptiveQuality = options.useAdaptiveQuality ?? false;
+      this.useWorkers = options.useWorkers ?? false;
+      this.inputState = options.inputState ?? null;
+      this.cameraController = options.cameraController ?? null;
+      this.hud = options.hud ?? null;
+      if (!this.hud) this.setupStatsOverlay();
+    }
+    setupStatsOverlay() {
+      if (typeof document === "undefined") return;
+      const el = document.createElement("div");
+      el.style.cssText = [
+        "position:fixed",
+        "top:4px",
+        "right:8px",
+        "color:#0f0",
+        "font-family:monospace",
+        "font-size:12px",
+        "background:rgba(0,0,0,0.6)",
+        "padding:2px 6px",
+        "pointer-events:none",
+        "z-index:9999"
+      ].join(";");
+      document.body.appendChild(el);
+      this.statsEl = el;
+    }
+    start() {
+      this.running = true;
+      this.lastTime = performance.now();
+      this.lastFPSReport = performance.now();
+      this.provider.start?.();
+      this.tick();
+    }
+    stop() {
+      this.running = false;
+      this.provider.stop?.();
+    }
+    /** Current camera pose, for sharing over presence (multiplayer). */
+    cameraPose() {
+      return {
+        position: [this.camera.position.x, this.camera.position.y, this.camera.position.z],
+        rotation: [this.camera.rotation.x, this.camera.rotation.y, this.camera.rotation.z]
+      };
+    }
+    // ── Debug / external control ─────────────────────────────────────────────
+    // Exposed via `window.__howm` so the world can be driven programmatically
+    // (headless harness, agent-controlled survey) without WASD.
+    /** Absolute camera position in shared-origin world space. */
+    cameraPosition() {
+      return { x: this.camera.position.x, y: this.camera.position.y, z: this.camera.position.z };
+    }
+    /** Move the camera by a world-space delta. Returns the new position. */
+    teleport(dx, dz, dy = 0) {
+      this.camera.position.x += dx;
+      this.camera.position.y += dy;
+      this.camera.position.z += dz;
+      return this.cameraPosition();
+    }
+    /** Jump the camera to an absolute world-space position. */
+    teleportTo(x, y, z) {
+      this.camera.position.x = x;
+      this.camera.position.y = y;
+      this.camera.position.z = z;
+      return this.cameraPosition();
+    }
+    /** Set the render distance (camera far clip), clamped to [50, 2000]. */
+    setFar(far) {
+      this.camera.far = Math.max(50, Math.min(2e3, far));
+      return this.camera.far;
+    }
+    /**
+     * For a ground hit, replace the lit colour with the zone/road colour modulated
+     * by the lit BRIGHTNESS (a scalar). Applied on BOTH the full-raymarch and
+     * temporal-reuse paths so still frames keep the paint. Applying brightness as a
+     * scalar — rather
+     * than multiplying the base colour and clamping per channel — preserves the
+     * zone hue even under strong light (where per-channel clamping would wash the
+     * ground to white). Mutates and returns `lit`.
+     */
+    tintGround(id, x, z, lit) {
+      if (this.gpSampler && id.endsWith("ground")) {
+        const zone = this.gpSampler.colorAt(x, z, lit);
+        const bf = clamp4(lit.brightness * 1.25 + 0.18, 0.35, 1.12);
+        lit.r = Math.min(255, zone.r * bf);
+        lit.g = Math.min(255, zone.g * bf);
+        lit.b = Math.min(255, zone.b * bf);
+      }
+      return lit;
+    }
+    /**
+     * Turn a surface hit into a shaded glyph cell — the single shading path shared
+     * by the full-raymarch and temporal-reuse loops. (Keeping these two in lockstep
+     * is the whole point: when they diverged, the ground paint applied on one path
+     * but not the other, and a stale entity crashed the path that wasn't guarded.)
+     * Lighting → ground-paint tint → glyph query (with optional HDL enrichment and
+     * motion animation) → character + colour.
+     */
+    shadeHit(scene, entityId, hitPos, normal, material, de) {
+      const lit = computeLighting(hitPos, normal, material, scene);
+      this.tintGround(entityId, hitPos.x, hitPos.z, lit);
+      const params = {
+        targetCoverage: lit.brightness,
+        targetRoundness: Math.abs(normal.z),
+        targetComplexity: material.roughness,
+        glyphStyle: material.glyphStyle
+      };
+      if (de?.description) {
+        const desc = de.description;
+        const sym = desc.traits.find((t) => t.path === "being.form.symmetry");
+        if (sym) {
+          if (sym.term === "bilateral") {
+            params.targetSymmetryH = 0.8;
+          } else if (sym.term === "radial") {
+            params.targetSymmetryH = 0.8;
+            params.targetSymmetryV = 0.8;
+          } else if (sym.term === "asymmetric") {
+            params.targetSymmetryH = 0.2;
+            params.targetSymmetryV = 0.2;
+          }
+        }
+        const comp = desc.traits.find((t) => t.path === "being.form.composition");
+        if (comp) {
+          if (comp.term === "dispersed") {
+            params.targetComponents = 0.8;
+          } else if (comp.term === "clustered") {
+            params.targetComponents = 0.5;
+          }
+        }
+        const surfCtrl = de.controllers.find((c) => c.path === "being.surface");
+        if (surfCtrl) {
+          const cplx = surfCtrl.getValue("complexity");
+          if (isFinite(cplx)) params.targetComplexity = cplx;
+        }
+      }
+      let glyph = this.glyphCache ? this.glyphCache.select(params) : null;
+      if (glyph && material.motionBehavior && this.glyphCache) {
+        const pixelOffset = Math.sin(hitPos.x * 1.7 + hitPos.y * 2.3 + hitPos.z * 1.1);
+        glyph = animateGlyph(glyph, material, scene.time + pixelOffset * 0.5, params, this.glyphCache);
+      }
+      const char = glyph ? glyph.char : RAMP[clamp4(Math.floor((lit.brightness || 0) * (RAMP.length - 1)), 0, RAMP.length - 1)] || " ";
+      return {
+        cp: char.codePointAt(0) ?? 32,
+        r: lit.r || 0,
+        g: lit.g || 0,
+        b: lit.b || 0,
+        brightness: lit.brightness || 0
+      };
+    }
+    updateTime() {
+      const now = performance.now();
+      const deltaMs = now - this.lastTime;
+      this.lastTime = now;
+      const dt = deltaMs / 1e3;
+      return dt;
+    }
+    hasAnyFlicker() {
+      return this.provider.getScene().lights.some((l) => l.flicker !== void 0);
+    }
+    hasAnyMoving() {
+      return this.provider.getScene().entities.some((e) => e.velocity || e.angularVelocity);
+    }
+    /** True if any entity has active trait controllers that modify visuals per-frame. */
+    hasAnyAnimatedEntities() {
+      return this.describedEntities.some((de) => de.controllers.length > 0);
+    }
+    renderFrameSingleThread(frameBuffer) {
+      const { width, height } = frameBuffer;
+      const scene = this.provider.getScene();
+      const world = this.world;
+      const bg = scene.environment.backgroundColor;
+      const temporal = this.temporal;
+      const cameraChanged = temporal.cameraChanged(this.camera.position, this.camera.rotation);
+      this.lastCameraChanged = cameraChanged;
+      const anyMoving = this.hasAnyMoving();
+      const anyFlicker = this.hasAnyFlicker();
+      const anyAnimated = this.hasAnyAnimatedEntities();
+      const farDist = this.camera.far && this.camera.far > 0 ? Math.min(this.camera.far, 2e3) : DEFAULT_MAX_DISTANCE;
+      if (scene.groundPaint !== this.gpPaint) {
+        this.gpPaint = scene.groundPaint ?? null;
+        this.gpSampler = this.gpPaint ? new GroundPaintSampler(this.gpPaint) : null;
+        this.temporal.invalidateAll();
+      }
+      const frameStart = performance.now();
+      for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+          if (this.useAdaptiveQuality && (x + y * width) % 64 === 0) {
+            if (performance.now() - frameStart > FRAME_DEADLINE_MS) break;
+          }
+          const idx = y * width + x;
+          if (this.useTemporalReuse && !cameraChanged && temporal.isValid(x, y)) {
+            const eIdx = temporal.getEntityIndex(x, y);
+            if (eIdx === -1) {
+              if (!anyMoving) continue;
+            } else {
+              const entity = scene.entities[eIdx];
+              const entityMoving = !!(entity?.velocity || entity?.angularVelocity);
+              if (entity && !entityMoving) {
+                if (anyFlicker || anyAnimated) {
+                  const hitPos = temporal.getHitPos(x, y);
+                  const normal = temporal.getNormal(x, y);
+                  const sh = this.shadeHit(scene, entity.id, hitPos, normal, entity.material, this.describedEntities[eIdx]);
+                  frameBuffer.set(x, y, sh.cp, sh.r, sh.g, sh.b, sh.brightness);
+                }
+                continue;
+              }
+            }
+          }
+          const ray = createRay(this.camera, x, y, width, height);
+          const distSteps = Math.min(220, Math.max(DEFAULT_MAX_STEPS, Math.round(farDist / 3)));
+          const baseSteps = this.useAdaptiveQuality ? getMaxSteps(x, y, width, height) : distSteps;
+          const maxSteps = cameraChanged ? Math.floor(baseSteps * 0.6) : baseSteps;
+          const result = raymarch(ray, world, maxSteps, farDist);
+          if (result.hit) {
+            const de = result.entityIndex >= 0 && result.entityIndex < this.describedEntities.length ? this.describedEntities[result.entityIndex] : void 0;
+            const hitId = de?.entity.id ?? "";
+            const sh = this.shadeHit(scene, hitId, result.position, result.normal, result.material, de);
+            frameBuffer.set(x, y, sh.cp, sh.r, sh.g, sh.b, sh.brightness);
+            const depthRatio = clamp4(result.distance / 100, 0, 1);
+            const atmos = depthRatio * depthRatio;
+            const abgR = Math.floor(bg.r * atmos);
+            const abgG = Math.floor(bg.g * atmos);
+            const abgB = Math.floor(bg.b * atmos);
+            const trans = result.material.transparency;
+            if (trans && trans > 0) {
+              const fgWeight = 1 - trans;
+              frameBuffer.set(
+                x,
+                y,
+                sh.cp,
+                Math.floor(sh.r * fgWeight + abgR * trans),
+                Math.floor(sh.g * fgWeight + abgG * trans),
+                Math.floor(sh.b * fgWeight + abgB * trans),
+                sh.brightness * fgWeight
+              );
+            }
+            frameBuffer.setBg(x, y, abgR, abgG, abgB);
+            frameBuffer.setMeta(x, y, result.distance, result.entityIndex);
+            temporal.store(x, y, result.distance, result.entityIndex, result.position, result.normal);
+          } else {
+            frameBuffer.set(x, y, 32, 0, 0, 0, 0);
+            frameBuffer.setBg(x, y, bg.r, bg.g, bg.b);
+            frameBuffer.setMeta(x, y, 999, -1);
+            temporal.storeMiss(x, y);
+          }
+        }
+      }
+      temporal.updateCamera(this.camera.position, this.camera.rotation);
+    }
+    /**
+     * Reset background colours to their base atmosphere values.
+     * Must be called before emission bleed to prevent accumulation.
+     */
+    resetBgToAtmosphere(fb, scene) {
+      const bg = scene.environment.backgroundColor;
+      const { width, height } = fb;
+      for (let i = 0; i < width * height; i++) {
+        const eIdx = fb.entityIndex[i];
+        if (eIdx === -1) {
+          fb.bgR[i] = bg.r;
+          fb.bgG[i] = bg.g;
+          fb.bgB[i] = bg.b;
+        } else {
+          const depthRatio = Math.min(fb.depth[i] / 100, 1);
+          const atmos = depthRatio * depthRatio;
+          fb.bgR[i] = Math.floor(bg.r * atmos);
+          fb.bgG[i] = Math.floor(bg.g * atmos);
+          fb.bgB[i] = Math.floor(bg.b * atmos);
+        }
+      }
+    }
+    /**
+     * Emission bleed: emissive entities spill colour into the background
+     * of nearby cells. Per astral-projection.md §6.3.2.
+     */
+    applyEmissionBleed(fb, scene) {
+      const { width, height } = fb;
+      const entities = scene.entities;
+      for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+          const idx = y * width + x;
+          const eIdx = fb.entityIndex[idx];
+          if (eIdx < 0 || eIdx >= entities.length) continue;
+          const mat = entities[eIdx].material;
+          if (!mat.emissive || mat.emissive < 0.05) continue;
+          const emR = mat.emissionColor?.r ?? mat.baseColor.r;
+          const emG = mat.emissionColor?.g ?? mat.baseColor.g;
+          const emB = mat.emissionColor?.b ?? mat.baseColor.b;
+          const intensity = mat.emissive;
+          const radius = Math.ceil(intensity * 3);
+          for (let dy = -radius; dy <= radius; dy++) {
+            for (let dx = -radius; dx <= radius; dx++) {
+              if (dx === 0 && dy === 0) continue;
+              const nx = x + dx;
+              const ny = y + dy;
+              if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
+              const dist = Math.sqrt(dx * dx + dy * dy);
+              if (dist > radius) continue;
+              const falloff = 1 - dist / radius;
+              const blend = falloff * falloff * intensity * 0.25;
+              const ni = ny * width + nx;
+              fb.bgR[ni] = Math.min(255, fb.bgR[ni] + Math.floor(emR * blend));
+              fb.bgG[ni] = Math.min(255, fb.bgG[ni] + Math.floor(emG * blend));
+              fb.bgB[ni] = Math.min(255, fb.bgB[ni] + Math.floor(emB * blend));
+            }
+          }
+        }
+      }
+    }
+    tick() {
+      if (!this.running) return;
+      const frameStart = performance.now();
+      const dt = this.updateTime();
+      if (this.cameraController && this.inputState) {
+        this.cameraController.update(this.camera, this.inputState, dt);
+      }
+      if (this.provider.setViewerPosition) {
+        this.provider.setViewerPosition(this.camera.position.x, this.camera.position.z);
+      }
+      const prov = this.provider;
+      if (typeof prov.updateCamera === "function") {
+        const cy = Math.cos(this.camera.rotation.y);
+        const sy = Math.sin(this.camera.rotation.y);
+        const cx = Math.cos(this.camera.rotation.x);
+        const sx = Math.sin(this.camera.rotation.x);
+        prov.updateCamera(
+          this.camera.position.x,
+          this.camera.position.y,
+          this.camera.position.z,
+          sy * cx,
+          -sx,
+          -cy * cx
+        );
+      }
+      this.provider.update(dt);
+      const scene = this.provider.getScene();
+      updateLightFlicker(scene.lights, scene.time);
+      if (this.provider.structurallyDirty()) {
+        this.world = new World(scene.entities);
+        this.describedEntities = scene.entities.map((e) => {
+          const de = buildDescribedEntity(e);
+          const motionCtrl = getMotionController(de);
+          if (motionCtrl) {
+            motionCtrl.setBasePosition(
+              e.transform.position.x,
+              e.transform.position.y,
+              e.transform.position.z
+            );
+          }
+          return de;
+        });
+        this.provider.acknowledgeStructuralChange();
+      }
+      let worldDirty = false;
+      for (const de of this.describedEntities) {
+        for (const ctrl of de.controllers) ctrl.tick(dt);
+        de.sequenceEngine?.tick(dt);
+        const emCtrl = getEmissionController(de);
+        if (emCtrl) {
+          const channel = emCtrl.getChannel();
+          if (channel === "foreground" || channel === "both") {
+            de.entity.material.emissive = emCtrl.getIntensity();
+          } else {
+            de.entity.material.emissive = emCtrl.getIntensity() * 0.1;
+          }
+        }
+        const surfCtrl = de.controllers.find((c) => c.path === "being.surface");
+        if (surfCtrl) {
+          const flash = surfCtrl.getValue("flash");
+          if (flash > 0) {
+            de.entity.material.emissive = (de.entity.material.emissive ?? 0) + flash * 0.5;
+          }
+        }
+        const motionCtrl = getMotionController(de);
+        if (motionCtrl) {
+          const pos = motionCtrl.getPosition();
+          const e = de.entity;
+          if (Math.abs(e.transform.position.x - pos.x) > 0.01 || Math.abs(e.transform.position.z - pos.z) > 0.01) {
+            e.transform.position.x = pos.x;
+            e.transform.position.y = pos.y;
+            e.transform.position.z = pos.z;
+            worldDirty = true;
+          }
+        }
+        const regardCtrl = getRegardController(de);
+        if (regardCtrl) {
+          const dist = length(sub(de.entity.transform.position, this.camera.position));
+          regardCtrl.updatePlayerDistance(dist);
+        }
+      }
+      if (worldDirty) {
+        this.world.updateEntities(scene.entities);
+      }
+      {
+        if (this.useAdaptiveQuality && this.adaptive.scale < 1) {
+          const sw = Math.max(1, Math.floor(this.frameBuffer.width * this.adaptive.scale));
+          const sh = Math.max(1, Math.floor(this.frameBuffer.height * this.adaptive.scale));
+          if (!this.smallBuffer || this.smallBuffer.width !== sw || this.smallBuffer.height !== sh) {
+            this.smallBuffer = new FrameBuffer(sw, sh);
+          }
+          this.renderFrameSingleThread(this.smallBuffer);
+          this.adaptive.upscale(this.smallBuffer, this.frameBuffer);
+        } else {
+          this.renderFrameSingleThread(this.frameBuffer);
+        }
+        if (!this.lastCameraChanged) {
+          this.resetBgToAtmosphere(this.frameBuffer, this.provider.getScene());
+          this.applyEmissionBleed(this.frameBuffer, this.provider.getScene());
+        }
+        this.presenter.present(this.frameBuffer);
+        this.frameBuffer.clearDirtyFlags();
+        const frameEnd = performance.now();
+        const frameTime = frameEnd - frameStart;
+        this.lastFrameTime = frameTime;
+        if (this.useAdaptiveQuality) {
+          this.adaptive.adjust(frameTime);
+        }
+        this.recordFrameTime(frameTime);
+        requestAnimationFrame(() => this.tick());
+      }
+    }
+    recordFrameTime(ms) {
+      this.frameTimes.push(ms);
+      if (this.frameTimes.length > 60) this.frameTimes.shift();
+      this.frameCount++;
+      const now = performance.now();
+      if (now - this.lastFPSReport >= 1e3) {
+        const avg = this.frameTimes.reduce((a, b) => a + b, 0) / this.frameTimes.length;
+        const fps = 1e3 / avg;
+        const worst = Math.max(...this.frameTimes);
+        const cacheStats = this.glyphCache?.stats();
+        const hitRate = cacheStats ? cacheStats.hitRate.toFixed(1) : "n/a";
+        const scaleStr = this.useAdaptiveQuality ? ` | scale:${(this.adaptive.scale * 100).toFixed(0)}%` : "";
+        const msg = `FPS:${fps.toFixed(1)} avg:${avg.toFixed(1)}ms worst:${worst.toFixed(1)}ms cache:${hitRate}%${scaleStr}`;
+        console.log(msg);
+        if (this.hud) {
+          const prov = this.provider;
+          if (prov.currentDistrictIp) {
+            this.hud.setDistrictIp(prov.currentDistrictIp);
+            if (prov.loadedDistrictCount !== void 0) {
+              this.hud.setStreamInfo(prov.loadedDistrictCount, prov.visibleEntityCount);
+            }
+          }
+          this.hud.update(fps, this.camera, this.inputState?.pointerLocked ?? false);
+        } else if (this.statsEl) {
+          this.statsEl.textContent = msg;
+        }
+        this.lastFPSReport = now;
+      }
+    }
+  };
+
+  // src/glyph/GlyphDB.ts
+  function normalize2(values) {
+    const min = Math.min(...values);
+    const max = Math.max(...values);
+    const range = max - min;
+    if (range === 0) return values.map(() => 0);
+    return values.map((v) => (v - min) / range);
+  }
+  var GlyphDB = class _GlyphDB {
+    /** Load from pre-extracted JSON array.
+     *  Each entry: [codepoint_hex, char, coverage, roundness, complexity, connectedComponents, symmetryH, symmetryV]
+     */
+    static fromJSON(data) {
+      const db = new _GlyphDB();
+      const parsed = [];
+      for (const row of data) {
+        const [cp, ch, cov, rnd, cplx, cc, symH, symV] = row;
+        parsed.push({
+          codePoint: typeof cp === "string" ? parseInt(cp, 16) : cp,
+          char: ch,
+          coverage: cov ?? 0,
+          roundness: rnd ?? 0,
+          complexity: cplx ?? 0,
+          connectedComponents: cc ?? 1,
+          symmetryH: symH ?? 0,
+          symmetryV: symV ?? 0
+        });
+      }
+      const coverages = normalize2(parsed.map((g) => g.coverage));
+      const complexities = normalize2(parsed.map((g) => g.complexity));
+      const ccs = normalize2(parsed.map((g) => g.connectedComponents));
+      db.glyphs = parsed.map((g, i) => ({
+        ...g,
+        normalizedCoverage: coverages[i],
+        normalizedComplexity: complexities[i],
+        normalizedConnectedComponents: ccs[i]
+      }));
+      return db;
+    }
+    constructor() {
+      this.glyphs = [];
+    }
+    get count() {
+      return this.glyphs.length;
+    }
+    /**
+     * Query the best-matching glyph.
+     * Primary axes (coverage, roundness, complexity) drive the main score.
+     * Secondary axes (symmetry, components) are tiebreakers with lower weights.
+     * Per astral-projection.md §7.4.
+     */
+    queryBest(params) {
+      if (this.glyphs.length === 0) return null;
+      const { targetCoverage, targetRoundness, targetComplexity } = params;
+      let best = null;
+      let bestScore = Infinity;
+      for (const g of this.glyphs) {
+        let score = Math.abs(g.normalizedCoverage - targetCoverage) * 2;
+        if (targetRoundness !== void 0) {
+          score += Math.abs(g.roundness - targetRoundness);
+        }
+        if (targetComplexity !== void 0) {
+          score += Math.abs(g.normalizedComplexity - targetComplexity);
+        }
+        if (params.targetSymmetryH !== void 0) {
+          score += 0.5 * Math.abs(g.symmetryH - params.targetSymmetryH);
+        }
+        if (params.targetSymmetryV !== void 0) {
+          score += 0.5 * Math.abs(g.symmetryV - params.targetSymmetryV);
+        }
+        if (params.targetComponents !== void 0) {
+          score += 0.4 * Math.abs(g.normalizedConnectedComponents - params.targetComponents);
+        }
+        if (score < bestScore) {
+          bestScore = score;
+          best = g;
+        }
+      }
+      return best;
+    }
+  };
+
+  // src/glyph/GlyphCache.ts
+  var BRIGHTNESS_BUCKETS = 32;
+  var ROUNDNESS_BUCKETS = 8;
+  var COMPLEXITY_BUCKETS = 8;
+  var STYLE_COUNT = 9;
+  var CACHE_SIZE = BRIGHTNESS_BUCKETS * ROUNDNESS_BUCKETS * COMPLEXITY_BUCKETS * STYLE_COUNT;
+  var STYLE_INDEX = {
+    dense: 1,
+    light: 2,
+    round: 3,
+    angular: 4,
+    line: 5,
+    noise: 6,
+    block: 7,
+    symbolic: 8
+  };
+  function styleToIndex(style) {
+    if (!style) return 0;
+    return STYLE_INDEX[style] ?? 0;
+  }
+  function buildKey(params) {
+    const bb = Math.min(BRIGHTNESS_BUCKETS - 1, Math.floor(params.targetCoverage * (BRIGHTNESS_BUCKETS - 1)));
+    const rb = Math.min(ROUNDNESS_BUCKETS - 1, Math.floor((params.targetRoundness ?? 0.5) * (ROUNDNESS_BUCKETS - 1)));
+    const cb = Math.min(COMPLEXITY_BUCKETS - 1, Math.floor((params.targetComplexity ?? 0.5) * (COMPLEXITY_BUCKETS - 1)));
+    const si = styleToIndex(params.glyphStyle);
+    return bb + rb * BRIGHTNESS_BUCKETS + cb * BRIGHTNESS_BUCKETS * ROUNDNESS_BUCKETS + si * BRIGHTNESS_BUCKETS * ROUNDNESS_BUCKETS * COMPLEXITY_BUCKETS;
+  }
+  var GlyphCache = class {
+    constructor(db) {
+      this.hits = 0;
+      this.misses = 0;
+      this.db = db;
+      this.cache = new Array(CACHE_SIZE).fill(null);
+    }
+    // Returns null only when the glyph DB is empty (queryBest has nothing to
+    // pick). Callers fall back to the ASCII ramp in that case.
+    select(params) {
+      const key = buildKey(params);
+      const cached = this.cache[key];
+      if (cached !== null) {
+        this.hits++;
+        return cached;
+      }
+      this.misses++;
+      const result = this.db.queryBest(params);
+      this.cache[key] = result;
+      return result;
+    }
+    clearCache() {
+      this.cache.fill(null);
+      this.hits = 0;
+      this.misses = 0;
+    }
+    stats() {
+      const total = this.hits + this.misses;
+      return {
+        hits: this.hits,
+        misses: this.misses,
+        hitRate: total === 0 ? 0 : this.hits / total * 100
+      };
+    }
+    /** Warm the entire cache by querying every possible key. */
+    warmup() {
+      for (let si = 0; si < STYLE_COUNT; si++) {
+        const style = Object.entries(STYLE_INDEX).find(([, v]) => v === si)?.[0];
+        for (let bb = 0; bb < BRIGHTNESS_BUCKETS; bb++) {
+          const cov = bb / (BRIGHTNESS_BUCKETS - 1);
+          for (let rb = 0; rb < ROUNDNESS_BUCKETS; rb++) {
+            const round = rb / (ROUNDNESS_BUCKETS - 1);
+            for (let cb = 0; cb < COMPLEXITY_BUCKETS; cb++) {
+              const comp = cb / (COMPLEXITY_BUCKETS - 1);
+              this.select({ targetCoverage: cov, targetRoundness: round, targetComplexity: comp, glyphStyle: style });
+            }
+          }
+        }
+      }
+      this.hits = 0;
+      this.misses = 0;
+    }
+    /**
+     * Serialize the fully-warmed cache as two arrays suitable for transferring
+     * to worker threads (no SQLite needed on the other side).
+     */
+    serialize() {
+      const keys = [];
+      const codePoints = [];
+      for (let i = 0; i < CACHE_SIZE; i++) {
+        const rec = this.cache[i];
+        if (rec !== null) {
+          keys.push(i);
+          codePoints.push(rec.codePoint);
+        }
+      }
+      return { keys: new Int32Array(keys), codePoints: new Int32Array(codePoints) };
+    }
+  };
+
+  // src/input/InputState.ts
+  var InputState = class {
+    constructor() {
+      // Movement keys (true = currently held)
+      this.forward = false;
+      this.backward = false;
+      this.left = false;
+      this.right = false;
+      this.up = false;
+      // Space
+      this.down = false;
+      // Shift
+      this.sprint = false;
+      // ControlLeft
+      // Mouse look delta (pixels moved since last frame)
+      this.mouseDeltaX = 0;
+      this.mouseDeltaY = 0;
+      // Pointer lock state
+      this.pointerLocked = false;
+    }
+    /** Call once per frame — returns accumulated delta and resets to 0. */
+    consumeMouseDelta() {
+      const dx = this.mouseDeltaX;
+      const dy = this.mouseDeltaY;
+      this.mouseDeltaX = 0;
+      this.mouseDeltaY = 0;
+      return { dx, dy };
+    }
+  };
+
+  // src/input/KeyboardListener.ts
+  var GAME_KEYS = /* @__PURE__ */ new Set([
+    "KeyW",
+    "KeyA",
+    "KeyS",
+    "KeyD",
+    "ArrowUp",
+    "ArrowDown",
+    "ArrowLeft",
+    "ArrowRight",
+    "Space",
+    "ShiftLeft",
+    "ShiftRight",
+    "ControlLeft",
+    "KeyF"
+  ]);
+  var KeyboardListener = class {
+    constructor(inputState, target) {
+      this.inputState = inputState;
+      this.target = target;
+      this.boundKeyDown = this.onKeyDown.bind(this);
+      this.boundKeyUp = this.onKeyUp.bind(this);
+      target.addEventListener("keydown", this.boundKeyDown);
+      target.addEventListener("keyup", this.boundKeyUp);
+    }
+    onKeyDown(e) {
+      if (e.code === "KeyF" && !e.repeat) this.onToggleFly?.();
+      this.updateKey(e.code, true);
+      if (GAME_KEYS.has(e.code)) e.preventDefault();
+      if (e.code === "Escape") document.exitPointerLock();
+    }
+    onKeyUp(e) {
+      this.updateKey(e.code, false);
+    }
+    updateKey(code, pressed) {
+      switch (code) {
+        case "KeyW":
+        case "ArrowUp":
+          this.inputState.forward = pressed;
+          break;
+        case "KeyS":
+        case "ArrowDown":
+          this.inputState.backward = pressed;
+          break;
+        case "KeyA":
+        case "ArrowLeft":
+          this.inputState.left = pressed;
+          break;
+        case "KeyD":
+        case "ArrowRight":
+          this.inputState.right = pressed;
+          break;
+        case "Space":
+          this.inputState.up = pressed;
+          break;
+        case "ShiftLeft":
+        case "ShiftRight":
+          this.inputState.down = pressed;
+          break;
+        case "ControlLeft":
+          this.inputState.sprint = pressed;
+          break;
+      }
+    }
+    destroy() {
+      this.target.removeEventListener("keydown", this.boundKeyDown);
+      this.target.removeEventListener("keyup", this.boundKeyUp);
+    }
+  };
+
+  // src/input/MouseListener.ts
+  var MouseListener = class {
+    constructor(inputState, target) {
+      this.inputState = inputState;
+      this.target = target;
+      this.boundClick = this.requestLock.bind(this);
+      this.boundLockChange = this.onLockChange.bind(this);
+      this.boundLockError = this.onLockError.bind(this);
+      this.boundMouseMove = this.onMouseMove.bind(this);
+      target.addEventListener("click", this.boundClick);
+      document.addEventListener("pointerlockchange", this.boundLockChange);
+      document.addEventListener("pointerlockerror", this.boundLockError);
+      document.addEventListener("mousemove", this.boundMouseMove);
+    }
+    requestLock() {
+      window.focus();
+      this.target.requestPointerLock();
+    }
+    onLockChange() {
+      this.inputState.pointerLocked = document.pointerLockElement === this.target;
+      console.log("no checkmouse delta:", this.inputState.pointerLocked);
+      if (!this.inputState.pointerLocked) {
+        this.inputState.mouseDeltaX = 0;
+        this.inputState.mouseDeltaY = 0;
+      }
+    }
+    onLockError() {
+      console.warn("Pointer lock failed");
+      this.inputState.pointerLocked = false;
+    }
+    onMouseMove(e) {
+      if (!this.inputState.pointerLocked) return;
+      this.inputState.mouseDeltaX += e.movementX;
+      this.inputState.mouseDeltaY += e.movementY;
+    }
+    releaseLock() {
+      document.exitPointerLock();
+    }
+    destroy() {
+      this.target.removeEventListener("click", this.boundClick);
+      document.removeEventListener("pointerlockchange", this.boundLockChange);
+      document.removeEventListener("pointerlockerror", this.boundLockError);
+      document.removeEventListener("mousemove", this.boundMouseMove);
+    }
+  };
+
+  // src/input/CameraController.ts
+  function lerp(a, b, t) {
+    return a + (b - a) * t;
+  }
+  var CameraController = class {
+    constructor() {
+      this.moveSpeed = 5;
+      this.sprintMultiplier = 2.5;
+      this.lookSensitivity = 2e-3;
+      this.pitchLimit = Math.PI / 2 - 0.01;
+      // Gravity pulls the camera down each frame; future jump sets velocity.y = jumpSpeed
+      this.gravity = -20;
+      // units/sec²
+      this.floorY = 2.5;
+      // eye height — camera never goes below this
+      /**
+       * Fly / noclip mode: no gravity, no floor clamp, full 6-DOF. Movement follows
+       * the full look direction (pitch included) and Space/Shift move straight
+       * up/down. Faster than walking — built for debugging/surveying the city from
+       * above instead of threading through building interiors. Toggle with `F`.
+       */
+      this.flyMode = false;
+      this.flySpeed = 40;
+      this.acceleration = 30;
+      this.friction = 10;
+      this.velocity = { x: 0, y: 0, z: 0 };
+      this.mouseSmoothFactor = 0;
+      this.smoothDX = 0;
+      this.smoothDY = 0;
+      this.yaw = 0;
+      this.pitch = 0;
+      this.initialized = false;
+    }
+    update(camera, inputState, dt) {
+      if (!this.initialized) {
+        this.yaw = camera.rotation.y;
+        this.pitch = camera.rotation.x;
+        this.initialized = true;
+      }
+      const { dx, dy } = inputState.consumeMouseDelta();
+      if (inputState.pointerLocked) {
+        const sdx = lerp(dx, this.smoothDX, this.mouseSmoothFactor);
+        const sdy = lerp(dy, this.smoothDY, this.mouseSmoothFactor);
+        this.smoothDX = sdx;
+        this.smoothDY = sdy;
+        this.yaw -= sdx * this.lookSensitivity;
+        this.pitch -= sdy * this.lookSensitivity;
+        this.pitch = Math.max(-this.pitchLimit, Math.min(this.pitchLimit, this.pitch));
+      }
+      camera.rotation.x = this.pitch;
+      camera.rotation.y = this.yaw;
+      camera.rotation.z = 0;
+      if (this.flyMode) {
+        this.updateFly(camera, inputState, dt);
+        return;
+      }
+      let moveX = 0;
+      let moveZ = 0;
+      if (inputState.forward) moveZ -= 1;
+      if (inputState.backward) moveZ += 1;
+      if (inputState.left) moveX -= 1;
+      if (inputState.right) moveX += 1;
+      const inputLen = Math.sqrt(moveX * moveX + moveZ * moveZ);
+      if (inputLen > 0) {
+        moveX /= inputLen;
+        moveZ /= inputLen;
+      }
+      const sy = Math.sin(this.yaw), cy = Math.cos(this.yaw);
+      const fwdX = -sy, fwdZ = -cy;
+      const rgtX = cy, rgtZ = -sy;
+      const worldX = -moveZ * fwdX + moveX * rgtX;
+      const worldZ = -moveZ * fwdZ + moveX * rgtZ;
+      const topSpeed = this.moveSpeed * (inputState.sprint ? this.sprintMultiplier : 1);
+      const hasHorizontalInput = moveX !== 0 || moveZ !== 0;
+      if (hasHorizontalInput) {
+        const lf = 1 - Math.exp(-this.acceleration * dt);
+        this.velocity.x = lerp(this.velocity.x, worldX * topSpeed, lf);
+        this.velocity.z = lerp(this.velocity.z, worldZ * topSpeed, lf);
+      } else {
+        const ff = 1 - Math.exp(-this.friction * dt);
+        this.velocity.x = lerp(this.velocity.x, 0, ff);
+        this.velocity.z = lerp(this.velocity.z, 0, ff);
+      }
+      const onFloor = camera.position.y <= this.floorY + 1e-3;
+      if (onFloor) {
+        this.velocity.y = 0;
+      } else {
+        this.velocity.y += this.gravity * dt;
+      }
+      camera.position.x += this.velocity.x * dt;
+      camera.position.y += this.velocity.y * dt;
+      camera.position.z += this.velocity.z * dt;
+      if (camera.position.y < this.floorY) {
+        camera.position.y = this.floorY;
+        this.velocity.y = 0;
+      }
+    }
+    /** Free 6-DOF flight: full look direction + vertical, no gravity/floor. */
+    updateFly(camera, inputState, dt) {
+      let moveX = 0, moveZ = 0, moveY = 0;
+      if (inputState.forward) moveZ -= 1;
+      if (inputState.backward) moveZ += 1;
+      if (inputState.left) moveX -= 1;
+      if (inputState.right) moveX += 1;
+      if (inputState.up) moveY += 1;
+      if (inputState.down) moveY -= 1;
+      const sy = Math.sin(this.yaw), cy = Math.cos(this.yaw);
+      const sp = Math.sin(this.pitch), cp = Math.cos(this.pitch);
+      const fwdX = -sy * cp, fwdY = sp, fwdZ = -cy * cp;
+      const rgtX = cy, rgtZ = -sy;
+      let dx = -moveZ * fwdX + moveX * rgtX;
+      let dy = -moveZ * fwdY + moveY;
+      let dz = -moveZ * fwdZ + moveX * rgtZ;
+      const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      if (len > 0) {
+        dx /= len;
+        dy /= len;
+        dz /= len;
+      }
+      const speed = this.flySpeed * (inputState.sprint ? this.sprintMultiplier : 1);
+      const lf = 1 - Math.exp(-this.acceleration * dt);
+      this.velocity.x = lerp(this.velocity.x, dx * speed, lf);
+      this.velocity.y = lerp(this.velocity.y, dy * speed, lf);
+      this.velocity.z = lerp(this.velocity.z, dz * speed, lf);
+      camera.position.x += this.velocity.x * dt;
+      camera.position.y += this.velocity.y * dt;
+      camera.position.z += this.velocity.z * dt;
+    }
+    /** Toggle fly/noclip; clears velocity so the camera doesn't lurch. */
+    toggleFly() {
+      this.flyMode = !this.flyMode;
+      this.velocity = { x: 0, y: 0, z: 0 };
+      return this.flyMode;
+    }
+    /**
+     * Set look direction directly (radians). pitch<0 looks down. Used by the debug
+     * hook for surveying; the controller owns yaw/pitch so setting camera.rotation
+     * alone would be overwritten next frame.
+     */
+    setLook(yaw, pitch) {
+      this.yaw = yaw;
+      this.pitch = Math.max(-this.pitchLimit, Math.min(this.pitchLimit, pitch));
+      this.initialized = true;
+    }
+    reset(camera) {
+      this.yaw = camera.rotation.y;
+      this.pitch = camera.rotation.x;
+      this.initialized = false;
+      this.velocity = { x: 0, y: 0, z: 0 };
+    }
+  };
+
+  // src/ui/HUD.ts
+  var HUD = class {
+    constructor() {
+      this.districtIp = "";
+      this.streamInfo = "";
+      const container = document.createElement("div");
+      container.id = "hud";
+      container.style.cssText = [
+        "position:absolute",
+        "top:0",
+        "left:0",
+        "right:0",
+        "bottom:0",
+        "pointer-events:none",
+        "font-family:monospace",
+        "color:rgba(255,255,255,0.7)",
+        "font-size:12px"
+      ].join(";");
+      this.fpsEl = document.createElement("div");
+      this.fpsEl.style.cssText = "position:absolute;top:8px;right:8px;";
+      this.districtEl = document.createElement("div");
+      this.districtEl.style.cssText = "position:absolute;top:8px;left:8px;color:rgba(112,144,192,0.9);";
+      this.compassEl = document.createElement("div");
+      this.compassEl.style.cssText = "position:absolute;top:50%;right:12px;transform:translateY(-50%);font-size:14px;";
+      this.cameraEl = document.createElement("div");
+      this.cameraEl.style.cssText = "position:absolute;bottom:8px;left:8px;font-size:11px;color:rgba(255,255,255,0.4);";
+      this.promptEl = document.createElement("div");
+      this.promptEl.style.cssText = [
+        "position:absolute",
+        "top:50%",
+        "left:50%",
+        "transform:translate(-50%,-50%)",
+        "font-size:16px",
+        "background:rgba(0,0,0,0.6)",
+        "padding:12px 24px",
+        "border-radius:4px",
+        "text-align:center"
+      ].join(";");
+      this.promptEl.textContent = "Click to capture mouse \xB7 WASD to move \xB7 Esc to release";
+      container.appendChild(this.fpsEl);
+      container.appendChild(this.districtEl);
+      container.appendChild(this.compassEl);
+      container.appendChild(this.cameraEl);
+      container.appendChild(this.promptEl);
+      document.body.appendChild(container);
+    }
+    setDistrictIp(ip) {
+      this.districtIp = ip;
+    }
+    setStreamInfo(loadedDistricts, visibleEntities) {
+      this.streamInfo = `${loadedDistricts} districts \xB7 ${visibleEntities} entities`;
+    }
+    update(fps, camera, pointerLocked) {
+      this.fpsEl.textContent = `${fps.toFixed(0)} FPS`;
+      if (this.districtIp) {
+        const extra = this.streamInfo ? ` \xB7 ${this.streamInfo}` : "";
+        this.districtEl.textContent = `// ${this.districtIp}${extra}`;
+      }
+      const yawDeg = (camera.rotation.y * 180 / Math.PI % 360 + 360) % 360;
+      const cardinal = yawDeg < 22.5 ? "N" : yawDeg < 67.5 ? "NE" : yawDeg < 112.5 ? "E" : yawDeg < 157.5 ? "SE" : yawDeg < 202.5 ? "S" : yawDeg < 247.5 ? "SW" : yawDeg < 292.5 ? "W" : yawDeg < 337.5 ? "NW" : "N";
+      this.compassEl.textContent = `[ ${cardinal} ]`;
+      const p = camera.position;
+      this.cameraEl.textContent = `${p.x.toFixed(1)}, ${p.y.toFixed(1)}, ${p.z.toFixed(1)}`;
+      this.promptEl.style.display = pointerLocked ? "none" : "block";
+    }
+  };
+
+  // src/entry.ts
+  async function loadGlyphCache(url) {
+    try {
+      console.time("Glyph load");
+      const resp = await fetch(url);
+      if (!resp.ok) {
+        console.warn("Glyph data unavailable:", resp.status);
+        return null;
+      }
+      const data = await resp.json();
+      const db = GlyphDB.fromJSON(data);
+      console.timeEnd("Glyph load");
+      console.log(`Loaded ${db.count} glyphs`);
+      return new GlyphCache(db);
+    } catch (err) {
+      console.warn("GlyphDB unavailable, falling back to ASCII ramp:", err);
+      return null;
+    }
+  }
+  async function main() {
+    const canvas = document.getElementById("display");
+    if (!canvas) {
+      console.error("No canvas element found");
+      return;
+    }
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    window.addEventListener("resize", () => {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+    });
+    const presenter = new Presenter(canvas);
+    const { cols, rows } = presenter;
+    const params = new URLSearchParams(window.location.search);
+    const ip = params.get("ip") || "93.184.216.0";
+    const useLive = params.get("live") !== "0" && !params.has("static");
+    const status = document.getElementById("status");
+    if (status) status.textContent = `Loading district ${ip}...`;
+    const uiMatch = window.location.pathname.match(/^(.*)\/ui(?:\/|$)/);
+    const baseUrl = window.location.origin + (uiMatch ? uiMatch[1] : "");
+    let provider;
+    if (useLive) {
+      if (status) status.textContent = `Connecting to ${ip}...`;
+      const stream = new HowmStreamProvider(baseUrl);
+      try {
+        await stream.connect(ip);
+        if (status) status.textContent = "";
+        provider = stream;
+      } catch (err) {
+        console.error("WebSocket failed, falling back to static:", err);
+        if (status) status.textContent = `WS failed, loading static...`;
+        const fallback = new HowmSceneProvider(baseUrl);
+        await fallback.loadDistrict(ip);
+        if (status) status.textContent = "";
+        provider = fallback;
+      }
+    } else {
+      const staticProvider = new HowmSceneProvider(baseUrl);
+      try {
+        await staticProvider.loadDistrict(ip);
+        if (status) status.textContent = "";
+      } catch (err) {
+        console.error("Failed to load district:", err);
+        if (status) status.textContent = `Error loading ${ip}: ${err}`;
+        return;
+      }
+      provider = staticProvider;
+    }
+    if (status) status.textContent = "Loading glyphs...";
+    const glyphCache = await loadGlyphCache(`${baseUrl}/ui/glyphs.json`);
+    if (glyphCache) {
+      if (status) status.textContent = "Warming glyph cache...";
+      console.time("Glyph warmup");
+      glyphCache.warmup();
+      console.timeEnd("Glyph warmup");
+    }
+    const frameBuffer = new FrameBuffer(cols, rows);
+    const inputState = new InputState();
+    const keyboard = new KeyboardListener(inputState, window);
+    new MouseListener(inputState, canvas);
+    const cameraController = new CameraController();
+    const hud = new HUD();
+    hud.setDistrictIp(ip);
+    if (params.has("fly")) cameraController.flyMode = true;
+    const farParam = Number(params.get("far"));
+    const eyeParam = Number(params.get("eye"));
+    if (status) status.textContent = "";
+    const loop = new RenderLoop(provider, frameBuffer, presenter, glyphCache, {
+      targetFPS: 30,
+      useTemporalReuse: true,
+      useAdaptiveQuality: false,
+      useWorkers: false,
+      inputState,
+      cameraController,
+      hud
+    });
+    loop.start();
+    loop.setFar(Number.isFinite(farParam) && farParam > 0 ? farParam : 1e3);
+    if (Number.isFinite(eyeParam) && eyeParam > 0) {
+      const p = loop.cameraPosition();
+      loop.teleportTo(p.x, eyeParam, p.z);
+    }
+    keyboard.onToggleFly = () => {
+      const on = cameraController.toggleFly();
+      if (status) {
+        status.textContent = on ? "Fly mode ON (Space/Shift up\xB7down, Ctrl sprint)" : "";
+        if (!on) setTimeout(() => {
+          if (status) status.textContent = "";
+        }, 1);
+        else setTimeout(() => {
+          if (status) status.textContent = "";
+        }, 1500);
+      }
+    };
+    window.__howm = {
+      loop,
+      cameraController,
+      provider,
+      stats: () => ({
+        camera: loop.cameraPosition(),
+        fly: cameraController.flyMode,
+        ...provider.debugStats ? provider.debugStats() : {}
+      }),
+      fly: (on) => {
+        cameraController.flyMode = on ?? !cameraController.flyMode;
+        return cameraController.flyMode;
+      },
+      goto: (x, y, z) => loop.teleportTo(x, y, z),
+      move: (dx, dz, dy = 0) => loop.teleport(dx, dz, dy),
+      far: (f) => loop.setFar(f),
+      look: (yaw, pitch) => cameraController.setLook(yaw, pitch),
+      // Rise to `height` looking straight down — a quick survey of the grid.
+      birdsEye: (height = 140) => {
+        cameraController.flyMode = true;
+        const p = loop.cameraPosition();
+        loop.teleportTo(p.x, height, p.z);
+        cameraController.setLook(0, -Math.PI / 2 + 0.05);
+        return loop.cameraPosition();
+      }
+    };
+    const peerHost = provider;
+    if (typeof peerHost.presenceSpace === "function") {
+      const presence = new PresenceClient(baseUrl);
+      presence.start(peerHost, () => loop.cameraPose());
+    }
+  }
+  window.addEventListener("DOMContentLoaded", main);
+})();

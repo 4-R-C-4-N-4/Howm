@@ -1,0 +1,17 @@
+{
+  "name": "astral",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Astral ASCII/glyph SDF renderer — browser UI for the Howm world capability",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "esbuild src/entry.ts --bundle --outfile=../ui/astral.js --format=iife --platform=browser --target=es2020",
+    "build:min": "esbuild src/entry.ts --bundle --outfile=../ui/astral.js --format=iife --platform=browser --target=es2020 --minify",
+    "watch": "esbuild src/entry.ts --bundle --outfile=../ui/astral.js --format=iife --platform=browser --target=es2020 --watch"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0",
+    "typescript": "^5.9.3"
+  }
+}

@@ -1,0 +1,47 @@
+{
+  "name": "world.room",
+  "version": "0.1.0",
+  "description": "Deterministic world generation — IP address space as navigable city",
+  "binary": "./world",
+  "port": 7010,
+  "api": {
+    "base_path": "/cap/world",
+    "endpoints": [
+      { "name": "district", "method": "GET", "path": "/district/:ip" },
+      { "name": "district_geometry", "method": "GET", "path": "/district/:ip/geometry" },
+      { "name": "district_objects", "method": "GET", "path": "/district/:ip/objects" },
+      { "name": "district_atmosphere", "method": "GET", "path": "/district/:ip/atmosphere" },
+      { "name": "district_prefetch", "method": "GET", "path": "/district/:ip/prefetch" },
+      { "name": "district_home", "method": "GET", "path": "/district/:ip/home/:peer_id" },
+      { "name": "district_inside", "method": "GET", "path": "/district/:ip/inside/:peer_id" },
+      { "name": "district_inside_scene", "method": "GET", "path": "/district/:ip/inside/:peer_id/scene" },
+      { "name": "district_inside_features", "method": "GET", "path": "/district/:ip/inside/:peer_id/features" },
+      { "name": "underground", "method": "GET", "path": "/underground/:ip_a/:peer_a/:ip_b/:peer_b" },
+      { "name": "underground_scene", "method": "GET", "path": "/underground/:ip_a/:peer_a/:ip_b/:peer_b/scene" },
+      { "name": "portal", "method": "GET", "path": "/portal" },
+      { "name": "avatar", "method": "GET", "path": "/avatar/:ip/:peer_id" },
+      { "name": "presence_get", "method": "GET", "path": "/presence" },
+      { "name": "presence_post", "method": "POST", "path": "/presence" },
+      { "name": "district_live", "method": "GET", "path": "/district/:ip/live" },
+      { "name": "district_map_ascii", "method": "GET", "path": "/district/:ip/map.txt" },
+      { "name": "district_audit", "method": "GET", "path": "/district/:ip/audit" },
+      { "name": "audit_cross", "method": "GET", "path": "/audit/cross/:ip_a/:ip_b" },
+      { "name": "audit_spaces", "method": "GET", "path": "/audit/spaces/:ip_a/:peer_a/:ip_b/:peer_b" },
+      { "name": "health", "method": "GET", "path": "/health" }
+    ]
+  },
+  "permissions": {
+    "visibility": "public"
+  },
+  "ui": {
+    "label": "World",
+    "icon": "globe",
+    "entry": "/ui/",
+    "style": "fullscreen",
+    "position": "center"
+  },
+  "resources": {
+    "cpu": "moderate",
+    "memory": "128MB"
+  }
+}
