@@ -6,6 +6,8 @@ export interface PeerPose {
   position: [number, number, number]
   orientation: [number, number, number]
   space: string
+  /** Poster's home district ip — used to fetch their avatar aesthetic. */
+  home: string
   age_ms: number
 }
 
@@ -31,8 +33,12 @@ export interface CameraPose {
 export interface PeerHost {
   /** Canonical id of the space the local player is in, e.g. "156.130.88". */
   presenceSpace(): string
-  /** The current space's anchor (district seed) in the local render frame. */
-  presenceAnchor(): Vec3 | null
+  /** Spaces to query + render peers in — the current district plus any loaded
+   * neighbours, so peers in adjacent stitched districts show up too. */
+  presenceSpaces(): string[]
+  /** Anchor (district seed) for a given space in the local render frame, or null
+   * if that space isn't loaded here. */
+  anchorForSpace(space: string): Vec3 | null
   /** Inject peer avatar entities into the rendered scene. */
   setPeerEntities(entities: Entity[]): void
 }
@@ -54,8 +60,41 @@ export function canonSpace(ip: string): string {
 export class PresenceClient {
   private peers: Entity[] = []
   private timer: ReturnType<typeof setInterval> | null = null
+  /** Cached avatar templates (resolved geometry/material at origin) by home|peer. */
+  private avatars = new Map<string, Entity>()
+  private fetchingAvatars = new Set<string>()
 
   constructor(private baseUrl: string) {}
+
+  /** Fetch and cache a peer's avatar entity (deterministic from home + peer id). */
+  private async fetchAvatar(home: string, peerId: string): Promise<void> {
+    if (!home) return
+    const key = `${home}|${peerId}`
+    if (this.avatars.has(key) || this.fetchingAvatars.has(key)) return
+    this.fetchingAvatars.add(key)
+    try {
+      const resp = await fetch(`${this.baseUrl}/avatar/${home}/${encodeURIComponent(peerId)}/entity`)
+      if (resp.ok) this.avatars.set(key, await resp.json() as Entity)
+    } catch {
+      /* fall back to the generic marker */
+    } finally {
+      this.fetchingAvatars.delete(key)
+    }
+  }
+
+  /** A peer's renderable entity: its real avatar if cached, else a marker (and
+   * kick off the avatar fetch so the next tick upgrades it). */
+  private buildPeer(p: PeerPose, anchor: Vec3): Entity {
+    const position = { x: p.position[0] + anchor.x, y: p.position[1] + anchor.y, z: p.position[2] + anchor.z }
+    const rotation = { x: 0, y: p.orientation[1] ?? 0, z: 0 }
+    const id = `peer:${p.peer_id.slice(0, 10)}`
+    const tmpl = this.avatars.get(`${p.home}|${p.peer_id}`)
+    if (tmpl) {
+      return { ...tmpl, id, transform: { position, rotation, scale: tmpl.transform.scale } }
+    }
+    void this.fetchAvatar(p.home, p.peer_id)
+    return markerEntity(p, position, rotation)
+  }
 
   async postPose(pose: LocalPose): Promise<void> {
     try {
@@ -69,14 +108,21 @@ export class PresenceClient {
     }
   }
 
-  /** Fetch peers in `space` and place them relative to the local `anchor`. */
-  async fetchPeers(space: string, anchor: Vec3): Promise<void> {
+  /** Fetch peers across `host`'s loaded spaces, each placed relative to its own
+   * space anchor (so peers in adjacent stitched districts line up too). */
+  async fetchPeers(host: PeerHost): Promise<void> {
     try {
-      const resp = await fetch(`${this.baseUrl}/presence?space=${encodeURIComponent(space)}`)
+      const spaces = host.presenceSpaces()
+      const resp = await fetch(`${this.baseUrl}/presence?spaces=${encodeURIComponent(spaces.join(','))}`)
       if (!resp.ok) return
       const data = await resp.json()
       const poses: PeerPose[] = data.peers ?? []
-      this.peers = poses.map(p => peerAvatarEntity(p, anchor))
+      this.peers = poses
+        .map(p => {
+          const a = host.anchorForSpace(p.space)
+          return a ? this.buildPeer(p, a) : null
+        })
+        .filter((e): e is Entity => e !== null)
     } catch {
       /* keep last known peers on failure */
     }
@@ -94,9 +140,9 @@ export class PresenceClient {
    */
   start(host: PeerHost, getCamera: () => CameraPose, intervalMs = 250): void {
     const tick = async () => {
-      const anchor = host.presenceAnchor()
-      if (!anchor) return // space not loaded yet — nothing to anchor against
       const space = host.presenceSpace()
+      const anchor = host.anchorForSpace(space)
+      if (!anchor) return // space not loaded yet — nothing to anchor against
       const cam = getCamera()
       // Exchange poses relative to the space anchor (frame-independent).
       await this.postPose({
@@ -104,7 +150,7 @@ export class PresenceClient {
         orientation: cam.rotation,
         space,
       })
-      await this.fetchPeers(space, anchor)
+      await this.fetchPeers(host)
       host.setPeerEntities(this.peers)
     }
     void tick()
@@ -120,10 +166,10 @@ export class PresenceClient {
 }
 
 /**
- * Build a glowing avatar marker for a peer, coloured by peer id. The peer's pose
- * is space-anchor-relative; we add the local anchor to place it in our frame.
+ * Fallback glowing marker for a peer (coloured by peer id), used until the real
+ * avatar entity has been fetched. `position`/`rotation` are already in our frame.
  */
-function peerAvatarEntity(p: PeerPose, anchor: Vec3): Entity {
+function markerEntity(p: PeerPose, position: Vec3, rotation: Vec3): Entity {
   let h = 2166136261
   for (let i = 0; i < p.peer_id.length; i++) {
     h = (h ^ p.peer_id.charCodeAt(i)) >>> 0
@@ -135,8 +181,8 @@ function peerAvatarEntity(p: PeerPose, anchor: Vec3): Entity {
   return {
     id: `peer:${p.peer_id.slice(0, 10)}`,
     transform: {
-      position: { x: p.position[0] + anchor.x, y: p.position[1] + anchor.y, z: p.position[2] + anchor.z },
-      rotation: { x: 0, y: p.orientation[1] ?? 0, z: 0 },
+      position,
+      rotation,
       scale: { x: 1, y: 1, z: 1 },
     },
     geometry: { type: 'cylinder', radius: 0.5, height: 1.8 },

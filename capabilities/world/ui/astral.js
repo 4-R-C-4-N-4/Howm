@@ -1,5 +1,153 @@
 "use strict";
 (() => {
+  // src/scene/PresenceClient.ts
+  function canonSpace(ip) {
+    return ip.split(".").slice(0, 3).join(".");
+  }
+  var PresenceClient = class {
+    constructor(baseUrl) {
+      this.baseUrl = baseUrl;
+      this.peers = [];
+      this.timer = null;
+      /** Cached avatar templates (resolved geometry/material at origin) by home|peer. */
+      this.avatars = /* @__PURE__ */ new Map();
+      this.fetchingAvatars = /* @__PURE__ */ new Set();
+    }
+    /** Fetch and cache a peer's avatar entity (deterministic from home + peer id). */
+    async fetchAvatar(home, peerId) {
+      if (!home) return;
+      const key = `${home}|${peerId}`;
+      if (this.avatars.has(key) || this.fetchingAvatars.has(key)) return;
+      this.fetchingAvatars.add(key);
+      try {
+        const resp = await fetch(`${this.baseUrl}/avatar/${home}/${encodeURIComponent(peerId)}/entity`);
+        if (resp.ok) this.avatars.set(key, await resp.json());
+      } catch {
+      } finally {
+        this.fetchingAvatars.delete(key);
+      }
+    }
+    /** A peer's renderable entity: its real avatar if cached, else a marker (and
+     * kick off the avatar fetch so the next tick upgrades it). */
+    buildPeer(p, anchor) {
+      const position = { x: p.position[0] + anchor.x, y: p.position[1] + anchor.y, z: p.position[2] + anchor.z };
+      const rotation = { x: 0, y: p.orientation[1] ?? 0, z: 0 };
+      const id = `peer:${p.peer_id.slice(0, 10)}`;
+      const tmpl = this.avatars.get(`${p.home}|${p.peer_id}`);
+      if (tmpl) {
+        return { ...tmpl, id, transform: { position, rotation, scale: tmpl.transform.scale } };
+      }
+      void this.fetchAvatar(p.home, p.peer_id);
+      return markerEntity(p, position, rotation);
+    }
+    async postPose(pose) {
+      try {
+        await fetch(`${this.baseUrl}/presence`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...pose, velocity: [0, 0, 0] })
+        });
+      } catch {
+      }
+    }
+    /** Fetch peers across `host`'s loaded spaces, each placed relative to its own
+     * space anchor (so peers in adjacent stitched districts line up too). */
+    async fetchPeers(host) {
+      try {
+        const spaces = host.presenceSpaces();
+        const resp = await fetch(`${this.baseUrl}/presence?spaces=${encodeURIComponent(spaces.join(","))}`);
+        if (!resp.ok) return;
+        const data = await resp.json();
+        const poses = data.peers ?? [];
+        this.peers = poses.map((p) => {
+          const a = host.anchorForSpace(p.space);
+          return a ? this.buildPeer(p, a) : null;
+        }).filter((e) => e !== null);
+      } catch {
+      }
+    }
+    /** The current peer avatar entities (one per live peer). */
+    peerEntities() {
+      return this.peers;
+    }
+    /**
+     * Drive presence on an interval (~4 Hz): post the local pose relative to the
+     * current space anchor and fetch peers in that same space, placing them back
+     * relative to the local anchor so everyone in a district shares one frame.
+     */
+    start(host, getCamera, intervalMs = 250) {
+      const tick = async () => {
+        const space = host.presenceSpace();
+        const anchor = host.anchorForSpace(space);
+        if (!anchor) return;
+        const cam = getCamera();
+        await this.postPose({
+          position: [cam.position[0] - anchor.x, cam.position[1] - anchor.y, cam.position[2] - anchor.z],
+          orientation: cam.rotation,
+          space
+        });
+        await this.fetchPeers(host);
+        host.setPeerEntities(this.peers);
+      };
+      void tick();
+      this.timer = setInterval(() => void tick(), intervalMs);
+    }
+    stop() {
+      if (this.timer !== null) {
+        clearInterval(this.timer);
+        this.timer = null;
+      }
+    }
+  };
+  function markerEntity(p, position, rotation) {
+    let h = 2166136261;
+    for (let i = 0; i < p.peer_id.length; i++) {
+      h = (h ^ p.peer_id.charCodeAt(i)) >>> 0;
+      h = h * 16777619 >>> 0;
+    }
+    const hue = h % 360;
+    const base = hslToColor(hue, 0.55, 0.6);
+    const glow = hslToColor(hue, 0.6, 0.72);
+    return {
+      id: `peer:${p.peer_id.slice(0, 10)}`,
+      transform: {
+        position,
+        rotation,
+        scale: { x: 1, y: 1, z: 1 }
+      },
+      geometry: { type: "cylinder", radius: 0.5, height: 1.8 },
+      material: {
+        baseColor: base,
+        brightness: 0.7,
+        emissive: 0.45,
+        emissionColor: glow,
+        roughness: 0.5,
+        reflectivity: 0.1,
+        glyphStyle: "round"
+      }
+    };
+  }
+  function hslToColor(h, s, l) {
+    const c = (1 - Math.abs(2 * l - 1)) * s;
+    const hp = h / 60;
+    const x = c * (1 - Math.abs(hp % 2 - 1));
+    let r = 0;
+    let g = 0;
+    let b = 0;
+    if (hp < 1) [r, g, b] = [c, x, 0];
+    else if (hp < 2) [r, g, b] = [x, c, 0];
+    else if (hp < 3) [r, g, b] = [0, c, x];
+    else if (hp < 4) [r, g, b] = [0, x, c];
+    else if (hp < 5) [r, g, b] = [x, 0, c];
+    else [r, g, b] = [c, 0, x];
+    const m = l - c / 2;
+    return {
+      r: Math.round((r + m) * 255),
+      g: Math.round((g + m) * 255),
+      b: Math.round((b + m) * 255)
+    };
+  }
+
   // src/renderer/Animator.ts
   var baseIntensities = /* @__PURE__ */ new Map();
   function updateLightFlicker(lights, time) {
@@ -111,12 +259,18 @@
     // ── PeerHost (presence) ──────────────────────────────────────────────────
     /** Canonical id of the district the camera is currently over. */
     presenceSpace() {
-      return this.centerIp.split(".").slice(0, 3).join(".");
+      return canonSpace(this.centerIp);
     }
-    /** Current district seed in the shared-origin render frame (presence anchor). */
-    presenceAnchor() {
-      const d = this.districts.get(this.centerIp);
-      return d ? { x: d.seed.x, y: 0, z: d.seed.z } : null;
+    /** Every loaded district — peers in any of them render in the stitched view. */
+    presenceSpaces() {
+      return [...this.districts.keys()].map(canonSpace);
+    }
+    /** Seed (render-frame anchor) of whichever loaded district matches `space`. */
+    anchorForSpace(space) {
+      for (const [ip, d] of this.districts) {
+        if (canonSpace(ip) === space) return { x: d.seed.x, y: 0, z: d.seed.z };
+      }
+      return null;
     }
     /** Load the initial district and its neighbour ring. */
     async loadDistrict(ip) {
@@ -283,116 +437,6 @@
     }
   };
 
-  // src/scene/PresenceClient.ts
-  var PresenceClient = class {
-    constructor(baseUrl) {
-      this.baseUrl = baseUrl;
-      this.peers = [];
-      this.timer = null;
-    }
-    async postPose(pose) {
-      try {
-        await fetch(`${this.baseUrl}/presence`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ ...pose, velocity: [0, 0, 0] })
-        });
-      } catch {
-      }
-    }
-    /** Fetch peers in `space` and place them relative to the local `anchor`. */
-    async fetchPeers(space, anchor) {
-      try {
-        const resp = await fetch(`${this.baseUrl}/presence?space=${encodeURIComponent(space)}`);
-        if (!resp.ok) return;
-        const data = await resp.json();
-        const poses = data.peers ?? [];
-        this.peers = poses.map((p) => peerAvatarEntity(p, anchor));
-      } catch {
-      }
-    }
-    /** The current peer avatar entities (one per live peer). */
-    peerEntities() {
-      return this.peers;
-    }
-    /**
-     * Drive presence on an interval (~4 Hz): post the local pose relative to the
-     * current space anchor and fetch peers in that same space, placing them back
-     * relative to the local anchor so everyone in a district shares one frame.
-     */
-    start(host, getCamera, intervalMs = 250) {
-      const tick = async () => {
-        const anchor = host.presenceAnchor();
-        if (!anchor) return;
-        const space = host.presenceSpace();
-        const cam = getCamera();
-        await this.postPose({
-          position: [cam.position[0] - anchor.x, cam.position[1] - anchor.y, cam.position[2] - anchor.z],
-          orientation: cam.rotation,
-          space
-        });
-        await this.fetchPeers(space, anchor);
-        host.setPeerEntities(this.peers);
-      };
-      void tick();
-      this.timer = setInterval(() => void tick(), intervalMs);
-    }
-    stop() {
-      if (this.timer !== null) {
-        clearInterval(this.timer);
-        this.timer = null;
-      }
-    }
-  };
-  function peerAvatarEntity(p, anchor) {
-    let h = 2166136261;
-    for (let i = 0; i < p.peer_id.length; i++) {
-      h = (h ^ p.peer_id.charCodeAt(i)) >>> 0;
-      h = h * 16777619 >>> 0;
-    }
-    const hue = h % 360;
-    const base = hslToColor(hue, 0.55, 0.6);
-    const glow = hslToColor(hue, 0.6, 0.72);
-    return {
-      id: `peer:${p.peer_id.slice(0, 10)}`,
-      transform: {
-        position: { x: p.position[0] + anchor.x, y: p.position[1] + anchor.y, z: p.position[2] + anchor.z },
-        rotation: { x: 0, y: p.orientation[1] ?? 0, z: 0 },
-        scale: { x: 1, y: 1, z: 1 }
-      },
-      geometry: { type: "cylinder", radius: 0.5, height: 1.8 },
-      material: {
-        baseColor: base,
-        brightness: 0.7,
-        emissive: 0.45,
-        emissionColor: glow,
-        roughness: 0.5,
-        reflectivity: 0.1,
-        glyphStyle: "round"
-      }
-    };
-  }
-  function hslToColor(h, s, l) {
-    const c = (1 - Math.abs(2 * l - 1)) * s;
-    const hp = h / 60;
-    const x = c * (1 - Math.abs(hp % 2 - 1));
-    let r = 0;
-    let g = 0;
-    let b = 0;
-    if (hp < 1) [r, g, b] = [c, x, 0];
-    else if (hp < 2) [r, g, b] = [x, c, 0];
-    else if (hp < 3) [r, g, b] = [0, c, x];
-    else if (hp < 4) [r, g, b] = [0, x, c];
-    else if (hp < 5) [r, g, b] = [x, 0, c];
-    else [r, g, b] = [c, 0, x];
-    const m = l - c / 2;
-    return {
-      r: Math.round((r + m) * 255),
-      g: Math.round((g + m) * 255),
-      b: Math.round((b + m) * 255)
-    };
-  }
-
   // src/scene/HowmStreamProvider.ts
   var HowmStreamProvider = class {
     constructor(baseUrl) {
@@ -542,11 +586,15 @@
     // ── PeerHost (presence) ──────────────────────────────────────────────────
     /** Canonical id of the district the player is currently in. */
     presenceSpace() {
-      return this.currentDistrictIp.split(".").slice(0, 3).join(".");
+      return canonSpace(this.currentDistrictIp);
     }
-    /** Current district seed in render-frame (presence anchor, from the server). */
-    presenceAnchor() {
-      return this.spaceAnchor;
+    /** The live path streams one district at a time, so only that space. */
+    presenceSpaces() {
+      return [this.presenceSpace()];
+    }
+    /** The server-provided anchor, for the current space only. */
+    anchorForSpace(space) {
+      return space === this.presenceSpace() ? this.spaceAnchor : null;
     }
     /** Live peer avatars merged into the streamed scene. */
     setPeerEntities(entities) {

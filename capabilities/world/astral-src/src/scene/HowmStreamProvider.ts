@@ -1,5 +1,6 @@
 import { Scene, Entity, Light, Camera, Environment, GroundPaint, Vec3 } from '../core/types'
 import { SceneProvider } from './SceneProvider'
+import { canonSpace } from './PresenceClient'
 import { updateLightFlicker } from '../renderer/Animator'
 
 /**
@@ -175,12 +176,17 @@ export class HowmStreamProvider implements SceneProvider {
   // ── PeerHost (presence) ──────────────────────────────────────────────────
   /** Canonical id of the district the player is currently in. */
   presenceSpace(): string {
-    return this.currentDistrictIp.split('.').slice(0, 3).join('.')
+    return canonSpace(this.currentDistrictIp)
   }
 
-  /** Current district seed in render-frame (presence anchor, from the server). */
-  presenceAnchor(): Vec3 | null {
-    return this.spaceAnchor
+  /** The live path streams one district at a time, so only that space. */
+  presenceSpaces(): string[] {
+    return [this.presenceSpace()]
+  }
+
+  /** The server-provided anchor, for the current space only. */
+  anchorForSpace(space: string): Vec3 | null {
+    return space === this.presenceSpace() ? this.spaceAnchor : null
   }
 
   /** Live peer avatars merged into the streamed scene. */

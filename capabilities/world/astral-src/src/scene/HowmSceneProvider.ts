@@ -1,5 +1,6 @@
 import { Entity, Scene, Light, GroundPaint, Vec3 } from '../core/types'
 import { SceneProvider } from './SceneProvider'
+import { canonSpace } from './PresenceClient'
 import { updateLightFlicker } from '../renderer/Animator'
 
 /**
@@ -109,13 +110,20 @@ export class HowmSceneProvider implements SceneProvider {
   // ── PeerHost (presence) ──────────────────────────────────────────────────
   /** Canonical id of the district the camera is currently over. */
   presenceSpace(): string {
-    return this.centerIp.split('.').slice(0, 3).join('.')
+    return canonSpace(this.centerIp)
   }
 
-  /** Current district seed in the shared-origin render frame (presence anchor). */
-  presenceAnchor(): Vec3 | null {
-    const d = this.districts.get(this.centerIp)
-    return d ? { x: d.seed.x, y: 0, z: d.seed.z } : null
+  /** Every loaded district — peers in any of them render in the stitched view. */
+  presenceSpaces(): string[] {
+    return [...this.districts.keys()].map(canonSpace)
+  }
+
+  /** Seed (render-frame anchor) of whichever loaded district matches `space`. */
+  anchorForSpace(space: string): Vec3 | null {
+    for (const [ip, d] of this.districts) {
+      if (canonSpace(ip) === space) return { x: d.seed.x, y: 0, z: d.seed.z }
+    }
+    return null
   }
 
   /** Load the initial district and its neighbour ring. */

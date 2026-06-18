@@ -45,6 +45,10 @@ struct Pose {
     /// The space the player is in (e.g. district ip, "inside:<peer>", "tunnel:..").
     #[serde(default)]
     space: String,
+    /// Poster's home-district ip, stamped by the cap on broadcast. Lets peers
+    /// fetch the right avatar aesthetic (`/avatar/<home>/<peer>/entity`).
+    #[serde(default)]
+    home: String,
 }
 
 #[derive(Clone)]
@@ -546,7 +550,10 @@ fn peer_id_bytes32(b64: &str) -> Option<[u8; 32]> {
     STANDARD.decode(b64).ok()?.as_slice().try_into().ok()
 }
 
-async fn presence_post(State(state): State<AppState>, Json(pose): Json<Pose>) -> Response {
+async fn presence_post(State(state): State<AppState>, Json(mut pose): Json<Pose>) -> Response {
+    // Stamp our home district so peers can fetch our avatar's aesthetic.
+    let o = state.home_cell.octets;
+    pose.home = format!("{}.{}.{}.0", o[0], o[1], o[2]);
     let payload = serde_json::to_vec(&pose).unwrap_or_default();
     let mut sent = 0usize;
     for ap in state.peers.peers().await {
@@ -568,12 +575,16 @@ async fn presence_post(State(state): State<AppState>, Json(pose): Json<Pose>) ->
         .into_response()
 }
 
-/// Query for `GET /presence`. `space` scopes the result to peers in the same
-/// space (district / inside / tunnel); omit it to see every live peer.
+/// Query for `GET /presence`. `spaces` (comma-separated) scopes the result to
+/// peers standing in any of those spaces — the local district plus its loaded
+/// neighbours for the stitched view. `space` is the single-space alias; omit
+/// both to see every live peer.
 #[derive(serde::Deserialize, Default)]
 struct PresenceQuery {
     #[serde(default)]
     space: Option<String>,
+    #[serde(default)]
+    spaces: Option<String>,
 }
 
 async fn presence_get(
@@ -581,13 +592,20 @@ async fn presence_get(
     axum::extract::Query(q): axum::extract::Query<PresenceQuery>,
 ) -> Response {
     let now = current_time_ms();
+    // Set of requested spaces (from `spaces` or the single `space` alias).
+    let wanted: Option<std::collections::HashSet<&str>> = q
+        .spaces
+        .as_deref()
+        .map(|s| s.split(',').filter(|x| !x.is_empty()).collect())
+        .or_else(|| q.space.as_deref().map(|s| std::iter::once(s).collect()));
+
     let map = state.presence.read().await;
     let peers: Vec<_> = map
         .iter()
         .filter(|(_, pp)| now.saturating_sub(pp.updated_ms) < PRESENCE_TTL_MS)
-        // Scope to the requested space when given, so a client only sees (and
-        // aligns with) peers standing in the same district/inside/tunnel.
-        .filter(|(_, pp)| q.space.as_ref().map_or(true, |s| &pp.pose.space == s))
+        // Scope to the requested spaces so a client only sees (and aligns with)
+        // peers in districts it has loaded.
+        .filter(|(_, pp)| wanted.as_ref().map_or(true, |set| set.contains(pp.pose.space.as_str())))
         .map(|(id, pp)| {
             serde_json::json!({
                 "peer_id": id,
@@ -595,6 +613,7 @@ async fn presence_get(
                 "orientation": pp.pose.orientation,
                 "velocity": pp.pose.velocity,
                 "space": pp.pose.space,
+                "home": pp.pose.home,
                 "age_ms": now.saturating_sub(pp.updated_ms),
             })
         })
@@ -629,6 +648,23 @@ async fn avatar_handler(AxumPath((ip, peer_id)): AxumPath<(String, String)>) -> 
         axum::Json(serde_json::json!({ "peer_id": peer_id, "description": graph })),
     )
         .into_response()
+}
+
+/// A peer's avatar as a renderable Astral entity (resolved geometry + material),
+/// positioned at the origin — the presence client repositions it at the peer's
+/// pose. Deterministic from (`ip` = home district, `peer_id`), so clients cache it.
+async fn avatar_entity_handler(AxumPath((ip, peer_id)): AxumPath<(String, String)>) -> Response {
+    let cell = match parse_cell(&ip) {
+        Some(c) => c,
+        None => return bad_request(),
+    };
+    let pid = match decode_peer_id(&peer_id) {
+        Some(p) => p,
+        None => return (StatusCode::BAD_REQUEST, "Invalid peer id").into_response(),
+    };
+    let palette = gen::aesthetic::AestheticPalette::from_cell(&cell);
+    let entity = scene::compiler::compile_avatar(&pid, &palette, 0.0, 0.0, 0.0);
+    (StatusCode::OK, axum::Json(entity)).into_response()
 }
 
 // ─── Peer Inside (spaces §2) ────────────────────────────────────────────────
@@ -1162,6 +1198,7 @@ async fn main() -> anyhow::Result<()> {
                 .route("/neighbors/{ip}", get(neighbors_handler))
                 .route("/portal", get(portal_handler))
                 .route("/avatar/{ip}/{peer_id}", get(avatar_handler))
+                .route("/avatar/{ip}/{peer_id}/entity", get(avatar_entity_handler))
                 .route("/presence", get(presence_get).post(presence_post))
         })
         .run()
